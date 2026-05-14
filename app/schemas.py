@@ -1,0 +1,309 @@
+from __future__ import annotations
+
+from datetime import datetime
+from enum import Enum
+
+from pydantic import BaseModel, Field
+
+
+class TradeAction(str, Enum):
+    no_trade = "NO_TRADE"
+    enter_call = "ENTER_CALL"
+    enter_put = "ENTER_PUT"
+    hold = "HOLD"
+    exit = "EXIT"
+    partial_exit = "PARTIAL_EXIT"
+    update_target = "UPDATE_TARGET"
+    update_stop = "UPDATE_STOP"
+
+
+class OperatingMode(str, Enum):
+    heuristic = "heuristic"
+    full_ai = "full-ai"
+
+
+class InstrumentMode(str, Enum):
+    nifty = "nifty"
+    stock = "stock"
+
+
+class FullAIProvider(str, Enum):
+    openai = "openai"
+    deepseek = "deepseek"
+
+
+class Candle(BaseModel):
+    timestamp: datetime
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: float = 0.0
+
+
+class PreviousDayLevels(BaseModel):
+    high: float = 0.0
+    low: float = 0.0
+    close: float = 0.0
+
+
+class Zone(BaseModel):
+    label: str
+    zone_type: str
+    price: float
+    upper: float
+    lower: float
+    strength: float = Field(ge=0.0, le=1.0, default=0.5)
+    notes: str = ""
+
+
+class SignalEvent(BaseModel):
+    timestamp: datetime
+    title: str
+    sentiment: str
+    description: str
+
+
+class HeuristicTraceEntry(BaseModel):
+    timestamp: datetime
+    event_type: str
+    title: str
+    status: str | None = None
+    market_state: str | None = None
+    action: str | None = None
+    direction: str | None = None
+    setup_type: str | None = None
+    option_type: str | None = None
+    confidence: float | None = None
+    setup_score: float | None = None
+    trigger_price: float | None = None
+    invalidation_level: float | None = None
+    block_reason: str | None = None
+    detail: str = ""
+
+
+class HeuristicNarrativeEvent(BaseModel):
+    timestamp: datetime
+    event_type: str
+    title: str
+    direction: str | None = None
+    price: float | None = None
+    status: str | None = None
+    detail: str = ""
+
+
+class InstrumentState(BaseModel):
+    mode: InstrumentMode = InstrumentMode.nifty
+    label: str = "Nifty 50"
+    symbol: str = "NIFTY"
+    security_id: str = "13"
+    exchange_segment: str = "IDX_I"
+    instrument_type: str = "INDEX"
+    supports_options: bool = True
+    lot_size: int = 65
+
+
+class StrategyContext(BaseModel):
+    instrument: InstrumentState
+    current_candle: Candle
+    live_current_candle: Candle | None = None
+    recent_candles: list[Candle] = Field(default_factory=list)
+    session_candles: list[Candle] = Field(default_factory=list)
+    previous_day_candles: list[Candle] = Field(default_factory=list)
+    previous_day: PreviousDayLevels
+    liquidity_zones: list[Zone]
+    operator_zones: list[Zone]
+    signal_events: list[SignalEvent]
+    market_structure: str = ""
+    pending_setup: "PendingSetup | None" = None
+    active_trade: "SimulatedTrade | None" = None
+    rulebook_markdown: str
+
+
+class PendingSetup(BaseModel):
+    setup_id: str
+    status: str = "armed"
+    setup_type: str
+    direction: str
+    option_type: str
+    strike: int | None = None
+    trigger_price: float
+    invalidation_level: float | None = None
+    trigger_basis: str = "close_above"
+    created_at: datetime
+    updated_at: datetime
+    last_evaluated_at: datetime | None = None
+    source: str = "full-ai"
+    confidence: float = Field(ge=0.0, le=1.0, default=0.0)
+    notes: str = ""
+    replacement_reason: str | None = None
+    triggered_at: datetime | None = None
+    consumed_at: datetime | None = None
+    invalidated_at: datetime | None = None
+    status_reason: str | None = None
+    executed_trade_id: str | None = None
+
+
+class TradeDecision(BaseModel):
+    action: TradeAction
+    confidence: float = Field(ge=0.0, le=1.0, default=0.0)
+    reason: str = ""
+    decision_source: str = "heuristic"
+    strike: int | None = None
+    option_type: str | None = None
+    target_option_price: float | None = None
+    stop_option_price: float | None = None
+    invalidation_level: float | None = None
+    target_spot_price: float | None = None
+    first_target_price: float | None = None
+    partial_exit_quantity: int | None = None
+    market_state: str | None = None
+    setup_score: float | None = None
+    setup_type: str | None = None
+    rule_ids_used: list[str] = Field(default_factory=list)
+    pending_setup_action: str = "NONE"
+    pending_setup_type: str | None = None
+    pending_setup_direction: str | None = None
+    pending_setup_trigger_price: float | None = None
+    pending_setup_invalidation_level: float | None = None
+    pending_setup_trigger_basis: str | None = None
+    pending_setup_notes: str | None = None
+    pending_setup_strike: int | None = None
+    pending_setup_option_type: str | None = None
+
+
+class SimulatedTrade(BaseModel):
+    trade_id: str
+    status: str
+    direction: str
+    instrument_mode: InstrumentMode = InstrumentMode.nifty
+    instrument_label: str = "Nifty 50"
+    price_mode: str = "option"
+    trade_security_id: str | None = None
+    quote_exchange_segment: str | None = None
+    option_type: str
+    strike: int
+    symbol: str
+    option_security_id: str | None = None
+    quantity: int
+    open_quantity: int | None = None
+    closed_quantity: int = 0
+    entry_time: datetime
+    entry_price: float
+    entry_spot_price: float
+    entry_option_price: float
+    entry_quote_source: str = "simulated"
+    entry_quote_time: datetime | None = None
+    current_price: float
+    current_option_price: float
+    current_quote_source: str = "simulated"
+    current_quote_time: datetime | None = None
+    stop_price: float
+    stop_option_price: float
+    target_price: float
+    target_option_price: float
+    invalidation_level: float | None = None
+    target_spot_price: float | None = None
+    first_target_price: float | None = None
+    setup_type: str | None = None
+    setup_score: float | None = None
+    market_state: str | None = None
+    exit_time: datetime | None = None
+    exit_price: float | None = None
+    exit_option_price: float | None = None
+    exit_quote_source: str | None = None
+    exit_quote_time: datetime | None = None
+    booked_pnl: float = 0.0
+    partial_exit_count: int = 0
+    last_partial_exit_time: datetime | None = None
+    pnl: float = 0.0
+    notes: str = ""
+
+
+class RulebookUpdate(BaseModel):
+    summary: str
+    proposed_markdown: str
+    extracted_rules: list[str] = Field(default_factory=list)
+    conflicts: list[str] = Field(default_factory=list)
+
+
+class LiveFeedState(BaseModel):
+    connected: bool = False
+    status: str = "disconnected"
+    source: str = "sample"
+    security_id: str = "13"
+    instrument_label: str = "Nifty 50"
+    ticks_received: int = 0
+    last_packet_type: str | None = None
+    last_tick_at: datetime | None = None
+    last_ltp: float | None = None
+    error: str | None = None
+    current_candle: Candle | None = None
+
+
+class CredentialSummary(BaseModel):
+    client_id: str | None = None
+    dhan_access_token_saved: bool = False
+    openai_api_key_saved: bool = False
+    openai_model: str = "gpt-5.4-mini"
+    deepseek_api_key_saved: bool = False
+    deepseek_model: str = "deepseek-v4-flash"
+    full_ai_provider: FullAIProvider = FullAIProvider.openai
+    operating_mode: OperatingMode = OperatingMode.full_ai
+    storage_path: str
+    last_updated: datetime | None = None
+
+
+class DataSyncState(BaseModel):
+    status: str = "idle"
+    source: str = "sample"
+    message: str | None = None
+    last_synced_at: datetime | None = None
+    previous_day_candles: int = 0
+    intraday_candles: int = 0
+    total_loaded: int = 0
+    has_live_open_candle: bool = False
+
+
+class RulebookJobState(BaseModel):
+    job_id: str | None = None
+    status: str = "idle"
+    source_name: str | None = None
+    message: str = "No rulebook learning job has run yet."
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    used_fallback: bool = False
+
+
+class DashboardState(BaseModel):
+    mode: str
+    instrument: InstrumentState
+    operating_mode: OperatingMode
+    current_index: int
+    total_candles: int
+    latest_candle: Candle | None = None
+    recent_candles: list[Candle] = Field(default_factory=list)
+    previous_day: PreviousDayLevels
+    liquidity_zones: list[Zone]
+    operator_zones: list[Zone]
+    signal_events: list[SignalEvent]
+    signal_history: list[SignalEvent] = Field(default_factory=list)
+    heuristic_trace: list[HeuristicTraceEntry] = Field(default_factory=list)
+    heuristic_narrative: list[HeuristicNarrativeEvent] = Field(default_factory=list)
+    pending_setup: PendingSetup | None = None
+    decision: TradeDecision | None = None
+    active_trade: SimulatedTrade | None = None
+    trade_history: list[SimulatedTrade]
+    rulebook: str
+    learning_log: list[str]
+    balance: float
+    realized_pnl: float
+    unrealized_pnl: float
+    ai_enabled: bool
+    live_feed: LiveFeedState
+    data_sync: DataSyncState
+    rulebook_job: RulebookJobState
+    credentials: CredentialSummary
+
+
+StrategyContext.model_rebuild()

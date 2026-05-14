@@ -1,0 +1,427 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>{{ title }}</title>
+  <link rel="stylesheet" href="/static/styles.css?v={{ static_version }}" />
+</head>
+<body>
+  <main class="page-shell">
+    <section class="hero-card">
+      <div>
+        <p class="eyebrow">Paper Trading Simulator</p>
+        <h1>{{ title }}</h1>
+        <p class="hero-copy">
+          Upload your SL-hunting notes and 1-minute market data, then step through each candle while the app
+          maps liquidity zones, operator zones, previous day levels, and AI-assisted paper trades for NIFTY or SBIN.
+        </p>
+      </div>
+      <div class="hero-metrics">
+        <div class="metric">
+          <span>Instrument</span>
+          <strong id="instrumentValue">Nifty 50</strong>
+        </div>
+        <div class="metric">
+          <span>Mode</span>
+          <strong id="modeValue">paper</strong>
+        </div>
+        <div class="metric">
+          <span>Trading Mode</span>
+          <strong id="operatingModeValue">full-ai</strong>
+        </div>
+        <div class="metric">
+          <span>AI Provider</span>
+          <strong id="aiValue">openai</strong>
+        </div>
+        <div class="metric">
+          <span>Progress</span>
+          <strong id="progressValue">0 / 0</strong>
+        </div>
+      </div>
+    </section>
+
+    <section class="grid two-col">
+      <article class="panel">
+        <div class="panel-header">
+          <h2>Live Feed Controls</h2>
+        </div>
+        <form id="instrumentModeForm" class="stack-form">
+          <label>Instrument Mode</label>
+          <select name="instrument_mode">
+            <option value="nifty">NIFTY Mode</option>
+            <option value="stock">SBIN Stock Mode</option>
+          </select>
+          <button type="submit">Apply Instrument Mode</button>
+        </form>
+        <form id="liveConnectForm" class="stack-form">
+          <label>Dhan Client ID</label>
+          <input type="text" name="client_id" placeholder="Uses .env if left blank" />
+          <label>Dhan Access Token</label>
+          <input type="text" name="access_token" placeholder="Uses .env if left blank" />
+          <div class="button-row">
+            <button type="submit" id="connectLiveBtn">Connect Live Feed</button>
+            <button type="button" id="syncHistoryBtn" class="secondary-btn">Sync Dhan 1m Context</button>
+            <button type="button" id="disconnectLiveBtn" class="secondary-btn">Disconnect Feed</button>
+          </div>
+        </form>
+        <div class="live-status-grid">
+          <div>
+            <span class="caption">Feed Status</span>
+            <strong id="liveStatusValue">disconnected</strong>
+          </div>
+          <div>
+            <span class="caption">Security</span>
+            <strong id="liveSecurityValue">13</strong>
+          </div>
+          <div>
+            <span class="caption">Last LTP</span>
+            <strong id="liveLtpValue">-</strong>
+          </div>
+          <div>
+            <span class="caption">Ticks</span>
+            <strong id="liveTicksValue">0</strong>
+          </div>
+        </div>
+        <div class="list-surface">
+          <div class="list-item">
+            <strong>History Sync</strong>
+            <p id="syncStatusValue">idle</p>
+          </div>
+          <div class="list-item">
+            <strong>Sync Message</strong>
+            <p id="syncMessageValue">No Dhan chart sync yet.</p>
+          </div>
+          <div class="list-item">
+            <strong>Loaded Candles</strong>
+            <p><span id="syncPreviousValue">0</span> previous day | <span id="syncIntradayValue">0</span> intraday | <span id="syncTotalValue">0</span> total</p>
+          </div>
+          <div class="list-item">
+            <strong>Live Open Candle</strong>
+            <p id="syncOpenValue">No</p>
+          </div>
+          <div class="list-item">
+            <strong>Last Sync</strong>
+            <p id="syncUpdatedValue">-</p>
+          </div>
+          <div class="list-item">
+            <strong>Feed Error</strong>
+            <p id="liveErrorValue">None</p>
+          </div>
+        </div>
+      </article>
+
+      <article class="panel">
+        <div class="panel-header">
+          <h2>Simulation Controls</h2>
+        </div>
+        <div class="button-row">
+          <button id="loadSampleBtn">Load Sample Session</button>
+          <button id="simulateTodayBtn">Start Simulation Today Data</button>
+          <button id="stepBtn">Step 1 Candle</button>
+          <button id="runFiveBtn">Run 5 Candles</button>
+        </div>
+        <form id="candleUploadForm" class="stack-form">
+          <label>Upload candle CSV</label>
+          <input type="file" name="file" accept=".csv" required />
+          <button type="submit">Load Candle Data</button>
+        </form>
+      </article>
+    </section>
+
+    <section class="grid two-col">
+      <article class="panel">
+        <div class="panel-header">
+          <h2>Saved Credentials</h2>
+        </div>
+        <form id="credentialSaveForm" class="stack-form">
+          <label>Dhan Client ID</label>
+          <input type="text" name="client_id" placeholder="Save once for future sessions" />
+          <label>Dhan Access Token</label>
+          <input type="password" name="access_token" placeholder="Stored locally on this machine" />
+          <label>OpenAI API Key</label>
+          <input type="password" name="openai_api_key" placeholder="sk-..." />
+          <label>OpenAI Model</label>
+          <input type="text" name="openai_model" placeholder="gpt-5.4-mini" />
+          <label>DeepSeek API Key</label>
+          <input type="password" name="deepseek_api_key" placeholder="sk-..." />
+          <label>DeepSeek Model</label>
+          <input type="text" name="deepseek_model" placeholder="deepseek-v4-flash" />
+          <label>Full AI Provider</label>
+          <select name="full_ai_provider">
+            <option value="openai">OpenAI</option>
+            <option value="deepseek">DeepSeek</option>
+          </select>
+          <label>Trading Decision Mode</label>
+          <select name="operating_mode">
+            <option value="full-ai">Full AI Mode</option>
+            <option value="heuristic">Heuristic Mode</option>
+          </select>
+          <button type="submit">Save Settings</button>
+        </form>
+        <div class="list-surface">
+          <div class="list-item">
+            <strong>Saved Dhan Client ID</strong>
+            <p id="savedClientIdValue">Not saved</p>
+          </div>
+          <div class="list-item">
+            <strong>Dhan Access Token</strong>
+            <p id="savedDhanTokenValue">Not saved</p>
+          </div>
+          <div class="list-item">
+            <strong>OpenAI API Key</strong>
+            <p id="savedOpenAIApiKeyValue">Not saved</p>
+          </div>
+          <div class="list-item">
+            <strong>OpenAI Model</strong>
+            <p id="savedOpenAIModelValue">gpt-5.4-mini</p>
+          </div>
+          <div class="list-item">
+            <strong>DeepSeek API Key</strong>
+            <p id="savedDeepSeekApiKeyValue">Not saved</p>
+          </div>
+          <div class="list-item">
+            <strong>DeepSeek Model</strong>
+            <p id="savedDeepSeekModelValue">deepseek-v4-flash</p>
+          </div>
+          <div class="list-item">
+            <strong>Full AI Provider</strong>
+            <p id="savedFullAIProviderValue">openai</p>
+          </div>
+          <div class="list-item">
+            <strong>Trading Decision Mode</strong>
+            <p id="savedOperatingModeValue">full-ai</p>
+          </div>
+          <div class="list-item">
+            <strong>Storage Path</strong>
+            <p id="savedPathValue">-</p>
+          </div>
+          <div class="list-item">
+            <strong>Last Updated</strong>
+            <p id="savedUpdatedValue">-</p>
+          </div>
+        </div>
+      </article>
+
+      <article class="panel">
+        <div class="panel-header">
+          <h2>Learning Inputs</h2>
+        </div>
+        <div class="list-surface">
+          <div class="list-item">
+            <strong>OpenAI Runtime</strong>
+            <p id="aiStatusValue">Checking...</p>
+          </div>
+          <div class="list-item">
+            <strong>Model Ready</strong>
+            <p id="aiModelStatusValue">Checking...</p>
+          </div>
+          <div class="list-item">
+            <strong>AI Message</strong>
+            <p id="aiHealthMessage">Checking OpenAI configuration.</p>
+          </div>
+          <div class="list-item">
+            <strong>Last Dashboard Action</strong>
+            <p id="lastActionValue">Waiting for an action.</p>
+            <p id="lastActionMessage">Upload a rulebook or sync data to see the latest result here.</p>
+          </div>
+          <div class="list-item">
+            <strong>Rulebook Job</strong>
+            <p id="rulebookJobValue">idle</p>
+            <p id="rulebookJobMessage">No rulebook learning job has run yet.</p>
+          </div>
+        </div>
+        <form id="rulebookUploadForm" class="stack-form">
+          <label>Upload rulebook document</label>
+          <input type="file" name="file" accept=".txt,.text,.md,.pdf" required />
+          <p class="caption">Use a plain text, markdown, or PDF file. Notes field below is optional and separate.</p>
+          <button type="submit">Learn from Document</button>
+        </form>
+        <form id="noteLearnForm" class="stack-form">
+          <label>Source label</label>
+          <input type="text" name="source_name" placeholder="Session observations" required />
+          <label>Notes</label>
+          <textarea name="source_text" rows="5" placeholder="Paste your new SL-hunting observations here"></textarea>
+          <button type="submit">Update Rulebook</button>
+        </form>
+      </article>
+
+    </section>
+
+    <section class="grid one-col">
+      <article class="panel">
+        <div class="panel-header">
+          <h2>Live Feed Notes</h2>
+        </div>
+        <div class="list-surface">
+          <div class="list-item">
+            <strong>Instrument source</strong>
+            <p id="instrumentNote">The live feed subscribes to the selected Dhan security in paper mode.</p>
+          </div>
+          <div class="list-item">
+            <strong>1-minute engine</strong>
+            <p>Before the websocket starts, the app can sync previous-day and today&apos;s 1-minute candles from Dhan so the trading logic already knows the morning pattern.</p>
+          </div>
+          <div class="list-item">
+            <strong>Saved credentials</strong>
+            <p>Saved Dhan, OpenAI, and DeepSeek settings are reused automatically after app restart. Full AI mode uses whichever provider and model you selected.</p>
+          </div>
+        </div>
+      </article>
+    </section>
+
+    <section class="grid three-col">
+      <article class="panel stat-panel">
+        <span>Balance</span>
+        <strong id="balanceValue">0</strong>
+      </article>
+      <article class="panel stat-panel">
+        <span>Realized P&amp;L</span>
+        <strong id="realizedValue">0</strong>
+      </article>
+      <article class="panel stat-panel">
+        <span>Unrealized P&amp;L</span>
+        <strong id="unrealizedValue">0</strong>
+      </article>
+    </section>
+
+    <section class="grid two-col">
+      <article class="panel wide-panel">
+        <div class="panel-header">
+          <h2>Market Snapshot</h2>
+          <span id="latestCandleStamp">No candle loaded</span>
+        </div>
+        <canvas id="priceChart" width="900" height="280"></canvas>
+        <div class="market-grid">
+          <div>
+            <span class="caption">Spot Close</span>
+            <strong id="spotCloseValue">-</strong>
+          </div>
+          <div>
+            <span class="caption">Previous Day High</span>
+            <strong id="pdhValue">-</strong>
+          </div>
+          <div>
+            <span class="caption">Previous Day Low</span>
+            <strong id="pdlValue">-</strong>
+          </div>
+          <div>
+            <span class="caption">Previous Day Close</span>
+            <strong id="pdcValue">-</strong>
+          </div>
+        </div>
+      </article>
+
+      <article class="panel">
+        <div class="panel-header">
+          <h2>AI Decision</h2>
+        </div>
+        <div class="decision-box">
+          <div class="decision-row">
+            <span>Action</span>
+            <strong id="decisionAction">-</strong>
+          </div>
+          <div class="decision-row">
+            <span>Confidence</span>
+            <strong id="decisionConfidence">-</strong>
+          </div>
+          <div class="decision-row">
+            <span>Decision Source</span>
+            <strong id="decisionSource">-</strong>
+          </div>
+          <div class="decision-row">
+            <span>Strike</span>
+            <strong id="decisionStrike">-</strong>
+          </div>
+          <div class="decision-row">
+            <span id="decisionOptionLabel">Option</span>
+            <strong id="decisionOption">-</strong>
+          </div>
+          <p id="decisionReason" class="decision-reason">No decision yet.</p>
+        </div>
+        <div class="panel-header">
+          <h2>Pending Setup</h2>
+        </div>
+        <div id="pendingSetup" class="list-surface">
+          <div class="list-item empty-state">No pending setup locked.</div>
+        </div>
+      </article>
+    </section>
+
+    <section class="grid three-col uneven">
+      <article class="panel">
+        <div class="panel-header">
+          <h2>Liquidity Zones</h2>
+        </div>
+        <div id="liquidityZones" class="list-surface"></div>
+      </article>
+
+      <article class="panel">
+        <div class="panel-header">
+          <h2>Operator Zones</h2>
+        </div>
+        <div id="operatorZones" class="list-surface"></div>
+      </article>
+
+      <article class="panel">
+        <div class="panel-header">
+          <h2>Signal Tape</h2>
+        </div>
+        <div id="signalTape" class="list-surface"></div>
+      </article>
+    </section>
+
+    <section class="grid two-col">
+      <article class="panel">
+        <div class="panel-header">
+          <h2>Active Trade</h2>
+        </div>
+        <div id="activeTrade" class="trade-card empty-state">No active paper trade.</div>
+      </article>
+
+      <article class="panel">
+        <div class="panel-header">
+          <h2>Trade History</h2>
+        </div>
+        <div id="tradeHistory" class="list-surface"></div>
+      </article>
+    </section>
+
+    <section class="grid two-col">
+      <article class="panel">
+        <div class="panel-header">
+          <h2>Heuristic Narrative</h2>
+        </div>
+        <div id="heuristicNarrative" class="list-surface"></div>
+      </article>
+
+      <article class="panel">
+        <div class="panel-header">
+          <h2>Heuristic Trace</h2>
+        </div>
+        <div id="heuristicTrace" class="list-surface"></div>
+      </article>
+    </section>
+
+    <section class="grid two-col">
+      <article class="panel">
+        <div class="panel-header">
+          <h2>Rulebook</h2>
+        </div>
+        <pre id="rulebookView" class="markdown-surface"></pre>
+      </article>
+
+      <article class="panel">
+        <div class="panel-header">
+          <h2>Learning Log</h2>
+        </div>
+        <div id="learningLog" class="list-surface"></div>
+      </article>
+    </section>
+
+    <div id="toast" class="toast hidden"></div>
+  </main>
+
+  <script src="/static/app.js?v={{ static_version }}"></script>
+</body>
+</html>
