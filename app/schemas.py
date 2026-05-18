@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from enum import Enum
 
 from pydantic import BaseModel, Field
@@ -103,6 +103,28 @@ class InstrumentState(BaseModel):
     lot_size: int = 65
 
 
+class StockWatchItem(BaseModel):
+    symbol: str
+    label: str
+    security_id: str
+    selected: bool = False
+    subscribed: bool = False
+    last_ltp: float | None = None
+    last_tick_at: datetime | None = None
+    ticks_received: int = 0
+    history_status: str = "idle"
+    previous_day_candles: int = 0
+    intraday_candles: int = 0
+    total_loaded: int = 0
+    decision_action: str | None = None
+    decision_confidence: float | None = None
+    decision_reason: str | None = None
+    has_active_trade: bool = False
+    active_trade_direction: str | None = None
+    active_trade_pnl: float | None = None
+    realized_pnl: float = 0.0
+
+
 class StrategyContext(BaseModel):
     instrument: InstrumentState
     current_candle: Candle
@@ -115,8 +137,15 @@ class StrategyContext(BaseModel):
     operator_zones: list[Zone]
     signal_events: list[SignalEvent]
     market_structure: str = ""
+    companion_symbol: str | None = None
+    companion_current_candle: Candle | None = None
+    companion_recent_candles: list[Candle] = Field(default_factory=list)
+    companion_session_candles: list[Candle] = Field(default_factory=list)
+    companion_previous_day_candles: list[Candle] = Field(default_factory=list)
+    companion_previous_day: PreviousDayLevels = Field(default_factory=PreviousDayLevels)
     pending_setup: "PendingSetup | None" = None
     active_trade: "SimulatedTrade | None" = None
+    recent_closed_trades: list["SimulatedTrade"] = Field(default_factory=list)
     rulebook_markdown: str
 
 
@@ -129,6 +158,10 @@ class PendingSetup(BaseModel):
     strike: int | None = None
     trigger_price: float
     invalidation_level: float | None = None
+    target_spot_price: float | None = None
+    first_target_price: float | None = None
+    setup_score: float | None = None
+    market_state: str | None = None
     trigger_basis: str = "close_above"
     created_at: datetime
     updated_at: datetime
@@ -218,6 +251,13 @@ class SimulatedTrade(BaseModel):
     last_partial_exit_time: datetime | None = None
     pnl: float = 0.0
     notes: str = ""
+    broker_product_type: str | None = None
+    broker_order_id: str | None = None
+    broker_exit_order_id: str | None = None
+    broker_entry_correlation_id: str | None = None
+    broker_exit_correlation_id: str | None = None
+    broker_status: str | None = None
+    broker_status_message: str | None = None
 
 
 class RulebookUpdate(BaseModel):
@@ -250,8 +290,20 @@ class CredentialSummary(BaseModel):
     deepseek_model: str = "deepseek-v4-flash"
     full_ai_provider: FullAIProvider = FullAIProvider.openai
     operating_mode: OperatingMode = OperatingMode.full_ai
+    nifty_order_lots: int = 1
+    stock_trade_capital: float = 25000.0
+    nifty_expiry_preference: str = "current-weekly"
     storage_path: str
     last_updated: datetime | None = None
+
+
+class ExecutionState(BaseModel):
+    live_trading_enabled: bool = False
+    order_updates_connected: bool = False
+    order_updates_status: str = "disconnected"
+    order_updates_message: str | None = None
+    last_order_update_at: datetime | None = None
+    last_order_message: str | None = None
 
 
 class DataSyncState(BaseModel):
@@ -259,6 +311,8 @@ class DataSyncState(BaseModel):
     source: str = "sample"
     message: str | None = None
     last_synced_at: datetime | None = None
+    replay_session_day: date | None = None
+    previous_context_day: date | None = None
     previous_day_candles: int = 0
     intraday_candles: int = 0
     total_loaded: int = 0
@@ -275,7 +329,17 @@ class RulebookJobState(BaseModel):
     used_fallback: bool = False
 
 
+class OperationJobState(BaseModel):
+    job_id: str | None = None
+    job_type: str = "idle"
+    status: str = "idle"
+    message: str = "No background sync or replay job is running."
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+
+
 class DashboardState(BaseModel):
+    state_revision: int = 0
     mode: str
     instrument: InstrumentState
     operating_mode: OperatingMode
@@ -301,9 +365,12 @@ class DashboardState(BaseModel):
     unrealized_pnl: float
     ai_enabled: bool
     live_feed: LiveFeedState
+    execution: ExecutionState = Field(default_factory=ExecutionState)
     data_sync: DataSyncState
+    operation_job: OperationJobState = Field(default_factory=OperationJobState)
     rulebook_job: RulebookJobState
     credentials: CredentialSummary
+    stock_watchlist: list[StockWatchItem] = Field(default_factory=list)
 
 
 StrategyContext.model_rebuild()

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
-from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, Response, UploadFile, status
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import HTMLResponse
+from fastapi.middleware.gzip import GZipMiddleware
+from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -24,6 +26,7 @@ static_version = str(
     )
 )
 app = FastAPI(title=settings.app_title)
+app.add_middleware(GZipMiddleware, minimum_size=2048)
 app.mount("/static", StaticFiles(directory=app_dir / "static"), name="static")
 templates = Jinja2Templates(directory=str(app_dir / "templates"))
 engine = SimulationEngine(settings)
@@ -39,8 +42,31 @@ async def dashboard(request: Request) -> HTMLResponse:
 
 
 @app.get("/api/state")
-async def get_state():
-    return await run_in_threadpool(engine.get_state)
+async def get_state(request: Request):
+    revision = await run_in_threadpool(engine.get_state_revision)
+    current_etag = f'W/"state-{revision}"'
+    if request.headers.get("if-none-match") == current_etag:
+        return Response(status_code=status.HTTP_304_NOT_MODIFIED, headers={"ETag": current_etag})
+    state = await run_in_threadpool(engine.get_state)
+    etag = f'W/"state-{state.state_revision}"'
+    return Response(content=state.model_dump_json(), media_type="application/json", headers={"ETag": etag})
+
+
+@app.get("/api/state/stream")
+async def stream_state(request: Request):
+    async def event_stream():
+        last_revision = -1
+        while True:
+            if await request.is_disconnected():
+                break
+            revision = await run_in_threadpool(engine.wait_for_state_revision, last_revision, 15.0)
+            if revision > last_revision:
+                last_revision = revision
+                yield f"event: state\ndata: {json.dumps({'revision': revision})}\n\n"
+            else:
+                yield ": keep-alive\n\n"
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
 
 
 @app.get("/api/settings/credentials")
@@ -73,6 +99,42 @@ async def set_instrument_mode(instrument_mode: str = Form(...)):
     return {"message": f"Switched instrument mode to {state.instrument.label}.", "state": state}
 
 
+@app.get("/api/stocks/search")
+async def search_stocks(q: str = "", limit: int = 20):
+    try:
+        matches = await run_in_threadpool(engine.search_stocks, q, limit)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"results": matches}
+
+
+@app.post("/api/stocks/watchlist/add")
+async def add_stock_to_watchlist(symbol: str = Form(...)):
+    try:
+        state = await run_in_threadpool(engine.add_stock_to_watchlist, symbol)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"message": f"Added {state.instrument.symbol} to the stock watchlist.", "state": state}
+
+
+@app.post("/api/stocks/watchlist/select")
+async def select_stock(symbol: str = Form(...)):
+    try:
+        state = await run_in_threadpool(engine.select_stock, symbol)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"message": f"Selected {state.instrument.symbol} as the active stock.", "state": state}
+
+
+@app.post("/api/stocks/watchlist/remove")
+async def remove_stock_from_watchlist(symbol: str = Form(...)):
+    try:
+        state = await run_in_threadpool(engine.remove_stock_from_watchlist, symbol)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"message": f"Removed {symbol.strip().upper()} from the stock watchlist.", "state": state}
+
+
 @app.post("/api/simulation/step")
 async def step_simulation(steps: int = Form(default=1)):
     if steps < 1 or steps > 30:
@@ -84,15 +146,101 @@ async def step_simulation(steps: int = Form(default=1)):
 async def simulate_today(
     client_id: str = Form(default=""),
     access_token: str = Form(default=""),
+    decision_duration_minutes: int = Form(default=1),
 ):
     try:
-        state = await run_in_threadpool(engine.simulate_today_session, client_id=client_id, access_token=access_token)
+        state = await run_in_threadpool(
+            engine.simulate_today_session,
+            client_id=client_id,
+            access_token=access_token,
+            replay_decision_duration_minutes=decision_duration_minutes,
+        )
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {
         "message": (
-            f"Simulated today's closed 1-minute session candles for {state.instrument.label} "
-            f"with quantity {state.instrument.lot_size}."
+            f"Simulated closed 1-minute session candles for {state.instrument.label} "
+            f"using {decision_duration_minutes}-minute replay decisions."
+        ),
+        "state": state,
+    }
+
+
+@app.post("/api/simulation/today/start")
+async def start_simulate_today(
+    client_id: str = Form(default=""),
+    access_token: str = Form(default=""),
+    decision_duration_minutes: int = Form(default=1),
+):
+    try:
+        state = await run_in_threadpool(
+            engine.start_simulate_today_session_async,
+            client_id,
+            access_token,
+            decision_duration_minutes,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {
+        "message": (
+            f"Started background today replay for {state.instrument.label} "
+            f"using {decision_duration_minutes}-minute replay decisions."
+        ),
+        "state": state,
+    }
+
+
+@app.post("/api/simulation/historical")
+async def simulate_historical(
+    client_id: str = Form(default=""),
+    access_token: str = Form(default=""),
+    replay_date: str = Form(...),
+    previous_context_date: str = Form(...),
+    decision_duration_minutes: int = Form(default=1),
+):
+    try:
+        state = await run_in_threadpool(
+            engine.simulate_historical_session,
+            client_id=client_id,
+            access_token=access_token,
+            replay_date=replay_date,
+            previous_context_date=previous_context_date,
+            replay_decision_duration_minutes=decision_duration_minutes,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {
+        "message": (
+            f"Simulated historical 1-minute session candles for {state.instrument.label} "
+            f"using {decision_duration_minutes}-minute replay decisions."
+        ),
+        "state": state,
+    }
+
+
+@app.post("/api/simulation/historical/start")
+async def start_simulate_historical(
+    client_id: str = Form(default=""),
+    access_token: str = Form(default=""),
+    replay_date: str = Form(...),
+    previous_context_date: str = Form(...),
+    decision_duration_minutes: int = Form(default=1),
+):
+    try:
+        state = await run_in_threadpool(
+            engine.start_simulate_historical_session_async,
+            client_id=client_id,
+            access_token=access_token,
+            replay_date=replay_date,
+            previous_context_date=previous_context_date,
+            replay_decision_duration_minutes=decision_duration_minutes,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {
+        "message": (
+            f"Started background historical replay for {state.instrument.label} "
+            f"using {decision_duration_minutes}-minute replay decisions."
         ),
         "state": state,
     }
@@ -156,13 +304,43 @@ async def sync_live_history(
         state = await run_in_threadpool(engine.sync_dhan_context, client_id=client_id, access_token=access_token)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return {"message": f"Synced previous-day and today intraday 1-minute candles for {state.instrument.label} from Dhan.", "state": state}
+    return {"message": f"Synced previous-day and session 1-minute candles for {state.instrument.label} from Dhan.", "state": state}
+
+
+@app.post("/api/live/sync-history/start")
+async def start_sync_live_history(
+    client_id: str = Form(default=""),
+    access_token: str = Form(default=""),
+):
+    try:
+        state = await run_in_threadpool(engine.start_sync_dhan_context_async, client_id, access_token)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"message": f"Started background Dhan sync for {state.instrument.label}.", "state": state}
 
 
 @app.post("/api/live/disconnect")
 async def disconnect_live_feed():
     state = await run_in_threadpool(engine.disconnect_live_feed)
     return {"message": "Disconnected Dhan live feed.", "state": state}
+
+
+@app.post("/api/trading/start")
+async def start_live_trading():
+    try:
+        state = await run_in_threadpool(engine.start_live_trading)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"message": "Live heuristic trading is armed.", "state": state}
+
+
+@app.post("/api/trading/square-off")
+async def square_off_all_trades():
+    try:
+        state = await run_in_threadpool(engine.square_off_all_trades)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"message": "Square off requested and live heuristic trading stopped.", "state": state}
 
 
 @app.post("/api/settings/credentials")
@@ -175,21 +353,10 @@ async def save_credentials(
     deepseek_model: str = Form(default=""),
     full_ai_provider: str = Form(default=""),
     operating_mode: str = Form(default=""),
+    nifty_order_lots: int = Form(default=1),
+    stock_trade_capital: float = Form(default=25000.0),
+    nifty_expiry_preference: str = Form(default="current-weekly"),
 ):
-    if not any(
-        value.strip()
-        for value in (
-            client_id,
-            access_token,
-            openai_api_key,
-            openai_model,
-            deepseek_api_key,
-            deepseek_model,
-            full_ai_provider,
-            operating_mode,
-        )
-    ):
-        raise HTTPException(status_code=400, detail="Enter at least one setting to save")
     state = await run_in_threadpool(
         engine.save_credentials,
         client_id=client_id,
@@ -200,5 +367,8 @@ async def save_credentials(
         deepseek_model=deepseek_model,
         full_ai_provider=full_ai_provider,
         operating_mode=operating_mode,
+        nifty_order_lots=nifty_order_lots,
+        stock_trade_capital=stock_trade_capital,
+        nifty_expiry_preference=nifty_expiry_preference,
     )
-    return {"message": "Dhan, OpenAI, DeepSeek, and trading-mode settings saved locally for reuse.", "state": state}
+    return {"message": "Dhan, AI, sizing, expiry, and trading-mode settings saved locally for reuse.", "state": state}

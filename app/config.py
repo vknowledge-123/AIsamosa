@@ -15,10 +15,14 @@ class Settings(BaseSettings):
     dhan_access_token: str | None = None
     dhan_live_security_id: str = "13"
     simulation_lot_size: int = 65
+    nifty_order_lots: int = 1
+    stock_trade_capital: float = 25000.0
+    nifty_expiry_preference: str = "current-weekly"
     simulation_starting_balance: float = 250000.0
     simulation_max_risk_per_trade: float = 0.01
     simulation_max_open_trades: int = 1
     session_candle_limit: int = 90
+    stock_sync_max_workers: int = 4
 
     model_config = SettingsConfigDict(
         env_file=".env",

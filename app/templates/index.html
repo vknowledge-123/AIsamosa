@@ -10,11 +10,11 @@
   <main class="page-shell">
     <section class="hero-card">
       <div>
-        <p class="eyebrow">Paper Trading Simulator</p>
+        <p class="eyebrow">Heuristic Trading Console</p>
         <h1>{{ title }}</h1>
         <p class="hero-copy">
           Upload your SL-hunting notes and 1-minute market data, then step through each candle while the app
-          maps liquidity zones, operator zones, previous day levels, and AI-assisted paper trades for NIFTY or SBIN.
+          maps liquidity zones, operator zones, previous day levels, and heuristic or AI-assisted trades for NIFTY or searched NSE stocks.
         </p>
       </div>
       <div class="hero-metrics">
@@ -50,10 +50,21 @@
           <label>Instrument Mode</label>
           <select name="instrument_mode">
             <option value="nifty">NIFTY Mode</option>
-            <option value="stock">SBIN Stock Mode</option>
+            <option value="stock">Stock Universe Mode</option>
           </select>
           <button type="submit">Apply Instrument Mode</button>
         </form>
+        <form id="stockSearchForm" class="stack-form">
+          <label>Stock Search</label>
+          <input type="text" name="query" placeholder="Search symbols like SBIN, TCS, RELIANCE" />
+          <button type="submit">Search Stock Universe</button>
+        </form>
+        <div id="stockSearchResults" class="list-surface">
+          <div class="list-item empty-state">Search results will appear here in stock mode.</div>
+        </div>
+        <div id="stockWatchlist" class="list-surface">
+          <div class="list-item empty-state">The stock watchlist will appear here in stock mode.</div>
+        </div>
         <form id="liveConnectForm" class="stack-form">
           <label>Dhan Client ID</label>
           <input type="text" name="client_id" placeholder="Uses .env if left blank" />
@@ -62,6 +73,8 @@
           <div class="button-row">
             <button type="submit" id="connectLiveBtn">Connect Live Feed</button>
             <button type="button" id="syncHistoryBtn" class="secondary-btn">Sync Dhan 1m Context</button>
+            <button type="button" id="startTradingBtn">Start Trading</button>
+            <button type="button" id="squareOffBtn" class="secondary-btn">Square Off</button>
             <button type="button" id="disconnectLiveBtn" class="secondary-btn">Disconnect Feed</button>
           </div>
         </form>
@@ -89,12 +102,21 @@
             <p id="syncStatusValue">idle</p>
           </div>
           <div class="list-item">
+            <strong>Background Job</strong>
+            <p id="operationJobValue">idle</p>
+            <p id="operationJobMessage">No background sync or replay job is running.</p>
+          </div>
+          <div class="list-item">
             <strong>Sync Message</strong>
             <p id="syncMessageValue">No Dhan chart sync yet.</p>
           </div>
           <div class="list-item">
             <strong>Loaded Candles</strong>
             <p><span id="syncPreviousValue">0</span> previous day | <span id="syncIntradayValue">0</span> intraday | <span id="syncTotalValue">0</span> total</p>
+          </div>
+          <div class="list-item">
+            <strong>Replay Context</strong>
+            <p><span id="syncReplayDayValue">-</span> replay day | <span id="syncPreviousContextDayValue">-</span> previous context day</p>
           </div>
           <div class="list-item">
             <strong>Live Open Candle</strong>
@@ -107,6 +129,11 @@
           <div class="list-item">
             <strong>Feed Error</strong>
             <p id="liveErrorValue">None</p>
+          </div>
+          <div class="list-item">
+            <strong>Live Trading</strong>
+            <p id="executionEnabledValue">disabled</p>
+            <p id="executionStatusValue">Order updates disconnected.</p>
           </div>
         </div>
       </article>
@@ -121,6 +148,22 @@
           <button id="stepBtn">Step 1 Candle</button>
           <button id="runFiveBtn">Run 5 Candles</button>
         </div>
+        <form id="historicalReplayForm" class="stack-form">
+          <label>Replay Decision Duration</label>
+          <select name="decision_duration_minutes">
+            <option value="1">1 Minute</option>
+            <option value="3">3 Minutes</option>
+            <option value="5" selected>5 Minutes</option>
+            <option value="10">10 Minutes</option>
+            <option value="15">15 Minutes</option>
+          </select>
+          <label>Historical Replay Day</label>
+          <input type="date" name="replay_date" required />
+          <label>Previous-Day Context</label>
+          <input type="date" name="previous_context_date" required />
+          <button type="submit">Replay Selected Historical Session</button>
+          <p class="caption">Replay still loads 1-minute candles, but entries and exits use only completed candles of the selected duration.</p>
+        </form>
         <form id="candleUploadForm" class="stack-form">
           <label>Upload candle CSV</label>
           <input type="file" name="file" accept=".csv" required />
@@ -157,7 +200,17 @@
             <option value="full-ai">Full AI Mode</option>
             <option value="heuristic">Heuristic Mode</option>
           </select>
-          <button type="submit">Save Settings</button>
+          <label>Nifty Order Lots</label>
+          <input type="number" name="nifty_order_lots" min="1" step="1" value="1" />
+          <label>Stock Trade Capital</label>
+          <input type="number" name="stock_trade_capital" min="1" step="100" value="25000" />
+          <label>Nifty Expiry Preference</label>
+          <select name="nifty_expiry_preference">
+            <option value="current-weekly">Current Weekly</option>
+            <option value="next-weekly">Next Weekly</option>
+          </select>
+          <button type="submit">Save Now</button>
+          <p id="credentialSaveStatus" class="caption">Autosave idle. Changes save automatically.</p>
         </form>
         <div class="list-surface">
           <div class="list-item">
@@ -191,6 +244,18 @@
           <div class="list-item">
             <strong>Trading Decision Mode</strong>
             <p id="savedOperatingModeValue">full-ai</p>
+          </div>
+          <div class="list-item">
+            <strong>Nifty Order Lots</strong>
+            <p id="savedNiftyLotsValue">1</p>
+          </div>
+          <div class="list-item">
+            <strong>Stock Trade Capital</strong>
+            <p id="savedStockCapitalValue">25000</p>
+          </div>
+          <div class="list-item">
+            <strong>Nifty Expiry Preference</strong>
+            <p id="savedExpiryPreferenceValue">current-weekly</p>
           </div>
           <div class="list-item">
             <strong>Storage Path</strong>
@@ -256,7 +321,7 @@
         <div class="list-surface">
           <div class="list-item">
             <strong>Instrument source</strong>
-            <p id="instrumentNote">The live feed subscribes to the selected Dhan security in paper mode.</p>
+            <p id="instrumentNote">The live feed subscribes to the selected Dhan security with analysis mode armed.</p>
           </div>
           <div class="list-item">
             <strong>1-minute engine</strong>

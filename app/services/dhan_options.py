@@ -5,11 +5,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
-try:  # pragma: no cover - depends on installed SDK version
-    from dhanhq import DhanContext, dhanhq as DhanAPI
-except Exception:  # pragma: no cover - optional runtime dependency path
-    DhanContext = None
-    DhanAPI = None
+from app.services.dhan_compat import create_dhan_client
 
 
 class DhanOptionQuoteError(RuntimeError):
@@ -59,6 +55,7 @@ class DhanOptionQuoteService:
         option_type: str,
         reference_time: datetime,
         underlying_label: str = "NIFTY",
+        expiry_preference: str = "current-weekly",
     ) -> OptionContract:
         normalized_option_type = option_type.strip().upper()
         if normalized_option_type not in {"CE", "PE"}:
@@ -70,6 +67,7 @@ class DhanOptionQuoteService:
             underlying_security_id=underlying_security_id,
             underlying_segment=underlying_segment,
             reference_date=reference_time.date(),
+            preference=expiry_preference,
         )
         chain = self.get_option_chain(
             client_id=client_id,
@@ -166,6 +164,7 @@ class DhanOptionQuoteService:
         underlying_security_id: int,
         underlying_segment: str,
         reference_date: date,
+        preference: str = "current-weekly",
     ) -> date:
         cache_key = (underlying_security_id, underlying_segment)
         with self._lock:
@@ -181,10 +180,13 @@ class DhanOptionQuoteService:
                 expiries = [date.fromisoformat(value) for value in raw_expiries]
                 self._expiry_cache[cache_key] = (datetime.now(self.market_timezone), expiries)
 
-        for expiry in expiries:
-            if expiry >= reference_date:
-                return expiry
-        return expiries[-1]
+        future_expiries = [expiry for expiry in expiries if expiry >= reference_date]
+        if not future_expiries:
+            return expiries[-1]
+        normalized_preference = (preference or "current-weekly").strip().lower()
+        if normalized_preference == "next-weekly" and len(future_expiries) > 1:
+            return future_expiries[1]
+        return future_expiries[0]
 
     def get_option_chain(
         self,
@@ -217,10 +219,10 @@ class DhanOptionQuoteService:
         return chain
 
     def _client(self, client_id: str, access_token: str):
-        if DhanContext is None or DhanAPI is None:
-            raise DhanOptionQuoteError("dhanhq package is not available in this environment.")
-        context = DhanContext(client_id, access_token)
-        return DhanAPI(context)
+        try:
+            return create_dhan_client(client_id, access_token)
+        except RuntimeError as exc:
+            raise DhanOptionQuoteError(str(exc)) from exc
 
     def _find_strike_payload(self, chain: dict, strike: int) -> dict:
         exact_key = f"{float(strike):.6f}"

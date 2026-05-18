@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date, time as dt_time, timedelta
 from dataclasses import dataclass, field
 import math
 from statistics import median
 
-from app.schemas import Candle, PendingSetup, StrategyContext, TradeAction, TradeDecision
+from app.schemas import Candle, PendingSetup, SimulatedTrade, StrategyContext, TradeAction, TradeDecision
 
 
 @dataclass
@@ -48,6 +48,9 @@ class Observation:
     session_phase: str
     day_type: str
     value_state: str
+    range_state: str
+    participation_state: str
+    regime_quality: float
     previous_day_bias: str
     prior_close_psychology: str
     opening_confirmation: str
@@ -81,6 +84,8 @@ class Observation:
     mapped_sell_liquidity: list[tuple[str, float, bool]]
     buy_sweeps: list[SweepEvent]
     sell_sweeps: list[SweepEvent]
+    higher_timeframe_context: str = "neutral"
+    nifty_mid_noise: bool = False
 
 
 class HeuristicDecisionEngine:
@@ -88,6 +93,7 @@ class HeuristicDecisionEngine:
         self.enter_threshold = 68.0
         self.arm_threshold = 52.0
         self.pending_setup_max_bars = 10
+        self.previous_day_structure_window = 180
         self._current_session_date: date | None = None
         self._trace_entries: list[dict] = []
         self._narrative_events: list[dict] = []
@@ -142,7 +148,11 @@ class HeuristicDecisionEngine:
         previous_close_reclaim_short_ready = False
         if previous.close:
             tolerance = max(atr * 0.08, 0.15)
-            previous_close_touched = any(candle.low <= previous.close + tolerance and candle.high >= previous.close - tolerance for candle in session)
+            recent_interaction_window = session[-min(8, len(session)) :]
+            previous_close_touched = any(
+                candle.low <= previous.close + tolerance and candle.high >= previous.close - tolerance
+                for candle in recent_interaction_window
+            )
             recent_three = session[-3:] if len(session) >= 3 else session
             previous_close_reclaim_long_ready = previous_close_touched and current.close > previous.close and all(
                 candle.close >= previous.close - tolerance * 0.3 for candle in recent_three
@@ -157,6 +167,9 @@ class HeuristicDecisionEngine:
         session_phase = self.classify_session_phase(len(session))
         day_type = self.classify_day_type(context, atr, overlap_ratio, gap)
         value_state = self.classify_value_state(current.close, previous.close, vwap, atr)
+        range_state = self.classify_range_state(session, atr, overlap_ratio)
+        participation_state = self.classify_participation_state(session, previous.close, vwap, atr)
+        regime_quality = self.regime_quality_score(range_state, participation_state)
         previous_day_bias = self.classify_previous_day_bias(context.previous_day_candles)
         prior_close_psychology = self.classify_prior_close_psychology(context.previous_day_candles)
         opening_confirmation = self.classify_opening_confirmation(session, gap, atr)
@@ -166,7 +179,16 @@ class HeuristicDecisionEngine:
         two_sided_participation = self.detect_two_sided_participation(session)
         operator_bias = self.classify_operator_bias(context.operator_zones, current.close, atr)
         crowding_bias = self.classify_crowding_bias(session, current, atr, value_state)
-        mapped_buy_liquidity, mapped_sell_liquidity = self.build_liquidity_maps(session, current.close, atr)
+        mapped_buy_liquidity, mapped_sell_liquidity = self.build_liquidity_maps(
+            session,
+            context.previous_day_candles,
+            previous,
+            current.close,
+            atr,
+        )
+        allowed_liquidity_families = self._allowed_liquidity_families_for_context(context)
+        mapped_buy_liquidity = self._filter_liquidity_levels(mapped_buy_liquidity, allowed_liquidity_families)
+        mapped_sell_liquidity = self._filter_liquidity_levels(mapped_sell_liquidity, allowed_liquidity_families)
 
         buy_sweeps = self.detect_sweeps(
             session,
@@ -178,6 +200,7 @@ class HeuristicDecisionEngine:
             session_reference=max(candle.high for candle in session[:-1]) if len(session) > 1 else current.high,
             atr=atr,
             extra_levels=mapped_buy_liquidity,
+            allowed_families=allowed_liquidity_families,
         )
         sell_sweeps = self.detect_sweeps(
             session,
@@ -189,13 +212,19 @@ class HeuristicDecisionEngine:
             session_reference=min(candle.low for candle in session[:-1]) if len(session) > 1 else current.low,
             atr=atr,
             extra_levels=mapped_sell_liquidity,
+            allowed_families=allowed_liquidity_families,
         )
         stop_availability = self.assess_stop_availability(buy_sweeps, sell_sweeps)
+        higher_timeframe_context = self.higher_timeframe_context(context, atr)
+        nifty_mid_noise = self.is_nifty_mid_noise(context, atr, overlap_ratio, mapped_buy_liquidity, mapped_sell_liquidity)
 
         return Observation(
             session_phase=session_phase,
             day_type=day_type,
             value_state=value_state,
+            range_state=range_state,
+            participation_state=participation_state,
+            regime_quality=regime_quality,
             previous_day_bias=previous_day_bias,
             prior_close_psychology=prior_close_psychology,
             opening_confirmation=opening_confirmation,
@@ -229,6 +258,8 @@ class HeuristicDecisionEngine:
             mapped_sell_liquidity=mapped_sell_liquidity,
             buy_sweeps=buy_sweeps,
             sell_sweeps=sell_sweeps,
+            higher_timeframe_context=higher_timeframe_context,
+            nifty_mid_noise=nifty_mid_noise,
         )
 
     def classify_session_phase(self, candle_count: int) -> str:
@@ -277,6 +308,104 @@ class HeuristicDecisionEngine:
         if current_close >= anchor + atr * 0.35:
             return "inflated"
         return "fair"
+
+    def classify_range_state(self, session: list[Candle], atr: float, overlap_ratio: float) -> str:
+        if len(session) < 10:
+            return "balanced"
+        window = min(10, max(8, len(session) // 3))
+        recent = session[-window:]
+        prior = session[-window * 2 : -window]
+        if len(prior) < max(6, window - 2):
+            return "balanced"
+
+        recent_range = max(candle.high for candle in recent) - min(candle.low for candle in recent)
+        prior_range = max(candle.high for candle in prior) - min(candle.low for candle in prior)
+        recent_overlap = self._overlap_ratio(recent)
+        recent_high_extension = max(candle.high for candle in recent) > max(candle.high for candle in prior) + max(atr * 0.1, 0.1)
+        recent_low_extension = min(candle.low for candle in recent) < min(candle.low for candle in prior) - max(atr * 0.1, 0.1)
+        extension_count = int(recent_high_extension) + int(recent_low_extension)
+
+        if recent_range >= prior_range * 1.12 and recent_overlap <= 0.48 and extension_count >= 1:
+            return "expanding"
+        if recent_range <= prior_range * 0.92 and overlap_ratio >= 0.58 and recent_overlap >= 0.55 and extension_count == 0:
+            return "compressing"
+        return "balanced"
+
+    def classify_participation_state(self, session: list[Candle], previous_close: float, vwap: float, atr: float) -> str:
+        if len(session) < 10:
+            return "two_sided_active"
+        window = min(10, max(8, len(session) // 3))
+        recent = session[-window:]
+        prior = session[-window * 2 : -window]
+        anchor_tolerance = max(atr * 0.18, 0.2)
+        anchors = [vwap]
+        if previous_close:
+            anchors.append(previous_close)
+        closes_near_anchor = sum(
+            1
+            for candle in recent
+            if any(abs(candle.close - anchor) <= anchor_tolerance for anchor in anchors)
+        )
+        up_closes = sum(1 for candle in recent if candle.close > candle.open)
+        down_closes = sum(1 for candle in recent if candle.close < candle.open)
+        recent_displacement = abs(recent[-1].close - recent[0].open)
+        recent_overlap = self._overlap_ratio(recent)
+        recent_range = max(candle.high for candle in recent) - min(candle.low for candle in recent)
+
+        if closes_near_anchor >= max(4, window // 2) and recent_displacement <= atr * 1.1 and up_closes >= 3 and down_closes >= 3:
+            return "fair_value_churn"
+
+        if prior:
+            prior_range = max(candle.high for candle in prior) - min(candle.low for candle in prior)
+            prior_displacement = abs(prior[-1].close - prior[0].open)
+            if (
+                prior_displacement >= atr * 1.8
+                and recent_range <= max(prior_range * 0.72, atr * 0.9)
+                and recent_displacement <= atr
+                and recent_overlap >= 0.54
+            ):
+                return "post_trend_balance"
+
+        return "two_sided_active"
+
+    def regime_quality_score(self, range_state: str, participation_state: str) -> float:
+        range_scores = {
+            "expanding": 8.0,
+            "balanced": 0.0,
+            "compressing": -8.0,
+        }
+        participation_scores = {
+            "two_sided_active": 4.0,
+            "fair_value_churn": -10.0,
+            "post_trend_balance": -8.0,
+        }
+        return range_scores.get(range_state, 0.0) + participation_scores.get(participation_state, 0.0)
+
+    def apply_regime_filter(
+        self,
+        score: float,
+        notes: list[str],
+        rule_ids: list[str],
+        observation: Observation,
+    ) -> float:
+        if observation.range_state == "expanding":
+            notes.append("Recent range is expanding cleanly, so fresh follow-through is more believable here.")
+            rule_ids.extend(["R58", "R75", "R92", "R95"])
+        elif observation.range_state == "compressing":
+            notes.append("Recent range is compressing, so breakout follow-through risk is higher here.")
+            rule_ids.extend(["R55", "R60", "R91", "R95"])
+
+        if observation.participation_state == "fair_value_churn":
+            notes.append("Price is rotating near value, so fair-value churn reduces the edge of this setup.")
+            rule_ids.extend(["R21", "R50", "R55", "R91"])
+        elif observation.participation_state == "post_trend_balance":
+            notes.append("The earlier move has cooled into post-trend balance, so continuation trust is reduced.")
+            rule_ids.extend(["R54", "R55", "R74", "R90", "R91"])
+        elif observation.participation_state == "two_sided_active":
+            notes.append("Two-sided active participation supports a cleaner SL-hunting move.")
+            rule_ids.extend(["R58", "R68", "R77", "R78"])
+
+        return score + observation.regime_quality
 
     def classify_previous_day_bias(self, previous_day_candles: list[Candle]) -> str:
         if not previous_day_candles:
@@ -378,6 +507,8 @@ class HeuristicDecisionEngine:
     def build_liquidity_maps(
         self,
         session: list[Candle],
+        previous_day_candles: list[Candle],
+        previous_day,
         current_close: float,
         atr: float,
     ) -> tuple[list[tuple[str, float, bool]], list[tuple[str, float, bool]]]:
@@ -461,7 +592,82 @@ class HeuristicDecisionEngine:
                     tolerance=max(tolerance, round_tolerance * 0.6),
                 )
 
-        return buy_levels[:8], sell_levels[:8]
+        for label, price, primary in self._pivot_liquidity_levels(previous_day):
+            target_levels = buy_levels if label in {"Pivot Point", "Pivot R1", "Pivot R2"} else sell_levels
+            self._append_liquidity_level(
+                target_levels,
+                label=label,
+                price=price,
+                primary=primary,
+                tolerance=max(tolerance, atr * 0.18),
+            )
+
+        previous_day_window = previous_day_candles[-self.previous_day_structure_window :]
+        previous_day_ranges = [max(candle.high - candle.low, 0.01) for candle in previous_day_window] or [atr]
+        previous_day_atr = median(previous_day_ranges)
+        prev_tolerance = max(previous_day_atr * 0.12, 0.2)
+        prev_swing_highs, prev_swing_lows = self._detect_session_swings(previous_day_candles, previous_day_atr)
+        for label, price in prev_swing_highs[-3:]:
+            self._append_liquidity_level(
+                buy_levels,
+                label=f"Previous-Day Swing High {label}",
+                price=price,
+                primary=False,
+                tolerance=prev_tolerance,
+            )
+        for label, price in prev_swing_lows[-3:]:
+            self._append_liquidity_level(
+                sell_levels,
+                label=f"Previous-Day Swing Low {label}",
+                price=price,
+                primary=False,
+                tolerance=prev_tolerance,
+            )
+
+        prev_high_clusters = sorted(
+            self._cluster_price_levels([candle.high for candle in previous_day_candles], prev_tolerance),
+            key=lambda item: (item[1], item[0]),
+            reverse=True,
+        )
+        prev_low_clusters = sorted(
+            self._cluster_price_levels([candle.low for candle in previous_day_candles], prev_tolerance),
+            key=lambda item: (item[1], -item[0]),
+        )
+        for cluster_price, touches in prev_high_clusters[:2]:
+            self._append_liquidity_level(
+                buy_levels,
+                label=f"Previous-Day Resistance Shelf ({touches} touches)",
+                price=cluster_price,
+                primary=True,
+                tolerance=prev_tolerance,
+            )
+        for cluster_price, touches in prev_low_clusters[:2]:
+            self._append_liquidity_level(
+                sell_levels,
+                label=f"Previous-Day Support Shelf ({touches} touches)",
+                price=cluster_price,
+                primary=True,
+                tolerance=prev_tolerance,
+            )
+
+        return buy_levels[:12], sell_levels[:12]
+
+    def _pivot_liquidity_levels(self, previous_day) -> list[tuple[str, float, bool]]:
+        if not previous_day.high or not previous_day.low or not previous_day.close:
+            return []
+        pivot = (previous_day.high + previous_day.low + previous_day.close) / 3
+        day_range = previous_day.high - previous_day.low
+        r1 = (2 * pivot) - previous_day.low
+        s1 = (2 * pivot) - previous_day.high
+        r2 = pivot + day_range
+        s2 = pivot - day_range
+        return [
+            ("Pivot Point", round(pivot, 2), True),
+            ("Pivot R1", round(r1, 2), True),
+            ("Pivot R2", round(r2, 2), False),
+            ("Pivot S1", round(s1, 2), True),
+            ("Pivot S2", round(s2, 2), False),
+        ]
 
     def _detect_session_swings(self, session: list[Candle], atr: float) -> tuple[list[tuple[str, float]], list[tuple[str, float]]]:
         if len(session) < 3:
@@ -516,11 +722,45 @@ class HeuristicDecisionEngine:
     ) -> None:
         if not price:
             return
+        label_family = self._label_family(label)
         for existing_label, existing_price, _ in levels:
-            same_family = existing_label.split()[0] == label.split()[0]
+            same_family = self._label_family(existing_label) == label_family
             if existing_label == label or (same_family and abs(existing_price - price) <= tolerance):
                 return
         levels.append((label, round(price, 2), primary))
+
+    def _label_family(self, label: str) -> str:
+        lowered = label.lower()
+        families = (
+            "round number",
+            "equal high cluster",
+            "equal low cluster",
+            "same-day swing high",
+            "same-day swing low",
+            "previous-day swing high",
+            "previous-day swing low",
+            "previous-day resistance shelf",
+            "previous-day support shelf",
+            "pivot point",
+            "pivot r1",
+            "pivot r2",
+            "pivot s1",
+            "pivot s2",
+            "previous day high",
+            "previous day low",
+            "opening range high",
+            "opening range low",
+            "first 15m high",
+            "first 15m low",
+            "prior hour high",
+            "prior hour low",
+            "session extreme",
+        )
+        for family in families:
+            if lowered.startswith(family):
+                return family
+        parts = label.split()
+        return " ".join(parts[:2]).lower() if len(parts) >= 2 else lowered
 
     def _round_number_step(self, reference_price: float) -> float:
         absolute = abs(reference_price)
@@ -529,6 +769,493 @@ class HeuristicDecisionEngine:
         if absolute >= 100:
             return 10.0
         return 5.0
+
+    def _is_nifty_mode(self, context: StrategyContext) -> bool:
+        return context.instrument.symbol == "NIFTY" and context.instrument.supports_options
+
+    def _aggregate_session_candles(self, session: list[Candle], timeframe_minutes: int) -> list[Candle]:
+        if not session:
+            return []
+        anchor = session[0].timestamp
+        buckets: list[Candle] = []
+        current_bucket: Candle | None = None
+        current_bucket_start = anchor
+        for candle in session:
+            minutes_from_anchor = int((candle.timestamp - anchor).total_seconds() // 60)
+            bucket_start = anchor + timedelta(minutes=(minutes_from_anchor // timeframe_minutes) * timeframe_minutes)
+            if current_bucket is None or bucket_start != current_bucket_start:
+                if current_bucket is not None:
+                    buckets.append(current_bucket)
+                current_bucket_start = bucket_start
+                current_bucket = Candle(
+                    timestamp=bucket_start,
+                    open=candle.open,
+                    high=candle.high,
+                    low=candle.low,
+                    close=candle.close,
+                    volume=candle.volume,
+                )
+                continue
+            current_bucket.high = max(current_bucket.high, candle.high)
+            current_bucket.low = min(current_bucket.low, candle.low)
+            current_bucket.close = candle.close
+            current_bucket.volume += candle.volume
+        if current_bucket is not None:
+            buckets.append(current_bucket)
+        return buckets
+
+    def higher_timeframe_context(self, context: StrategyContext, atr: float) -> str:
+        if not self._is_nifty_mode(context):
+            return "neutral"
+        fifteen = self._aggregate_session_candles(context.session_candles, 15)
+        thirty = self._aggregate_session_candles(context.session_candles, 30)
+        bias_15 = self._classify_higher_timeframe_bias(fifteen, atr)
+        bias_30 = self._classify_higher_timeframe_bias(thirty, atr)
+        if bias_30.endswith("trend") and bias_30 == bias_15:
+            return bias_30
+        if bias_15 != "neutral":
+            return bias_15
+        return bias_30
+
+    def _classify_higher_timeframe_bias(self, candles: list[Candle], atr: float) -> str:
+        if len(candles) < 2:
+            return "neutral"
+        recent = candles[-3:]
+        last = recent[-1]
+        previous = recent[-2]
+        ranges = [max(candle.high - candle.low, 0.01) for candle in recent]
+        htf_atr = median(ranges) if ranges else max(atr, 1.0)
+        displacement = last.close - recent[0].open
+        bullish_structure = last.high >= previous.high and last.low >= previous.low - htf_atr * 0.15
+        bearish_structure = last.low <= previous.low and last.high <= previous.high + htf_atr * 0.15
+        if bullish_structure and displacement > htf_atr * 0.85 and last.close > previous.close:
+            return "bullish_trend"
+        if bearish_structure and displacement < -htf_atr * 0.85 and last.close < previous.close:
+            return "bearish_trend"
+        if (
+            previous.close < previous.open
+            and last.close > last.open
+            and last.close > previous.high
+            and displacement > htf_atr * 0.45
+        ):
+            return "bullish_reversal"
+        if (
+            previous.close > previous.open
+            and last.close < last.open
+            and last.close < previous.low
+            and displacement < -htf_atr * 0.45
+        ):
+            return "bearish_reversal"
+        return "range"
+
+    def is_nifty_mid_noise(
+        self,
+        context: StrategyContext,
+        atr: float,
+        overlap_ratio: float,
+        mapped_buy_liquidity: list[tuple[str, float, bool]],
+        mapped_sell_liquidity: list[tuple[str, float, bool]],
+    ) -> bool:
+        if not self._is_nifty_mode(context):
+            return False
+        current_close = context.current_candle.close
+        lower_levels = [price for _, price, _ in mapped_sell_liquidity if price < current_close]
+        upper_levels = [price for _, price, _ in mapped_buy_liquidity if price > current_close]
+        if not lower_levels or not upper_levels:
+            return False
+        nearest_lower = max(lower_levels)
+        nearest_upper = min(upper_levels)
+        pocket_width = nearest_upper - nearest_lower
+        low_atr = atr <= max(self._round_number_step(current_close) * 0.36, 18.0)
+        pinned_between_liquidity = (
+            current_close - nearest_lower <= max(atr * 0.85, 12.0)
+            and nearest_upper - current_close <= max(atr * 0.85, 12.0)
+            and pocket_width <= max(atr * 1.7, 26.0)
+        )
+        return low_atr and overlap_ratio >= 0.7 and pinned_between_liquidity
+
+    def _nifty_higher_timeframe_allows(self, context: StrategyContext, observation: Observation, option_type: str) -> bool:
+        if not self._is_nifty_mode(context):
+            return True
+        htf = observation.higher_timeframe_context
+        if option_type == "CE":
+            return htf not in {"bearish_trend"}
+        return htf not in {"bullish_trend"}
+
+    def _stock_early_retest_entry(
+        self,
+        context: StrategyContext,
+        observation: Observation,
+        event: SweepEvent,
+        *,
+        option_type: str,
+        setup_type: str,
+        current: Candle,
+        reclaim_candle: Candle,
+        current_strength: float,
+        reclaim_strength: float,
+        hold_count: int,
+        continuation_count: int,
+    ) -> bool:
+        if context.instrument.supports_options:
+            return False
+        if not event.primary or setup_type not in {"bullish_reclaim_watch", "bearish_rejection_watch"}:
+            return False
+        if hold_count < 1 or continuation_count > 0 or observation.weak_intent:
+            return False
+        if current_strength < 0.3 or reclaim_strength < 0.55:
+            return False
+        if option_type == "CE":
+            shallow_retest = (
+                current.low >= event.defended_level - observation.atr * 0.14
+                and current.low <= reclaim_candle.high + observation.atr * 0.12
+            )
+            near_session_low = abs(event.sweep_price - observation.session_low) <= max(observation.atr * 0.28, 0.2)
+            return (
+                shallow_retest
+                and near_session_low
+                and current.close > event.defended_level
+                and current.close > current.open
+                and current.close >= reclaim_candle.close - observation.atr * 0.08
+            )
+        shallow_retest = (
+            current.high <= event.defended_level + observation.atr * 0.14
+            and current.high >= reclaim_candle.low - observation.atr * 0.12
+        )
+        near_session_high = abs(event.sweep_price - observation.session_high) <= max(observation.atr * 0.28, 0.2)
+        return (
+            shallow_retest
+            and near_session_high
+            and current.close < event.defended_level
+            and current.close < current.open
+            and current.close <= reclaim_candle.close + observation.atr * 0.08
+        )
+
+    def _recent_profitable_stock_trade(
+        self,
+        context: StrategyContext,
+        *,
+        direction: str,
+    ) -> SimulatedTrade | None:
+        if context.instrument.supports_options:
+            return None
+        for trade in context.recent_closed_trades:
+            if trade.direction != direction or trade.status != "CLOSED":
+                continue
+            if (trade.booked_pnl or trade.pnl) <= 0:
+                continue
+            return trade
+        return None
+
+    def build_stock_continuation_candidates(self, context: StrategyContext, observation: Observation) -> list[SetupCandidate]:
+        if context.instrument.supports_options:
+            return []
+        session = context.session_candles
+        if len(session) < 8:
+            return []
+        current = context.current_candle
+        recent = session[-4:]
+        anchor_window = session[-8:-3]
+        if not anchor_window:
+            return []
+        current_strength = self.candle_strength(current)
+        recent_pullback_low = min(candle.low for candle in recent)
+        recent_pullback_high = max(candle.high for candle in recent)
+        breakout_shelf_high = max(candle.high for candle in anchor_window)
+        breakout_shelf_low = min(candle.low for candle in anchor_window)
+        bullish_candidate: SetupCandidate | None = None
+        bearish_candidate: SetupCandidate | None = None
+
+        recent_bullish_winner = self._recent_profitable_stock_trade(context, direction="LONG_STOCK")
+        recent_bearish_winner = self._recent_profitable_stock_trade(context, direction="SHORT_STOCK")
+
+        strong_bullish_trend = (
+            observation.day_type in {"gap-and-go", "trend-day"}
+            or (current.close - session[0].open) > observation.atr * 2.0
+        )
+        bullish_pullback_holding = (
+            strong_bullish_trend
+            and recent_pullback_low >= breakout_shelf_high - observation.atr * 0.4
+            and current.close >= breakout_shelf_high
+            and current.close > current.open
+            and current_strength >= 0.42
+            and observation.value_state != "inflated"
+        )
+        if bullish_pullback_holding:
+            score = 58.0
+            notes = [
+                "Breakout pullback held above the recent breakout shelf without needing a brand-new full sweep.",
+                "Stock mode allows same-trend continuation entries in strong gainers once the first defended pullback is accepted.",
+            ]
+            rule_ids = ["R107", "R108", "R109"]
+            if recent_bullish_winner is not None:
+                score += 8
+                notes.append("A recent profitable long was stopped or closed, so same-trend re-entry is allowed on the first clean pullback.")
+                rule_ids.append("R110")
+            if observation.strong_intent:
+                score += 6
+            if observation.two_sided_participation:
+                score += 3
+            if observation.stop_availability == "partially-cleared":
+                score += 3
+            risk = max(current.close - recent_pullback_low, observation.atr * 0.75)
+            target_spot = self.next_upside_target(context, current.close, risk)
+            room = target_spot - current.close
+            if room >= risk * 1.5:
+                score += 8
+                notes.append("There is still enough room for continuation toward the next liquidity shelf.")
+            else:
+                score -= 10
+                notes.append("Continuation room is too tight versus the pullback risk.")
+            event = SweepEvent(
+                side="sell",
+                level_label=f"Breakout Pullback Shelf {breakout_shelf_high:.2f}",
+                level_price=round(breakout_shelf_high, 2),
+                sweep_index=max(len(session) - 4, 0),
+                reclaim_index=len(session) - 1,
+                trigger_index=len(session) - 1,
+                sweep_price=round(recent_pullback_low, 2),
+                defended_level=round(breakout_shelf_high, 2),
+                trigger_price=round(current.close, 2),
+                invalidation_level=round(recent_pullback_low - observation.atr * 0.18, 2),
+                primary=True,
+                quality="tradable",
+                notes=list(notes),
+            )
+            bullish_candidate = SetupCandidate(
+                setup_type="stock_breakout_pullback_long",
+                direction="LONG_CALL",
+                option_type="CE",
+                trigger_basis="close_above",
+                trigger_price=round(max(breakout_shelf_high, current.low), 2),
+                invalidation_level=round(recent_pullback_low - observation.atr * 0.18, 2),
+                defended_level=round(breakout_shelf_high, 2),
+                target_spot_price=round(target_spot, 2),
+                first_target_price=round(current.close + risk, 2),
+                score=max(0.0, min(score, 100.0)),
+                ready_to_enter=True,
+                notes=notes,
+                rule_ids=rule_ids,
+                event=event,
+            )
+
+        strong_bearish_trend = (
+            observation.day_type in {"gap-and-go", "trend-day"}
+            or (session[0].open - current.close) > observation.atr * 2.0
+        )
+        bearish_pullback_holding = (
+            strong_bearish_trend
+            and recent_pullback_high <= breakout_shelf_low + observation.atr * 0.4
+            and current.close <= breakout_shelf_low
+            and current.close < current.open
+            and current_strength >= 0.42
+            and observation.value_state != "discount"
+        )
+        if bearish_pullback_holding:
+            score = 58.0
+            notes = [
+                "Breakdown pullback held below the recent breakdown shelf without needing a brand-new full sweep.",
+                "Stock mode allows same-trend continuation entries in strong losers once the first defended pullback is accepted.",
+            ]
+            rule_ids = ["R107", "R108", "R109"]
+            if recent_bearish_winner is not None:
+                score += 8
+                notes.append("A recent profitable short was stopped or closed, so same-trend re-entry is allowed on the first clean pullback.")
+                rule_ids.append("R110")
+            if observation.strong_intent:
+                score += 6
+            if observation.two_sided_participation:
+                score += 3
+            if observation.stop_availability == "partially-cleared":
+                score += 3
+            risk = max(recent_pullback_high - current.close, observation.atr * 0.75)
+            target_spot = self.next_downside_target(context, current.close, risk)
+            room = current.close - target_spot
+            if room >= risk * 1.5:
+                score += 8
+                notes.append("There is still enough room for continuation toward the next downside liquidity shelf.")
+            else:
+                score -= 10
+                notes.append("Continuation room is too tight versus the pullback risk.")
+            event = SweepEvent(
+                side="buy",
+                level_label=f"Breakdown Pullback Shelf {breakout_shelf_low:.2f}",
+                level_price=round(breakout_shelf_low, 2),
+                sweep_index=max(len(session) - 4, 0),
+                reclaim_index=len(session) - 1,
+                trigger_index=len(session) - 1,
+                sweep_price=round(recent_pullback_high, 2),
+                defended_level=round(breakout_shelf_low, 2),
+                trigger_price=round(current.close, 2),
+                invalidation_level=round(recent_pullback_high + observation.atr * 0.18, 2),
+                primary=True,
+                quality="tradable",
+                notes=list(notes),
+            )
+            bearish_candidate = SetupCandidate(
+                setup_type="stock_breakout_pullback_short",
+                direction="LONG_PUT",
+                option_type="PE",
+                trigger_basis="close_below",
+                trigger_price=round(min(breakout_shelf_low, current.high), 2),
+                invalidation_level=round(recent_pullback_high + observation.atr * 0.18, 2),
+                defended_level=round(breakout_shelf_low, 2),
+                target_spot_price=round(target_spot, 2),
+                first_target_price=round(current.close - risk, 2),
+                score=max(0.0, min(score, 100.0)),
+                ready_to_enter=True,
+                notes=notes,
+                rule_ids=rule_ids,
+                event=event,
+            )
+
+        return [candidate for candidate in (bullish_candidate, bearish_candidate) if candidate is not None]
+
+    def _nifty_round_distance_adjustment(self, observation: Observation, level_label: str, sweep_price: float, level_price: float) -> tuple[float, str | None]:
+        if "round number" not in level_label.lower():
+            return 0.0, None
+        distance = abs(sweep_price - level_price)
+        if distance <= 6:
+            return 7.0, "Sweep tagged the round number very tightly, which strengthens the Nifty reversal read."
+        if distance <= 10:
+            return 5.0, "Sweep stayed very close to the round number, which still gives strong liquidity relevance."
+        if distance <= 15:
+            return 2.0, "Sweep was near the round number, but not perfectly tight."
+        if distance <= 20:
+            return -2.0, "Sweep front-ran the round number a bit, so conviction is slightly reduced."
+        return -6.0, "Sweep missed the round number by too much, so the liquidity read is less precise."
+
+    def _nifty_retest_quality_adjustment(
+        self,
+        context: StrategyContext,
+        observation: Observation,
+        event: SweepEvent,
+        option_type: str,
+        reclaim_candle: Candle,
+    ) -> tuple[float, str | None]:
+        if not self._is_nifty_mode(context) or event.reclaim_index is None:
+            return 0.0, None
+        retest_slice = context.session_candles[event.reclaim_index + 1 : min(len(context.session_candles), event.reclaim_index + 3)]
+        if not retest_slice:
+            return 0.0, None
+        reclaimed_range = max(abs(reclaim_candle.close - event.defended_level), observation.atr * 0.15)
+        if option_type == "CE":
+            deepest_retest = min(candle.low for candle in retest_slice)
+            retest_depth = max(0.0, event.defended_level - deepest_retest)
+            held = all(candle.close >= event.defended_level - observation.atr * 0.05 for candle in retest_slice)
+        else:
+            highest_retest = max(candle.high for candle in retest_slice)
+            retest_depth = max(0.0, highest_retest - event.defended_level)
+            held = all(candle.close <= event.defended_level + observation.atr * 0.05 for candle in retest_slice)
+        if held and retest_depth <= max(observation.atr * 0.18, reclaimed_range * 0.45):
+            return 7.0, "Retest stayed shallow and held, which improves the Nifty trap quality."
+        if retest_depth >= max(observation.atr * 0.45, reclaimed_range * 0.95):
+            return -8.0, "Retest dug too deeply back into the level, so the Nifty reversal is less clean."
+        return 0.0, None
+
+    def _nifty_htf_score_adjustment(self, context: StrategyContext, observation: Observation, option_type: str) -> tuple[float, str | None]:
+        if not self._is_nifty_mode(context):
+            return 0.0, None
+        htf = observation.higher_timeframe_context
+        if option_type == "CE":
+            if htf == "bullish_trend":
+                return 6.0, "Higher timeframe bias is bullish, so the Nifty long setup is aligned."
+            if htf == "bullish_reversal":
+                return 4.0, "Higher timeframe has already shifted into bullish reversal context."
+            if htf == "range":
+                return -2.0, "Higher timeframe is still range-bound, so this Nifty long needs extra care."
+        else:
+            if htf == "bearish_trend":
+                return 6.0, "Higher timeframe bias is bearish, so the Nifty short setup is aligned."
+            if htf == "bearish_reversal":
+                return 4.0, "Higher timeframe has already shifted into bearish reversal context."
+            if htf == "range":
+                return -2.0, "Higher timeframe is still range-bound, so this Nifty short needs extra care."
+        return 0.0, None
+
+    def _companion_bank_confirmation(
+        self,
+        bank_session: list[Candle],
+        bank_round: float,
+        option_type: str,
+        bank_atr: float,
+    ) -> tuple[bool, list[str]]:
+        if len(bank_session) < 4:
+            return False, []
+        notes: list[str] = []
+        if option_type == "CE":
+            probe_index = min(range(len(bank_session)), key=lambda index: bank_session[index].low)
+            reclaim_index = next(
+                (
+                    index
+                    for index in range(probe_index, len(bank_session))
+                    if bank_session[index].close > bank_round and bank_session[index].close > bank_session[index].open
+                ),
+                None,
+            )
+            if reclaim_index is None:
+                return False, notes
+            reclaim_candle = bank_session[reclaim_index]
+            if self.candle_strength(reclaim_candle) < 0.5:
+                return False, notes
+            follow_through = any(
+                candle.close >= max(bank_round, reclaim_candle.close - bank_atr * 0.08)
+                and candle.high >= reclaim_candle.high - bank_atr * 0.1
+                and self.candle_strength(candle) >= 0.42
+                for candle in bank_session[reclaim_index + 1 : reclaim_index + 3]
+            )
+            if not follow_through:
+                return False, notes
+            notes.extend(
+                [
+                    "Bank Nifty reclaimed the round number with a strong body.",
+                    "Bank Nifty follow-through held after the reclaim, so the confirmation is not just a touch-and-bounce.",
+                ]
+            )
+            return True, notes
+        probe_index = max(range(len(bank_session)), key=lambda index: bank_session[index].high)
+        reclaim_index = next(
+            (
+                index
+                for index in range(probe_index, len(bank_session))
+                if bank_session[index].close < bank_round and bank_session[index].close < bank_session[index].open
+            ),
+            None,
+        )
+        if reclaim_index is None:
+            return False, notes
+        reclaim_candle = bank_session[reclaim_index]
+        if self.candle_strength(reclaim_candle) < 0.5:
+            return False, notes
+        follow_through = any(
+            candle.close <= min(bank_round, reclaim_candle.close + bank_atr * 0.08)
+            and candle.low <= reclaim_candle.low + bank_atr * 0.1
+            and self.candle_strength(candle) >= 0.42
+            for candle in bank_session[reclaim_index + 1 : reclaim_index + 3]
+        )
+        if not follow_through:
+            return False, notes
+        notes.extend(
+            [
+                "Bank Nifty rejected the round number with a strong body.",
+                "Bank Nifty follow-through held after the rejection, so the confirmation is not just a touch-and-bounce.",
+            ]
+        )
+        return True, notes
+
+    def _allowed_liquidity_families_for_context(self, context: StrategyContext) -> tuple[str, ...] | None:
+        if context.instrument.symbol == "NIFTY" and context.instrument.supports_options:
+            return ("previous day high", "previous day low", "round number", "session extreme")
+        return None
+
+    def _filter_liquidity_levels(
+        self,
+        levels: list[tuple[str, float, bool]],
+        allowed_families: tuple[str, ...] | None,
+    ) -> list[tuple[str, float, bool]]:
+        if allowed_families is None:
+            return levels
+        return [level for level in levels if self._label_family(level[0]) in allowed_families]
 
     def detect_sweeps(
         self,
@@ -542,6 +1269,7 @@ class HeuristicDecisionEngine:
         session_reference: float,
         atr: float,
         extra_levels: list[tuple[str, float, bool]],
+        allowed_families: tuple[str, ...] | None = None,
     ) -> list[SweepEvent]:
         events: list[SweepEvent] = []
         tolerance = max(atr * 0.08, 0.15)
@@ -555,6 +1283,8 @@ class HeuristicDecisionEngine:
         levels.extend(extra_levels)
         for level_label, level_price, primary in levels:
             if not level_price:
+                continue
+            if allowed_families is not None and self._label_family(level_label) not in allowed_families:
                 continue
             event = self._find_latest_sweep(session, side=side, level_label=level_label, level_price=level_price, atr=atr, tolerance=tolerance, primary=primary)
             if event is not None:
@@ -654,14 +1384,109 @@ class HeuristicDecisionEngine:
         body = abs(candle.close - candle.open)
         return body / candle_range
 
+    def entry_thresholds_for_timestamp(self, timestamp) -> tuple[float, float, bool]:
+        current_time = timestamp.time()
+        if current_time >= dt_time(14, 0):
+            return 999.0, 999.0, True
+        return self.enter_threshold, self.arm_threshold, False
+
+    def _is_obvious_stop_pool_label(self, label: str) -> bool:
+        lowered = label.lower()
+        obvious_families = (
+            "previous day high",
+            "previous day low",
+            "opening range high",
+            "opening range low",
+            "first 15m high",
+            "first 15m low",
+            "equal high cluster",
+            "equal low cluster",
+            "round number",
+            "pivot point",
+            "pivot r1",
+            "pivot r2",
+            "pivot s1",
+            "pivot s2",
+            "previous-day swing high",
+            "previous-day swing low",
+            "previous-day resistance shelf",
+            "previous-day support shelf",
+        )
+        return lowered.startswith(obvious_families)
+
+    def _opening_shock_metrics(self, session: list[Candle], observation: Observation) -> tuple[float, float, bool]:
+        if not session:
+            return 0.0, 0.0, False
+        first_candle = session[0]
+        atr = max(observation.atr, 0.01)
+        first_candle_range_r = (first_candle.high - first_candle.low) / atr
+        gap_r = abs(observation.gap) / atr
+        opening_shock = first_candle_range_r >= 4.5 or gap_r >= 3.5
+        return first_candle_range_r, gap_r, opening_shock
+
+    def _is_gap_reset_trap_direction(self, observation: Observation, option_type: str) -> bool:
+        return (
+            option_type == "CE" and observation.opening_confirmation == "gap-up-trap-risk"
+        ) or (
+            option_type == "PE" and observation.opening_confirmation == "gap-down-trap-risk"
+        )
+
+    def _is_major_upper_reference_label(self, label: str) -> bool:
+        lowered = label.lower()
+        upper_reference_families = (
+            "previous day high",
+            "opening range high",
+            "first 15m high",
+            "prior hour high",
+            "equal high cluster",
+            "round number",
+            "pivot point",
+            "pivot r1",
+            "pivot r2",
+            "previous-day swing high",
+            "previous-day resistance shelf",
+        )
+        return lowered.startswith(upper_reference_families)
+
+    def _classify_reclaim_setup_type(
+        self,
+        *,
+        option_type: str,
+        event: SweepEvent,
+        confluence_labels: list[str],
+        session_length: int,
+    ) -> str:
+        meaningful_sweep = event.primary or self._is_obvious_stop_pool_label(event.level_label) or any(
+            self._is_obvious_stop_pool_label(label) for label in confluence_labels
+        )
+        fresh_primary_sweep = event.primary and event.reclaim_index is not None and event.reclaim_index >= max(0, session_length - 3)
+        if option_type == "CE":
+            return "bullish_reclaim_watch" if fresh_primary_sweep else "bullish_pullback_continuation"
+        if fresh_primary_sweep:
+            return "bearish_rejection_watch"
+        return "bearish_rejection_watch" if meaningful_sweep and event.primary else "bearish_pullback_continuation"
+
     def decide_entry(self, context: StrategyContext, observation: Observation, candidates: list[SetupCandidate] | None = None) -> TradeDecision:
         candidates = candidates if candidates is not None else self.build_candidates(context, observation)
         if context.pending_setup is not None:
             pending_decision = self.evaluate_pending_setup(context, observation, candidates)
             if pending_decision is not None:
                 return pending_decision
+        if self._is_nifty_mode(context) and observation.nifty_mid_noise:
+            return TradeDecision(
+                action=TradeAction.no_trade,
+                confidence=0.44,
+                reason=(
+                    "Nifty is stuck in low-ATR overlapping noise between nearby liquidity, "
+                    "so heuristic mode skips fresh entries until a cleaner displacement appears."
+                ),
+                decision_source="heuristic",
+                market_state=observation.day_type,
+                rule_ids_used=["R21", "R29", "R50", "R55", "R56", "R95"],
+            )
 
         best = self.select_best_candidate(candidates)
+        enter_threshold, arm_threshold, allow_only_exceptional = self.entry_thresholds_for_timestamp(context.current_candle.timestamp)
         if best is None:
             return TradeDecision(
                 action=TradeAction.no_trade,
@@ -675,7 +1500,21 @@ class HeuristicDecisionEngine:
                 rule_ids_used=["R21", "R29", "R30", "R50", "R55", "R56", "R65", "R95"],
             )
 
-        if best.ready_to_enter and best.score >= self.enter_threshold:
+        if allow_only_exceptional and not (
+            best.ready_to_enter and best.score >= enter_threshold and best.event.primary and best.event.quality in {"tradable", "explosive"}
+        ):
+            return TradeDecision(
+                action=TradeAction.no_trade,
+                confidence=min(0.8, best.score / 100),
+                reason="After 14:00 heuristic mode does not open fresh trades, so this setup is skipped.",
+                decision_source="heuristic",
+                market_state=observation.day_type,
+                setup_score=round(best.score, 2),
+                setup_type=best.setup_type,
+                rule_ids_used=list(dict.fromkeys(best.rule_ids + ["R60", "R74", "R91", "R99"])),
+            )
+
+        if best.ready_to_enter and best.score >= enter_threshold:
             entry_rule_ids = list(best.rule_ids)
             if context.instrument.supports_options:
                 entry_rule_ids.append("R57")
@@ -694,7 +1533,7 @@ class HeuristicDecisionEngine:
                 rule_ids_used=list(dict.fromkeys(entry_rule_ids)),
             )
 
-        if best.score >= self.arm_threshold:
+        if best.score >= arm_threshold and not allow_only_exceptional:
             return TradeDecision(
                 action=TradeAction.no_trade,
                 confidence=min(0.9, best.score / 100),
@@ -731,17 +1570,185 @@ class HeuristicDecisionEngine:
 
     def build_candidates(self, context: StrategyContext, observation: Observation) -> list[SetupCandidate]:
         candidates: list[SetupCandidate] = []
-        if observation.sell_sweeps:
-            candidate = self.build_candidate_from_event(context, observation, observation.sell_sweeps[0], option_type="CE", direction="LONG_CALL")
+        for event in observation.sell_sweeps[:3]:
+            candidate = self.build_candidate_from_event(context, observation, event, option_type="CE", direction="LONG_CALL")
             if candidate is not None:
                 candidates.append(candidate)
-        if observation.buy_sweeps:
-            candidate = self.build_candidate_from_event(context, observation, observation.buy_sweeps[0], option_type="PE", direction="LONG_PUT")
+        for event in observation.buy_sweeps[:3]:
+            candidate = self.build_candidate_from_event(context, observation, event, option_type="PE", direction="LONG_PUT")
             if candidate is not None:
                 candidates.append(candidate)
-        previous_close_candidates = self.build_previous_close_candidates(context, observation)
+        previous_close_candidates = (
+            []
+            if self._allowed_liquidity_families_for_context(context) is not None
+            else self.build_previous_close_candidates(context, observation)
+        )
         candidates.extend(previous_close_candidates)
+        candidates.extend(self.build_stock_continuation_candidates(context, observation))
+        companion_candidates = self.build_companion_index_candidates(context, observation)
+        candidates.extend(companion_candidates)
         return candidates
+
+    def build_companion_index_candidates(self, context: StrategyContext, observation: Observation) -> list[SetupCandidate]:
+        if context.instrument.symbol != "NIFTY" or context.companion_symbol != "BANKNIFTY":
+            return []
+        if not context.companion_session_candles or context.companion_current_candle is None:
+            return []
+        bullish = self._build_companion_round_candidate(context, observation, option_type="CE", direction="LONG_CALL")
+        bearish = self._build_companion_round_candidate(context, observation, option_type="PE", direction="LONG_PUT")
+        return [candidate for candidate in (bullish, bearish) if candidate is not None]
+
+    def _build_companion_round_candidate(
+        self,
+        context: StrategyContext,
+        observation: Observation,
+        *,
+        option_type: str,
+        direction: str,
+    ) -> SetupCandidate | None:
+        nifty_session = context.session_candles
+        bank_session = context.companion_session_candles
+        current = context.current_candle
+        bank_current = context.companion_current_candle
+        if len(nifty_session) < 3 or len(bank_session) < 3 or bank_current is None:
+            return None
+
+        bank_recent = bank_session[-5:]
+        nifty_recent = nifty_session[-5:]
+        nifty_step = self._round_number_step(current.close)
+        bank_step = self._round_number_step(bank_current.close)
+        bank_ranges = [max(candle.high - candle.low, 0.01) for candle in bank_session[-20:]] or [1.0]
+        bank_atr = median(bank_ranges)
+        nifty_near_tolerance = max(nifty_step * 0.4, observation.atr * 0.9, 8.0)
+        bank_round_tolerance = max(bank_step * 0.16, bank_atr * 0.4, 5.0)
+        if not self._nifty_higher_timeframe_allows(context, observation, option_type):
+            return None
+
+        if option_type == "CE":
+            nifty_probe = min(candle.low for candle in nifty_recent)
+            nifty_round = math.ceil(nifty_probe / nifty_step) * nifty_step
+            nifty_distance = nifty_round - nifty_probe
+            if nifty_distance < 0 or nifty_distance > nifty_near_tolerance:
+                return None
+            probe_index = max(index for index, candle in enumerate(nifty_recent) if candle.low == nifty_probe)
+            trigger_reference = nifty_recent[probe_index:-1] or nifty_recent[:-1]
+            bank_probe = min(candle.low for candle in bank_recent)
+            bank_round = math.ceil(bank_probe / bank_step) * bank_step
+            bank_swept = bank_probe <= bank_round - bank_round_tolerance * 0.25
+            confirmed, confirmation_notes = self._companion_bank_confirmation(bank_recent, bank_round, option_type, bank_atr)
+            if not (bank_swept and confirmed):
+                return None
+            trigger_price = max(nifty_round, max(candle.high for candle in trigger_reference))
+            invalidation = min(nifty_probe, current.low) - observation.atr * 0.18
+            target_spot = self.next_upside_target(context, current.close, max(observation.atr * 0.9, abs(current.close - invalidation), 1.0))
+            first_target = current.close + max(observation.atr * 0.9, abs(current.close - invalidation), 1.0)
+            ready_to_enter = current.close > trigger_price and current.close > current.open
+            score = 64.0
+            notes = [
+                "Nifty front-ran a round-number sell-side sweep without fully tagging it.",
+                "Bank Nifty completed the deeper sell-side sweep and reclaimed, so cross-index reversal context is valid.",
+            ]
+            notes.extend(confirmation_notes)
+            rule_ids = ["R2", "R22", "R68", "R78", "R84", "R103", "R104"]
+            event = SweepEvent(
+                side="sell",
+                level_label=f"Companion Round Number {nifty_round:.2f}",
+                level_price=round(nifty_round, 2),
+                sweep_index=max(len(nifty_session) - 2, 0),
+                reclaim_index=len(nifty_session) - 1,
+                trigger_index=len(nifty_session) - 1,
+                sweep_price=round(nifty_probe, 2),
+                defended_level=round(nifty_round, 2),
+                trigger_price=round(trigger_price, 2),
+                invalidation_level=round(invalidation, 2),
+                primary=True,
+                quality="tradable",
+                notes=list(notes),
+            )
+        else:
+            nifty_probe = max(candle.high for candle in nifty_recent)
+            nifty_round = math.floor(nifty_probe / nifty_step) * nifty_step
+            nifty_distance = nifty_probe - nifty_round
+            if nifty_distance < 0 or nifty_distance > nifty_near_tolerance:
+                return None
+            probe_index = max(index for index, candle in enumerate(nifty_recent) if candle.high == nifty_probe)
+            trigger_reference = nifty_recent[probe_index:-1] or nifty_recent[:-1]
+            bank_probe = max(candle.high for candle in bank_recent)
+            bank_round = math.floor(bank_probe / bank_step) * bank_step
+            bank_swept = bank_probe >= bank_round + bank_round_tolerance * 0.25
+            confirmed, confirmation_notes = self._companion_bank_confirmation(bank_recent, bank_round, option_type, bank_atr)
+            if not (bank_swept and confirmed):
+                return None
+            trigger_price = min(nifty_round, min(candle.low for candle in trigger_reference))
+            invalidation = max(nifty_probe, current.high) + observation.atr * 0.18
+            target_spot = self.next_downside_target(context, current.close, max(observation.atr * 0.9, abs(invalidation - current.close), 1.0))
+            first_target = current.close - max(observation.atr * 0.9, abs(invalidation - current.close), 1.0)
+            ready_to_enter = current.close < trigger_price and current.close < current.open
+            score = 64.0
+            notes = [
+                "Nifty front-ran a round-number buy-side sweep without fully tagging it.",
+                "Bank Nifty completed the deeper buy-side sweep and rejected, so cross-index reversal context is valid.",
+            ]
+            notes.extend(confirmation_notes)
+            rule_ids = ["R2", "R22", "R68", "R78", "R84", "R103", "R104"]
+            event = SweepEvent(
+                side="buy",
+                level_label=f"Companion Round Number {nifty_round:.2f}",
+                level_price=round(nifty_round, 2),
+                sweep_index=max(len(nifty_session) - 2, 0),
+                reclaim_index=len(nifty_session) - 1,
+                trigger_index=len(nifty_session) - 1,
+                sweep_price=round(nifty_probe, 2),
+                defended_level=round(nifty_round, 2),
+                trigger_price=round(trigger_price, 2),
+                invalidation_level=round(invalidation, 2),
+                primary=True,
+                quality="tradable",
+                notes=list(notes),
+            )
+
+        if observation.day_type in {"trap-day", "gap-reversal", "double-side-hunt"}:
+            score += 8
+            notes.append("Current Nifty day type supports reversal behavior.")
+        if observation.two_sided_participation:
+            score += 4
+            notes.append("Two-sided participation strengthens the companion-led reversal read.")
+        distance_adjustment, distance_note = self._nifty_round_distance_adjustment(
+            observation,
+            f"Round Number {nifty_round:.2f}",
+            nifty_probe,
+            nifty_round,
+        )
+        score += distance_adjustment
+        if distance_note:
+            notes.append(distance_note)
+        htf_adjustment, htf_note = self._nifty_htf_score_adjustment(context, observation, option_type)
+        score += htf_adjustment
+        if htf_note:
+            notes.append(htf_note)
+        if ready_to_enter:
+            score += 10
+            notes.append("Nifty confirmed the companion reversal with its own trigger close.")
+        else:
+            score -= 6
+            notes.append("Nifty is still near the level but has not confirmed the trigger close yet.")
+
+        return SetupCandidate(
+            setup_type="companion_round_reclaim_long" if option_type == "CE" else "companion_round_rejection_short",
+            direction=direction,
+            option_type=option_type,
+            trigger_basis="close_above" if option_type == "CE" else "close_below",
+            trigger_price=round(trigger_price, 2),
+            invalidation_level=round(invalidation, 2),
+            defended_level=round(nifty_round, 2),
+            target_spot_price=round(target_spot, 2),
+            first_target_price=round(first_target, 2),
+            score=max(0.0, min(score, 100.0)),
+            ready_to_enter=ready_to_enter,
+            notes=notes,
+            rule_ids=rule_ids,
+            event=event,
+        )
 
     def build_previous_close_candidates(self, context: StrategyContext, observation: Observation) -> list[SetupCandidate]:
         previous_close = context.previous_day.close
@@ -751,6 +1758,14 @@ class HeuristicDecisionEngine:
         session = context.session_candles
         current = context.current_candle
         tolerance = max(observation.atr * 0.08, 0.15)
+        distance_from_previous_close = abs(current.close - previous_close)
+        anti_chase_distance = max(observation.atr * 1.1, tolerance * 5)
+        midday_previous_close_gate = (
+            observation.session_phase == "midday"
+            and observation.participation_state in {"fair_value_churn", "post_trend_balance"}
+        )
+        if midday_previous_close_gate or distance_from_previous_close > anti_chase_distance:
+            return []
         candidates: list[SetupCandidate] = []
         risk = max(observation.atr * 0.9, abs(current.close - previous_close), 0.5)
         gap_up = observation.gap > tolerance
@@ -790,6 +1805,7 @@ class HeuristicDecisionEngine:
                 score += 5
                 notes.append("Short-side comfort has built up, so squeeze risk helps the long idea.")
                 rule_ids.append("R102")
+            score = self.apply_regime_filter(score, notes, rule_ids, observation)
             trigger_reference = recent_three[:-1] if len(recent_three) > 1 else recent_three
             trigger_price = max(candle.high for candle in trigger_reference)
             ready_to_enter = current.close > trigger_price and current.close > current.open
@@ -861,6 +1877,7 @@ class HeuristicDecisionEngine:
                 score += 5
                 notes.append("Long-side comfort has built up, so downside trap fuel is available.")
                 rule_ids.append("R102")
+            score = self.apply_regime_filter(score, notes, rule_ids, observation)
             trigger_reference = recent_three[:-1] if len(recent_three) > 1 else recent_three
             trigger_price = min(candle.low for candle in trigger_reference)
             ready_to_enter = current.close < trigger_price and current.close < current.open
@@ -918,11 +1935,23 @@ class HeuristicDecisionEngine:
 
         reclaim_candle = session[reclaim_index]
         continuation_slice = session[reclaim_index + 1 : min(len(session), reclaim_index + 4)]
+        if not self._nifty_higher_timeframe_allows(context, observation, option_type):
+            return None
         current_strength = self.candle_strength(current)
         reclaim_strength = self.candle_strength(reclaim_candle)
         continuation_count = 0
         hold_count = 0
         follow_through = False
+        directional_extension_r = (
+            (current.close - session[0].open) / max(observation.atr, 0.01)
+            if option_type == "CE"
+            else (session[0].open - current.close) / max(observation.atr, 0.01)
+        )
+        value_extension_r = (
+            (current.close - observation.vwap) / max(observation.atr, 0.01)
+            if option_type == "CE"
+            else (observation.vwap - current.close) / max(observation.atr, 0.01)
+        )
 
         for candle in continuation_slice:
             if option_type == "CE":
@@ -952,6 +1981,10 @@ class HeuristicDecisionEngine:
             score += 6
             notes.append("Sweep happened at a nearby round-number liquidity shelf.")
             rule_ids.extend(["R2", "R78", "R84"])
+        if "pivot " in level_label or level_label == "pivot point":
+            score += 7
+            notes.append("Classic pivot-point liquidity was tested and then rejected or reclaimed.")
+            rule_ids.extend(["R2", "R72", "R73", "R79"])
         if "equal high cluster" in level_label or "equal low cluster" in level_label:
             score += 8
             notes.append("Equal-high or equal-low stop cluster adds stronger trap potential.")
@@ -960,6 +1993,14 @@ class HeuristicDecisionEngine:
             score += 5
             notes.append("Same-day swing liquidity map aligns with the sweep location.")
             rule_ids.extend(["R2", "R76", "R79"])
+        if "previous-day swing high" in level_label or "previous-day swing low" in level_label:
+            score += 6
+            notes.append("Previous-day structural swing liquidity aligns with the sweep location.")
+            rule_ids.extend(["R3", "R15", "R72", "R79", "R84"])
+        if "previous-day resistance shelf" in level_label or "previous-day support shelf" in level_label:
+            score += 8
+            notes.append("Repeated prior-day rejection shelf concentrates obvious support or resistance liquidity here.")
+            rule_ids.extend(["R3", "R15", "R72", "R73", "R79", "R84"])
         same_side_levels = observation.mapped_sell_liquidity if option_type == "CE" else observation.mapped_buy_liquidity
         confluence_labels = [
             label.lower()
@@ -970,14 +2011,90 @@ class HeuristicDecisionEngine:
             score += 5
             notes.append("Round-number liquidity also overlaps the sweep price.")
             rule_ids.extend(["R2", "R78", "R84"])
+        if any("pivot " in label or label == "pivot point" for label in confluence_labels):
+            score += 5
+            notes.append("Pivot-point structure also overlaps the sweep zone.")
+            rule_ids.extend(["R2", "R72", "R73", "R79"])
         if any("equal high cluster" in label or "equal low cluster" in label for label in confluence_labels):
             score += 6
-            notes.append("Clustered equal highs or lows reinforce stop concentration here.")
+            notes.append("Clustered equal-high or equal-low liquidity reinforces stop concentration here.")
             rule_ids.extend(["R3", "R25", "R26", "R77"])
         if any("same-day swing high" in label or "same-day swing low" in label for label in confluence_labels):
             score += 4
             notes.append("Nearby same-day swing liquidity adds extra confluence.")
             rule_ids.extend(["R2", "R76", "R79"])
+        if any("previous-day swing high" in label or "previous-day swing low" in label for label in confluence_labels):
+            score += 4
+            notes.append("Prior-day swing structure adds confluence to the trap location.")
+            rule_ids.extend(["R3", "R15", "R72", "R79", "R84"])
+        if any("previous-day resistance shelf" in label or "previous-day support shelf" in label for label in confluence_labels):
+            score += 5
+            notes.append("Repeated prior-day shelf behavior reinforces the defended zone.")
+            rule_ids.extend(["R3", "R15", "R72", "R73", "R79", "R84"])
+        distance_adjustment, distance_note = self._nifty_round_distance_adjustment(
+            observation,
+            event.level_label,
+            event.sweep_price,
+            event.level_price,
+        )
+        score += distance_adjustment
+        if distance_note:
+            notes.append(distance_note)
+        setup_type = self._classify_reclaim_setup_type(
+            option_type=option_type,
+            event=event,
+            confluence_labels=confluence_labels,
+            session_length=len(session),
+        )
+        has_fresh_fuel = event.primary or self._is_obvious_stop_pool_label(event.level_label) or any(
+            self._is_obvious_stop_pool_label(label) for label in confluence_labels
+        )
+        if not has_fresh_fuel and level_label.startswith(("same-day swing high", "same-day swing low")):
+            return None
+        first_candle_range_r, gap_r, opening_shock = self._opening_shock_metrics(session, observation)
+        if (
+            observation.large_gap_reset
+            and opening_shock
+            and self._is_gap_reset_trap_direction(observation, option_type)
+        ):
+            if len(session) <= 20:
+                return None
+            if len(session) <= 30 and not (event.primary and hold_count >= 1 and follow_through):
+                return None
+        if (
+            option_type == "PE"
+            and observation.gap < -max(observation.atr * 0.25, 0.2)
+            and observation.value_state == "discount"
+            and observation.session_phase in {"opening-map", "primary-trap-window"}
+        ):
+            recovered_into_major_upper_reference = self._is_major_upper_reference_label(event.level_label) and (
+                event.level_price >= max(observation.opening_range_high, context.previous_day.close)
+                or event.level_price >= context.previous_day.close - observation.atr * 0.2
+            )
+            if not (recovered_into_major_upper_reference and follow_through):
+                return None
+        gap_down_recovery_morning = (
+            observation.gap < -max(observation.atr * 0.25, 0.2)
+            and observation.session_phase in {"opening-map", "primary-trap-window"}
+        )
+        if option_type == "PE" and gap_down_recovery_morning:
+            recovery_has_lifted = current.close > session[0].close + observation.atr * 0.35
+            if recovery_has_lifted:
+                recovered_into_major_upper_reference = self._is_major_upper_reference_label(event.level_label) and (
+                    event.level_price >= max(observation.opening_range_high, context.previous_day.close, observation.vwap)
+                    or event.level_price >= observation.vwap - observation.atr * 0.15
+                )
+                bearish_acceptance = current.close < min(context.previous_day.close, observation.vwap)
+                if not (recovered_into_major_upper_reference and follow_through and bearish_acceptance):
+                    return None
+        if option_type == "CE" and gap_down_recovery_morning:
+            recovery_burst_is_extended = current.close > max(context.previous_day.close, observation.vwap) + observation.atr * 0.35
+            early_retest_hold = hold_count >= 1 and current.low <= reclaim_candle.high + observation.atr * 0.15
+            if recovery_burst_is_extended and not early_retest_hold:
+                return None
+        if directional_extension_r >= 4.2 and value_extension_r >= 2.6 and not event.primary:
+            return None
+        strong_expansion_leg = directional_extension_r >= 3.2 and value_extension_r >= 1.8 and observation.strong_intent
         if reclaim_index is not None:
             score += 15
         if "reclaimed back" in " ".join(event.notes).lower():
@@ -1039,6 +2156,19 @@ class HeuristicDecisionEngine:
             score -= 10
             notes.append("Large-gap reset day still needs more proof before trusting this setup.")
             rule_ids.extend(["R17", "R47", "R64", "R80"])
+        if (
+            observation.large_gap_reset
+            and opening_shock
+            and self._is_gap_reset_trap_direction(observation, option_type)
+            and len(session) <= 30
+        ):
+            score -= 18
+            notes.append("Opening gap reset was extreme, so only a deeper reclaim with retest-hold can stay tradable.")
+            rule_ids.extend(["R17", "R47", "R64", "R80", "R89"])
+        if opening_shock and first_candle_range_r >= 5.5 and gap_r >= 4.0 and continuation_count == 0:
+            score -= 12
+            notes.append("The first candle shock was outsized, so immediate reclaim readings are less trustworthy.")
+            rule_ids.extend(["R17", "R47", "R64"])
         if observation.session_phase in {"discovery", "opening-map"} and continuation_count == 0:
             score -= 10
             notes.append("Still too early to force confirmation from opening noise.")
@@ -1101,6 +2231,10 @@ class HeuristicDecisionEngine:
         if observation.previous_day_bias.startswith("bearish") and option_type == "PE":
             score += 4
             rule_ids.extend(["R15", "R81"])
+        htf_adjustment, htf_note = self._nifty_htf_score_adjustment(context, observation, option_type)
+        score += htf_adjustment
+        if htf_note:
+            notes.append(htf_note)
         slight_gap = abs(observation.gap) <= max(observation.atr * 0.45, 0.4)
         if observation.previous_day_bias.startswith("bullish") and slight_gap and observation.gap >= 0 and option_type == "CE" and observation.session_phase in {"opening-map", "primary-trap-window"}:
             score += 5
@@ -1120,34 +2254,127 @@ class HeuristicDecisionEngine:
         if observation.opening_confirmation == "gap-down-trap-risk" and option_type == "CE":
             score += 4
             rule_ids.extend(["R18", "R73", "R83"])
+        if setup_type in {"bullish_pullback_continuation", "bearish_pullback_continuation"}:
+            score -= 20
+            notes.append("This is a trend pullback continuation, so the location and room standards are stricter than a fresh trap reclaim.")
+            rule_ids.extend(["R75", "R90", "R97", "R100"])
+            if not follow_through:
+                score -= 10
+                notes.append("Continuation pullback still lacks the follow-through needed for a mature-trend entry.")
+            if hold_count < 1:
+                score -= 8
+                notes.append("Continuation pullback has not shown a clean defended retest yet.")
+            if directional_extension_r >= 3.2:
+                score -= 16
+                notes.append("Session has already traveled a long distance from the open, so continuation risk is elevated.")
+                rule_ids.extend(["R51", "R75", "R101"])
+            if value_extension_r >= 2.1:
+                score -= 12
+                notes.append("Price is already stretched away from VWAP, so this continuation entry risks chasing extension.")
+                rule_ids.extend(["R20", "R22", "R51"])
+        if option_type == "CE" and strong_expansion_leg:
+            score -= 10
+            notes.append("One strong bullish expansion leg is already mature, so repeated same-direction reclaims deserve extra skepticism.")
+            rule_ids.extend(["R51", "R75", "R90", "R101"])
+        if option_type == "PE" and strong_expansion_leg:
+            score -= 10
+            notes.append("One strong bearish expansion leg is already mature, so repeated same-direction rejections deserve extra skepticism.")
+            rule_ids.extend(["R51", "R75", "R90", "R101"])
+        if event.primary and directional_extension_r >= 4.2 and value_extension_r >= 2.6:
+            score -= 14
+            notes.append("The move is already extended, so only this fresh primary sweep keeps the setup alive.")
+            rule_ids.extend(["R51", "R75", "R101"])
+        if option_type == "CE" and directional_extension_r >= 4.5 and value_extension_r >= 2.2:
+            score -= 14
+            notes.append("Same-day bullish extension is already stretched far from both open and VWAP, so exhaustion risk is elevated.")
+            rule_ids.extend(["R20", "R51", "R75", "R101"])
+        if option_type == "PE" and directional_extension_r >= 4.5 and value_extension_r >= 2.2:
+            score -= 14
+            notes.append("Same-day bearish extension is already stretched far from both open and VWAP, so exhaustion risk is elevated.")
+            rule_ids.extend(["R20", "R51", "R75", "R101"])
+        score = self.apply_regime_filter(score, notes, rule_ids, observation)
 
         risk = max(abs(reclaim_candle.close - event.trigger_price), observation.atr * 0.8)
         if option_type == "CE":
             target_spot = self.next_upside_target(context, max(current.close, reclaim_candle.close), risk)
             first_target = current.close + risk
             retest_hold = hold_count >= 1 and current.close > event.defended_level and current.low <= reclaim_candle.high + observation.atr * 0.15
+            stock_early_entry = self._stock_early_retest_entry(
+                context,
+                observation,
+                event,
+                option_type=option_type,
+                setup_type=setup_type,
+                current=current,
+                reclaim_candle=reclaim_candle,
+                current_strength=current_strength,
+                reclaim_strength=reclaim_strength,
+                hold_count=hold_count,
+                continuation_count=continuation_count,
+            )
             ready_to_enter = (
                 current.close > reclaim_candle.high and current.close > event.defended_level and current.close > current.open
-            ) or (retest_hold and follow_through)
+            ) or (retest_hold and follow_through) or stock_early_entry
             trigger_basis = "close_above"
-            trigger_price = max(reclaim_candle.high, event.defended_level + observation.atr * 0.1)
+            trigger_price = (
+                round(max(event.defended_level, current.low), 2)
+                if stock_early_entry
+                else max(reclaim_candle.high, event.defended_level + observation.atr * 0.1)
+            )
             invalidation = min(event.trigger_price, event.defended_level - observation.atr * 0.18)
         else:
             target_spot = self.next_downside_target(context, min(current.close, reclaim_candle.close), risk)
             first_target = current.close - risk
             retest_hold = hold_count >= 1 and current.close < event.defended_level and current.high >= reclaim_candle.low - observation.atr * 0.15
+            stock_early_entry = self._stock_early_retest_entry(
+                context,
+                observation,
+                event,
+                option_type=option_type,
+                setup_type=setup_type,
+                current=current,
+                reclaim_candle=reclaim_candle,
+                current_strength=current_strength,
+                reclaim_strength=reclaim_strength,
+                hold_count=hold_count,
+                continuation_count=continuation_count,
+            )
             ready_to_enter = (
                 current.close < reclaim_candle.low and current.close < event.defended_level and current.close < current.open
-            ) or (retest_hold and follow_through)
+            ) or (retest_hold and follow_through) or stock_early_entry
             trigger_basis = "close_below"
-            trigger_price = min(reclaim_candle.low, event.defended_level - observation.atr * 0.1)
+            trigger_price = (
+                round(min(event.defended_level, current.high), 2)
+                if stock_early_entry
+                else min(reclaim_candle.low, event.defended_level - observation.atr * 0.1)
+            )
             invalidation = max(event.trigger_price, event.defended_level + observation.atr * 0.18)
+        if stock_early_entry:
+            score += 12
+            notes.append(
+                "Stock mode allows the first shallow defended retest after a primary sweep, so entry can trigger before a mature multi-candle rally."
+            )
+            rule_ids.extend(["R105", "R106"])
         if ready_to_enter and hold_count >= 1 and continuation_count == 0:
             score += 4
             notes.append("Retest held after the break, so continuation entry is acceptable without chasing the breakout candle.")
             rule_ids.extend(["R63", "R100"])
+        retest_adjustment, retest_note = self._nifty_retest_quality_adjustment(
+            context,
+            observation,
+            event,
+            option_type,
+            reclaim_candle,
+        )
+        score += retest_adjustment
+        if retest_note:
+            notes.append(retest_note)
 
         room = abs(target_spot - current.close)
+        if setup_type in {"bullish_pullback_continuation", "bearish_pullback_continuation"} and room < risk * 2.2:
+            score -= 14
+            notes.append("Continuation pullback does not have enough room left to the next liquidity pool.")
+            rule_ids.extend(["R44", "R55", "R98", "R100"])
         if room >= risk * 1.8:
             score += 10
             notes.append("There is enough room to the next opposing liquidity.")
@@ -1157,7 +2384,7 @@ class HeuristicDecisionEngine:
             notes.append("Reward-to-risk is weak to the next liquidity.")
 
         return SetupCandidate(
-            setup_type="bullish_reclaim_watch" if option_type == "CE" else "bearish_rejection_watch",
+            setup_type=setup_type,
             direction=direction,
             option_type=option_type,
             trigger_basis=trigger_basis,
@@ -1320,6 +2547,28 @@ class HeuristicDecisionEngine:
             if bullish_trade
             else (trade.entry_spot_price - current_spot) / max(risk, 0.01)
         )
+        trailing_stop_enabled = not context.instrument.supports_options
+        bars_since_entry = sum(1 for candle in context.session_candles if candle.timestamp >= trade.entry_time)
+        setup_is_previous_close = trade.setup_type in {"previous_close_reclaim_long", "previous_close_rejection_short"}
+        regime_deteriorated = observation.participation_state in {"fair_value_churn", "post_trend_balance"} and (
+            observation.session_phase == "midday" or observation.range_state == "compressing"
+        )
+        if regime_deteriorated and bars_since_entry >= 5 and progress_r <= 0.25 and (
+            setup_is_previous_close or observation.range_state == "compressing"
+        ):
+            return TradeDecision(
+                action=TradeAction.exit,
+                confidence=0.8,
+                reason=(
+                    "Trade is no longer behaving cleanly and the regime has deteriorated into balance or churn, "
+                    "so exit before the thesis decays further."
+                ),
+                decision_source="heuristic",
+                option_type=trade.option_type,
+                market_state=observation.day_type,
+                setup_type=trade.setup_type,
+                rule_ids_used=["R41", "R42", "R45", "R55", "R74", "R90", "R91", "R99"],
+            )
 
         opposing_candidates = self.build_candidates(context, observation)
         strongest_opposite = next((candidate for candidate in opposing_candidates if (candidate.option_type == "PE") == bullish_trade), None)
@@ -1358,31 +2607,7 @@ class HeuristicDecisionEngine:
                     rule_ids_used=["R41", "R42", "R45", "R66"],
                 )
 
-        if trade.open_quantity and trade.open_quantity > 1 and trade.partial_exit_count == 0 and trade.first_target_price is not None:
-            if bullish_trade and current_spot >= trade.first_target_price:
-                return TradeDecision(
-                    action=TradeAction.partial_exit,
-                    confidence=0.82,
-                    reason="First protection target reached, so book part and keep managing the remaining thesis.",
-                    decision_source="heuristic",
-                    option_type=trade.option_type,
-                    partial_exit_quantity=max(1, trade.open_quantity // 2),
-                    market_state=observation.day_type,
-                    rule_ids_used=["R46", "R74", "R99"],
-                )
-            if (not bullish_trade) and current_spot <= trade.first_target_price:
-                return TradeDecision(
-                    action=TradeAction.partial_exit,
-                    confidence=0.82,
-                    reason="First protection target reached, so book part and keep managing the remaining thesis.",
-                    decision_source="heuristic",
-                    option_type=trade.option_type,
-                    partial_exit_quantity=max(1, trade.open_quantity // 2),
-                    market_state=observation.day_type,
-                    rule_ids_used=["R46", "R74", "R99"],
-                )
-
-        if progress_r >= 1.0:
+        if trailing_stop_enabled and progress_r >= 1.0:
             latest_defense = self.latest_defended_zone(context, bullish_trade, observation)
             if bullish_trade:
                 new_invalidation = max(trade.invalidation_level or trade.entry_spot_price, latest_defense, trade.entry_spot_price)
@@ -1458,7 +2683,8 @@ class HeuristicDecisionEngine:
         joined_notes = " ".join(candidate.notes[:4])
         return (
             f"{action_phrase} because {observation.day_type} conditions show a {candidate.setup_type} with "
-            f"score {candidate.score:.1f}/100. {joined_notes}"
+            f"score {candidate.score:.1f}/100. Regime reads {observation.range_state} / "
+            f"{observation.participation_state}. {joined_notes}"
         )
 
     def record_trace(
@@ -1502,10 +2728,10 @@ class HeuristicDecisionEngine:
         elif best is None:
             status = "no_setup_identified"
             block_reason = "No setup family reached minimum structural quality."
-        elif best.score < self.arm_threshold:
+        elif best.score < self.entry_thresholds_for_timestamp(context.current_candle.timestamp)[1]:
             status = "failed_threshold"
             block_reason = (
-                f"Best setup score {best.score:.1f} stayed below arm threshold {self.arm_threshold:.1f}."
+                f"Best setup score {best.score:.1f} stayed below arm threshold {self.entry_thresholds_for_timestamp(context.current_candle.timestamp)[1]:.1f}."
             )
         elif not best.ready_to_enter:
             status = "setup_identified_waiting_confirmation"

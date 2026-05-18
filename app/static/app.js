@@ -1,4 +1,5 @@
 const stateUrl = "/api/state";
+const browserSettingsStorageKey = "dhan-trader-ui-settings-v1";
 
 const elements = {
   instrumentValue: document.getElementById("instrumentValue"),
@@ -19,11 +20,17 @@ const elements = {
   liveLtpValue: document.getElementById("liveLtpValue"),
   liveTicksValue: document.getElementById("liveTicksValue"),
   liveErrorValue: document.getElementById("liveErrorValue"),
+  executionEnabledValue: document.getElementById("executionEnabledValue"),
+  executionStatusValue: document.getElementById("executionStatusValue"),
   syncStatusValue: document.getElementById("syncStatusValue"),
+  operationJobValue: document.getElementById("operationJobValue"),
+  operationJobMessage: document.getElementById("operationJobMessage"),
   syncMessageValue: document.getElementById("syncMessageValue"),
   syncPreviousValue: document.getElementById("syncPreviousValue"),
   syncIntradayValue: document.getElementById("syncIntradayValue"),
   syncTotalValue: document.getElementById("syncTotalValue"),
+  syncReplayDayValue: document.getElementById("syncReplayDayValue"),
+  syncPreviousContextDayValue: document.getElementById("syncPreviousContextDayValue"),
   syncOpenValue: document.getElementById("syncOpenValue"),
   syncUpdatedValue: document.getElementById("syncUpdatedValue"),
   savedClientIdValue: document.getElementById("savedClientIdValue"),
@@ -34,8 +41,12 @@ const elements = {
   savedDeepSeekModelValue: document.getElementById("savedDeepSeekModelValue"),
   savedFullAIProviderValue: document.getElementById("savedFullAIProviderValue"),
   savedOperatingModeValue: document.getElementById("savedOperatingModeValue"),
+  savedNiftyLotsValue: document.getElementById("savedNiftyLotsValue"),
+  savedStockCapitalValue: document.getElementById("savedStockCapitalValue"),
+  savedExpiryPreferenceValue: document.getElementById("savedExpiryPreferenceValue"),
   savedPathValue: document.getElementById("savedPathValue"),
   savedUpdatedValue: document.getElementById("savedUpdatedValue"),
+  credentialSaveStatus: document.getElementById("credentialSaveStatus"),
   aiStatusValue: document.getElementById("aiStatusValue"),
   aiModelStatusValue: document.getElementById("aiModelStatusValue"),
   aiHealthMessage: document.getElementById("aiHealthMessage"),
@@ -52,6 +63,8 @@ const elements = {
   decisionOption: document.getElementById("decisionOption"),
   decisionReason: document.getElementById("decisionReason"),
   pendingSetup: document.getElementById("pendingSetup"),
+  stockSearchResults: document.getElementById("stockSearchResults"),
+  stockWatchlist: document.getElementById("stockWatchlist"),
   liquidityZones: document.getElementById("liquidityZones"),
   operatorZones: document.getElementById("operatorZones"),
   signalTape: document.getElementById("signalTape"),
@@ -70,6 +83,61 @@ const uiStatus = {
   lastActionTitle: "Waiting for an action.",
   lastActionMessage: "Upload a rulebook or sync data to see the latest result here.",
 };
+
+const stockUiState = {
+  lastQuery: "",
+  searchResults: [],
+};
+
+const runtimeUiState = {
+  dashboard: null,
+  stateRevision: 0,
+  stateRefreshInFlight: false,
+  aiHealthRefreshInFlight: false,
+  statePollTimer: null,
+  aiHealthPollTimer: null,
+  stateEventSource: null,
+  stateEventSourceRetryTimer: null,
+};
+
+const settingsUiState = {
+  dirtyFields: new Set(),
+  liveCredentialDirtyFields: new Set(),
+  saveTimer: null,
+  saveInFlight: false,
+  saveQueued: false,
+  lastSerializedPayload: "",
+  lastSavedPayload: "",
+};
+
+function browserStorage() {
+  try {
+    return window.localStorage;
+  } catch (error) {
+    return null;
+  }
+}
+
+function readBrowserSettings() {
+  const storage = browserStorage();
+  if (!storage) {
+    return {};
+  }
+  try {
+    return JSON.parse(storage.getItem(browserSettingsStorageKey) || "{}");
+  } catch (error) {
+    return {};
+  }
+}
+
+function writeBrowserSettings(partialSettings) {
+  const storage = browserStorage();
+  if (!storage) {
+    return;
+  }
+  const current = readBrowserSettings();
+  storage.setItem(browserSettingsStorageKey, JSON.stringify({ ...current, ...partialSettings }));
+}
 
 async function fetchJson(url, options = {}) {
   const response = await fetch(url, options);
@@ -125,6 +193,46 @@ function formatIstDateTime(value) {
   })} IST`;
 }
 
+function formatIsoDate(value) {
+  if (!value) {
+    return "-";
+  }
+  return value;
+}
+
+function localIsoDate(value) {
+  const year = value.getFullYear();
+  const month = String(value.getMonth() + 1).padStart(2, "0");
+  const day = String(value.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function setHistoricalReplayDefaults() {
+  const form = document.getElementById("historicalReplayForm");
+  if (!form) {
+    return;
+  }
+  const replayField = form.elements.replay_date;
+  const previousField = form.elements.previous_context_date;
+  if (!replayField || !previousField) {
+    return;
+  }
+  if (replayField.value && previousField.value) {
+    return;
+  }
+  const now = new Date();
+  const replay = new Date(now);
+  replay.setDate(replay.getDate() - 1);
+  const previous = new Date(now);
+  previous.setDate(previous.getDate() - 2);
+  if (!replayField.value) {
+    replayField.value = localIsoDate(replay);
+  }
+  if (!previousField.value) {
+    previousField.value = localIsoDate(previous);
+  }
+}
+
 function formatSignalTime(value) {
   const parsed = toIstDate(value);
   if (!parsed) {
@@ -154,6 +262,309 @@ function setLastAction(kind, title, message) {
   elements.lastActionMessage.textContent = message;
 }
 
+function setCredentialSaveStatus(message, tone = "neutral") {
+  if (!elements.credentialSaveStatus) {
+    return;
+  }
+  elements.credentialSaveStatus.textContent = message;
+  elements.credentialSaveStatus.dataset.tone = tone;
+}
+
+function syncCredentialField(form, fieldName, value) {
+  if (!form || !form.elements[fieldName]) {
+    return;
+  }
+  const field = form.elements[fieldName];
+  if (settingsUiState.dirtyFields.has(fieldName) || document.activeElement === field) {
+    return;
+  }
+  if (value == null || value === "") {
+    return;
+  }
+  if (field.value !== value) {
+    field.value = value;
+  }
+}
+
+function setFormFieldValue(form, fieldName, value) {
+  if (!form || !form.elements[fieldName]) {
+    return;
+  }
+  const field = form.elements[fieldName];
+  const normalizedValue = value == null ? "" : String(value);
+  if (document.activeElement === field) {
+    return;
+  }
+  if (field.value !== normalizedValue) {
+    field.value = normalizedValue;
+  }
+}
+
+function buildCredentialPayload(form) {
+  if (!form) {
+    return null;
+  }
+  const payload = {
+    client_id: (form.elements.client_id?.value || "").trim(),
+    access_token: (form.elements.access_token?.value || "").trim(),
+    openai_api_key: (form.elements.openai_api_key?.value || "").trim(),
+    openai_model: (form.elements.openai_model?.value || "").trim(),
+    deepseek_api_key: (form.elements.deepseek_api_key?.value || "").trim(),
+    deepseek_model: (form.elements.deepseek_model?.value || "").trim(),
+    full_ai_provider: (form.elements.full_ai_provider?.value || "").trim(),
+    operating_mode: (form.elements.operating_mode?.value || "").trim(),
+    nifty_order_lots: (form.elements.nifty_order_lots?.value || "1").trim(),
+    stock_trade_capital: (form.elements.stock_trade_capital?.value || "25000").trim(),
+    nifty_expiry_preference: (form.elements.nifty_expiry_preference?.value || "current-weekly").trim(),
+  };
+  return Object.values(payload).some((value) => value) ? payload : null;
+}
+
+function serializeCredentialPayload(payload) {
+  if (!payload) {
+    return "";
+  }
+  return JSON.stringify({
+    access_token: payload.access_token,
+    client_id: payload.client_id,
+    deepseek_api_key: payload.deepseek_api_key,
+    deepseek_model: payload.deepseek_model,
+    full_ai_provider: payload.full_ai_provider,
+    nifty_expiry_preference: payload.nifty_expiry_preference,
+    nifty_order_lots: payload.nifty_order_lots,
+    openai_api_key: payload.openai_api_key,
+    openai_model: payload.openai_model,
+    operating_mode: payload.operating_mode,
+    stock_trade_capital: payload.stock_trade_capital,
+  });
+}
+
+function persistBrowserSettingsFromForms() {
+  const credentialSaveForm = document.getElementById("credentialSaveForm");
+  const liveConnectForm = document.getElementById("liveConnectForm");
+  const instrumentModeForm = document.getElementById("instrumentModeForm");
+  writeBrowserSettings({
+    credentialPayload: buildCredentialPayload(credentialSaveForm) || {},
+    liveConnect: {
+      client_id: (liveConnectForm?.elements.client_id?.value || "").trim(),
+      access_token: (liveConnectForm?.elements.access_token?.value || "").trim(),
+    },
+    instrumentMode: instrumentModeForm?.elements.instrument_mode?.value || "",
+  });
+}
+
+function restoreBrowserSettings() {
+  const cached = readBrowserSettings();
+  const credentialSaveForm = document.getElementById("credentialSaveForm");
+  const liveConnectForm = document.getElementById("liveConnectForm");
+  const instrumentModeForm = document.getElementById("instrumentModeForm");
+  const credentialPayload = cached.credentialPayload || {};
+  Object.entries(credentialPayload).forEach(([fieldName, value]) => {
+    setFormFieldValue(credentialSaveForm, fieldName, value);
+  });
+  if (cached.liveConnect) {
+    setFormFieldValue(liveConnectForm, "client_id", cached.liveConnect.client_id || "");
+    setFormFieldValue(liveConnectForm, "access_token", cached.liveConnect.access_token || "");
+  }
+  if (cached.instrumentMode) {
+    setFormFieldValue(instrumentModeForm, "instrument_mode", cached.instrumentMode);
+  }
+}
+
+function syncLiveCredentialsFromSavedForm() {
+  const credentialSaveForm = document.getElementById("credentialSaveForm");
+  const liveConnectForm = document.getElementById("liveConnectForm");
+  if (!credentialSaveForm || !liveConnectForm) {
+    return;
+  }
+  const savedClientId = (credentialSaveForm.elements.client_id?.value || "").trim();
+  const savedAccessToken = (credentialSaveForm.elements.access_token?.value || "").trim();
+  if (
+    savedClientId
+    && !liveConnectForm.elements.client_id.value.trim()
+    && !settingsUiState.liveCredentialDirtyFields.has("client_id")
+    && document.activeElement !== liveConnectForm.elements.client_id
+  ) {
+    liveConnectForm.elements.client_id.value = savedClientId;
+  }
+  if (
+    savedAccessToken
+    && !liveConnectForm.elements.access_token.value.trim()
+    && !settingsUiState.liveCredentialDirtyFields.has("access_token")
+    && document.activeElement !== liveConnectForm.elements.access_token
+  ) {
+    liveConnectForm.elements.access_token.value = savedAccessToken;
+  }
+}
+
+function mirrorLiveCredentialsIntoSavedForm() {
+  const credentialSaveForm = document.getElementById("credentialSaveForm");
+  const liveConnectForm = document.getElementById("liveConnectForm");
+  if (!credentialSaveForm || !liveConnectForm) {
+    return;
+  }
+  const clientId = (liveConnectForm.elements.client_id?.value || "").trim();
+  const accessToken = (liveConnectForm.elements.access_token?.value || "").trim();
+  if (clientId) {
+    credentialSaveForm.elements.client_id.value = clientId;
+  }
+  if (accessToken) {
+    credentialSaveForm.elements.access_token.value = accessToken;
+  }
+}
+
+function currentDhanCredentials() {
+  const liveConnectForm = document.getElementById("liveConnectForm");
+  const credentialSaveForm = document.getElementById("credentialSaveForm");
+  const clientId = (liveConnectForm?.elements.client_id?.value || credentialSaveForm?.elements.client_id?.value || "").trim();
+  const accessToken = (liveConnectForm?.elements.access_token?.value || credentialSaveForm?.elements.access_token?.value || "").trim();
+  return {
+    client_id: clientId,
+    access_token: accessToken,
+  };
+}
+
+function noteLiveCredentialEdit(fieldName) {
+  settingsUiState.liveCredentialDirtyFields.add(fieldName);
+}
+
+async function saveCredentialSettings({ immediate = false, notify = false } = {}) {
+  const form = document.getElementById("credentialSaveForm");
+  const payload = buildCredentialPayload(form);
+  if (!payload) {
+    setCredentialSaveStatus("Autosave idle. Changes save automatically.");
+    return;
+  }
+  const serialized = serializeCredentialPayload(payload);
+  if (!immediate && !settingsUiState.dirtyFields.size) {
+    return;
+  }
+  if (!immediate && serialized === settingsUiState.lastSavedPayload) {
+    settingsUiState.dirtyFields.clear();
+    setCredentialSaveStatus("Saved locally. Autosave is active.", "saved");
+    return;
+  }
+  if (!immediate && serialized === settingsUiState.lastSerializedPayload) {
+    return;
+  }
+  if (settingsUiState.saveInFlight) {
+    settingsUiState.saveQueued = true;
+    return;
+  }
+
+  settingsUiState.saveInFlight = true;
+  settingsUiState.lastSerializedPayload = serialized;
+  setCredentialSaveStatus("Saving settings...", "saving");
+
+  const formData = new FormData();
+  Object.entries(payload).forEach(([key, value]) => {
+    formData.append(key, value);
+  });
+
+  try {
+    const data = await fetchJson("/api/settings/credentials", { method: "POST", body: formData });
+    settingsUiState.lastSavedPayload = serialized;
+    settingsUiState.liveCredentialDirtyFields.clear();
+    syncLiveCredentialsFromSavedForm();
+    persistBrowserSettingsFromForms();
+    if (data.state) {
+      renderState(data.state);
+    }
+    if (serialized === serializeCredentialPayload(buildCredentialPayload(form))) {
+      settingsUiState.dirtyFields.clear();
+    }
+    setCredentialSaveStatus("Saved locally. Autosave is active.", "saved");
+    if (notify && data.message) {
+      setLastAction("success", "Settings saved", data.message);
+      setToast(data.message);
+    }
+  } catch (error) {
+    settingsUiState.saveQueued = true;
+    setCredentialSaveStatus(error.message || "Unable to save settings.", "error");
+    if (notify) {
+      throw error;
+    }
+  } finally {
+    settingsUiState.saveInFlight = false;
+    if (settingsUiState.saveQueued) {
+      settingsUiState.saveQueued = false;
+      window.clearTimeout(settingsUiState.saveTimer);
+      settingsUiState.saveTimer = window.setTimeout(() => {
+        saveCredentialSettings({ immediate: true }).catch(() => {});
+      }, 250);
+    }
+  }
+}
+
+function scheduleCredentialAutosave(fieldName) {
+  settingsUiState.dirtyFields.add(fieldName);
+  syncLiveCredentialsFromSavedForm();
+  persistBrowserSettingsFromForms();
+  setCredentialSaveStatus("Unsaved changes. Autosaving shortly...", "dirty");
+  window.clearTimeout(settingsUiState.saveTimer);
+  settingsUiState.saveTimer = window.setTimeout(() => {
+    saveCredentialSettings().catch(() => {});
+  }, 500);
+}
+
+function nextStatePollMs() {
+  if (document.hidden) {
+    return 60000;
+  }
+  if (runtimeUiState.stateEventSource) {
+    if (runtimeUiState.dashboard?.live_feed?.connected) {
+      return 15000;
+    }
+    return 30000;
+  }
+  if (runtimeUiState.dashboard?.live_feed?.connected) {
+    return 2500;
+  }
+  return 5000;
+}
+
+function scheduleStatePoll() {
+  window.clearTimeout(runtimeUiState.statePollTimer);
+  runtimeUiState.statePollTimer = window.setTimeout(() => {
+    refreshState().catch(() => {});
+  }, nextStatePollMs());
+}
+
+function ensureStateStream() {
+  if (runtimeUiState.stateEventSource) {
+    return;
+  }
+  const eventSource = new EventSource("/api/state/stream");
+  runtimeUiState.stateEventSource = eventSource;
+  eventSource.addEventListener("state", (event) => {
+    try {
+      const payload = JSON.parse(event.data || "{}");
+      if ((payload.revision || 0) > (runtimeUiState.stateRevision || 0)) {
+        refreshState().catch(() => {});
+      }
+    } catch (error) {
+      console.error("Unable to parse state stream event", error);
+    }
+  });
+  eventSource.onerror = () => {
+    eventSource.close();
+    if (runtimeUiState.stateEventSource === eventSource) {
+      runtimeUiState.stateEventSource = null;
+    }
+    window.clearTimeout(runtimeUiState.stateEventSourceRetryTimer);
+    runtimeUiState.stateEventSourceRetryTimer = window.setTimeout(() => {
+      ensureStateStream();
+    }, 2000);
+  };
+}
+
+function scheduleAiHealthPoll() {
+  window.clearTimeout(runtimeUiState.aiHealthPollTimer);
+  runtimeUiState.aiHealthPollTimer = window.setTimeout(() => {
+    refreshAiHealth().catch(() => {});
+  }, 15000);
+}
+
 function renderList(container, items, renderItem) {
   container.innerHTML = "";
   if (!items || items.length === 0) {
@@ -168,7 +579,7 @@ function renderList(container, items, renderItem) {
 function renderTrade(trade) {
   if (!trade) {
     elements.activeTrade.className = "trade-card empty-state";
-    elements.activeTrade.textContent = "No active paper trade.";
+    elements.activeTrade.textContent = "No active tracked trade.";
     return;
   }
   const stopLabel = trade.price_mode === "cash" ? "Spot Stop" : "Stop";
@@ -177,12 +588,15 @@ function renderTrade(trade) {
   elements.activeTrade.className = "trade-card";
   elements.activeTrade.innerHTML = `
     <strong>${trade.symbol}</strong>
-    <p>${trade.direction} | Qty ${trade.quantity} | Open ${openQty} | Entry ${money(trade.entry_price)} | Current ${money(trade.current_price)}</p>
-    <p>${targetLabel} ${money(trade.target_price)} | ${stopLabel} ${money(trade.stop_price)} | P&L ${money(trade.pnl)}</p>
-    <p>Booked P&L ${money(trade.booked_pnl)} | Partial Exits ${trade.partial_exit_count || 0}</p>
-    <p>Entry Time ${formatIstDateTime(trade.entry_time)} | Entry Source ${trade.entry_quote_source || "-"}</p>
-    <p>Latest Quote ${formatIstDateTime(trade.current_quote_time)} | Current Source ${trade.current_quote_source || "-"}</p>
-    <p>${trade.notes || "No notes"}</p>
+    <p>${trade.status} | ${trade.direction} | ${trade.price_mode === "cash" ? "Cash" : "Option"} | Qty ${trade.quantity} | Open ${openQty} | Closed ${trade.closed_quantity || 0}</p>
+    <p>Entry ${money(trade.entry_price)} | Current ${money(trade.current_price)} | ${targetLabel} ${money(trade.target_price)} | ${stopLabel} ${money(trade.stop_price)}</p>
+    <p>Spot Entry ${money(trade.entry_spot_price)} | Invalidation ${money(trade.invalidation_level)} | Target Spot ${money(trade.target_spot_price)} | First Target ${money(trade.first_target_price)}</p>
+    <p>Setup ${trade.setup_type || "-"} | Score ${trade.setup_score != null ? trade.setup_score.toFixed(1) : "-"} | State ${trade.market_state || "-"}</p>
+    <p>Broker ${trade.broker_status || "-"} | Entry Order ${trade.broker_order_id || "-"} | Exit Order ${trade.broker_exit_order_id || "-"} | Product ${trade.broker_product_type || "-"}</p>
+    <p>Booked P&L ${money(trade.booked_pnl)} | Live P&L ${money(trade.pnl)} | Partial Exits ${trade.partial_exit_count || 0}</p>
+    <p>Entry Time ${formatIstDateTime(trade.entry_time)} | Entry Source ${trade.entry_quote_source || "-"} | Entry Quote ${formatIstDateTime(trade.entry_quote_time)}</p>
+    <p>Latest Quote ${formatIstDateTime(trade.current_quote_time)} | Current Source ${trade.current_quote_source || "-"} | Exit Time ${formatIstDateTime(trade.exit_time)}</p>
+    <p>${trade.broker_status_message || trade.notes || "No notes"}</p>
   `;
 }
 
@@ -208,6 +622,56 @@ function renderPendingSetup(setup, state) {
       <p>${setup.notes || "No setup notes."}</p>
     </div>
   `;
+}
+
+function renderStockSearchResults(state) {
+  if (!elements.stockSearchResults) {
+    return;
+  }
+  if (state.instrument.mode !== "stock") {
+    elements.stockSearchResults.innerHTML = `<div class="list-item empty-state">Switch to stock mode to search the NSE stock universe.</div>`;
+    return;
+  }
+  renderList(elements.stockSearchResults, stockUiState.searchResults, (item) => `
+    <div class="list-item">
+      <strong>${item.symbol}</strong>
+      <p>${item.label || item.symbol}</p>
+      <p>Security ${item.security_id || "resolve on add"}</p>
+      <div class="button-row">
+        <button type="button" class="secondary-btn stock-add-btn" data-symbol="${item.symbol}">Add & Select</button>
+      </div>
+    </div>
+  `);
+}
+
+function renderStockWatchlist(state) {
+  if (!elements.stockWatchlist) {
+    return;
+  }
+  if (state.instrument.mode !== "stock") {
+    elements.stockWatchlist.innerHTML = `<div class="list-item empty-state">Switch to stock mode to manage a live stock watchlist.</div>`;
+    return;
+  }
+  if (!state.stock_watchlist || state.stock_watchlist.length === 0) {
+    elements.stockWatchlist.innerHTML = `<div class="list-item empty-state">No stocks in the watchlist. Search and add a stock to start a chart.</div>`;
+    return;
+  }
+  renderList(elements.stockWatchlist, state.stock_watchlist || [], (item) => `
+    <div class="list-item">
+      <strong>${item.symbol}</strong>
+      <span class="pill">${item.selected ? "active" : (item.subscribed ? "subscribed" : "queued")}</span>
+      <p>${item.label || item.symbol} | Security ${item.security_id}</p>
+      <p>LTP ${money(item.last_ltp)} | Ticks ${item.ticks_received || 0} | Last Tick ${formatSignalTime(item.last_tick_at)}</p>
+      <p>History ${item.history_status || "idle"} | ${item.previous_day_candles || 0} previous day | ${item.intraday_candles || 0} intraday</p>
+      <p>Heuristic ${item.decision_action || "NO_DATA"} | Confidence ${item.decision_confidence != null ? `${Math.round(item.decision_confidence * 100)}%` : "-"}</p>
+      <p>${item.decision_reason || "No heuristic analysis yet for this stock session."}</p>
+      <p>Trade ${item.has_active_trade ? `${item.active_trade_direction || "-"} | P&L ${money(item.active_trade_pnl)}` : "No active trade"} | Realized ${money(item.realized_pnl)}</p>
+      <div class="button-row">
+        <button type="button" class="${item.selected ? "" : "secondary-btn"} stock-select-btn" data-symbol="${item.symbol}">${item.selected ? "Active Stock" : "Open Chart"}</button>
+        <button type="button" class="secondary-btn stock-remove-btn" data-symbol="${item.symbol}">Remove</button>
+      </div>
+    </div>
+  `);
 }
 
 function drawChart(state) {
@@ -257,6 +721,8 @@ function drawChart(state) {
 }
 
 function renderState(state) {
+  runtimeUiState.dashboard = state;
+  runtimeUiState.stateRevision = state.state_revision || 0;
   elements.instrumentValue.textContent = state.instrument.label;
   elements.modeValue.textContent = state.mode;
   elements.operatingModeValue.textContent = state.operating_mode;
@@ -270,15 +736,26 @@ function renderState(state) {
   elements.liveLtpValue.textContent = money(state.live_feed.last_ltp);
   elements.liveTicksValue.textContent = state.live_feed.ticks_received;
   elements.liveErrorValue.textContent = state.live_feed.error || "None";
-  elements.instrumentNote.textContent = `The live feed subscribes to Dhan security ID ${state.instrument.security_id} for ${state.instrument.label} in paper mode.`;
+  elements.executionEnabledValue.textContent = state.execution?.live_trading_enabled ? "armed" : "disabled";
+  elements.executionStatusValue.innerHTML = state.execution
+    ? `${state.execution.order_updates_status || "disconnected"} | Update ${formatIstDateTime(state.execution.last_order_update_at)}${state.execution.last_order_message ? `<br>${state.execution.last_order_message}` : ""}${state.execution.order_updates_message ? `<br>${state.execution.order_updates_message}` : ""}`
+    : "Order updates disconnected.";
+  elements.instrumentNote.textContent = state.instrument.mode === "stock"
+    ? `The stock watchlist currently targets ${state.stock_watchlist.length || 0} NSE cash symbol(s). ${state.instrument.label} is the active heuristic chart on security ID ${state.instrument.security_id}. Real orders trigger only when live trading is armed.`
+    : `The live feed subscribes to Dhan security ID ${state.instrument.security_id} for ${state.instrument.label}. Real orders trigger only when live trading is armed.`;
   elements.decisionOptionLabel.textContent = state.instrument.supports_options ? "Option" : "Bias";
   document.getElementById("connectLiveBtn").textContent = `Connect Live ${state.instrument.label}`;
   document.getElementById("simulateTodayBtn").textContent = `Start ${state.instrument.label} Today Simulation`;
+  document.getElementById("startTradingBtn").textContent = state.execution?.live_trading_enabled ? "Trading Armed" : "Start Trading";
   elements.syncStatusValue.textContent = `${state.data_sync.status} (${state.data_sync.source})`;
+  elements.operationJobValue.textContent = `${state.operation_job?.job_type || "idle"} (${state.operation_job?.status || "idle"})`;
+  elements.operationJobMessage.textContent = state.operation_job?.message || "No background sync or replay job is running.";
   elements.syncMessageValue.textContent = state.data_sync.message || "No Dhan chart sync yet.";
   elements.syncPreviousValue.textContent = state.data_sync.previous_day_candles || 0;
   elements.syncIntradayValue.textContent = state.data_sync.intraday_candles || 0;
   elements.syncTotalValue.textContent = state.data_sync.total_loaded || 0;
+  elements.syncReplayDayValue.textContent = formatIsoDate(state.data_sync.replay_session_day);
+  elements.syncPreviousContextDayValue.textContent = formatIsoDate(state.data_sync.previous_context_day);
   elements.syncOpenValue.textContent = state.data_sync.has_live_open_candle ? "Yes" : "No";
   elements.syncUpdatedValue.textContent = state.data_sync.last_synced_at
     ? new Date(state.data_sync.last_synced_at).toLocaleString()
@@ -291,6 +768,9 @@ function renderState(state) {
   elements.savedDeepSeekModelValue.textContent = state.credentials.deepseek_model || "deepseek-v4-flash";
   elements.savedFullAIProviderValue.textContent = state.credentials.full_ai_provider || "openai";
   elements.savedOperatingModeValue.textContent = state.credentials.operating_mode || "full-ai";
+  elements.savedNiftyLotsValue.textContent = state.credentials.nifty_order_lots || 1;
+  elements.savedStockCapitalValue.textContent = money(state.credentials.stock_trade_capital);
+  elements.savedExpiryPreferenceValue.textContent = state.credentials.nifty_expiry_preference || "current-weekly";
   elements.savedPathValue.textContent = state.credentials.storage_path || "-";
   elements.savedUpdatedValue.textContent = state.credentials.last_updated
     ? new Date(state.credentials.last_updated).toLocaleString()
@@ -348,6 +828,8 @@ function renderState(state) {
   }
 
   renderPendingSetup(state.pending_setup, state);
+  renderStockSearchResults(state);
+  renderStockWatchlist(state);
 
   renderList(elements.liquidityZones, state.liquidity_zones, (zone) => `
     <div class="list-item">
@@ -381,11 +863,14 @@ function renderState(state) {
   renderList(elements.tradeHistory, state.trade_history, (trade) => `
     <div class="list-item">
       <strong>${trade.symbol}</strong>
-      <p>${trade.status} | Entry ${money(trade.entry_price)} | Exit ${money(trade.exit_price)}</p>
-      <p>Total Qty ${trade.quantity} | Closed Qty ${trade.closed_quantity || 0} | Booked P&amp;L ${money(trade.booked_pnl)}</p>
-      <p>Entry Time ${formatIstDateTime(trade.entry_time)} | Exit Time ${formatIstDateTime(trade.exit_time)}</p>
-      <p>Entry Source ${trade.entry_quote_source || "-"} | Exit Source ${trade.exit_quote_source || "-"}</p>
-      <p>P&amp;L ${money(trade.pnl)} | ${trade.notes || "No notes"}</p>
+      <p>${trade.status} | ${trade.direction} | ${trade.price_mode === "cash" ? "Cash" : "Option"} | Entry ${money(trade.entry_price)} | Exit ${money(trade.exit_price)}</p>
+      <p>Setup ${trade.setup_type || "-"} | Score ${trade.setup_score != null ? trade.setup_score.toFixed(1) : "-"} | State ${trade.market_state || "-"}</p>
+      <p>Total Qty ${trade.quantity} | Open Qty ${trade.open_quantity ?? 0} | Closed Qty ${trade.closed_quantity || 0} | Booked P&amp;L ${money(trade.booked_pnl)}</p>
+      <p>Target ${money(trade.target_price)} | Stop ${money(trade.stop_price)} | Invalidation ${money(trade.invalidation_level)} | First Target ${money(trade.first_target_price)}</p>
+      <p>Broker ${trade.broker_status || "-"} | Entry Order ${trade.broker_order_id || "-"} | Exit Order ${trade.broker_exit_order_id || "-"} | Product ${trade.broker_product_type || "-"}</p>
+      <p>Entry Time ${formatIstDateTime(trade.entry_time)} | Exit Time ${formatIstDateTime(trade.exit_time)} | Latest Quote ${formatIstDateTime(trade.current_quote_time)}</p>
+      <p>Entry Source ${trade.entry_quote_source || "-"} | Current Source ${trade.current_quote_source || "-"} | Exit Source ${trade.exit_quote_source || "-"}</p>
+      <p>P&amp;L ${money(trade.pnl)} | ${trade.broker_status_message || trade.notes || "No notes"}</p>
     </div>
   `);
 
@@ -413,8 +898,11 @@ function renderState(state) {
   elements.rulebookView.textContent = state.rulebook;
 
   const liveConnectForm = document.getElementById("liveConnectForm");
-  if (liveConnectForm && state.credentials.client_id && !liveConnectForm.elements.client_id.value) {
-    liveConnectForm.elements.client_id.value = state.credentials.client_id;
+  if (liveConnectForm) {
+    if (state.credentials.client_id && !liveConnectForm.elements.client_id.value) {
+      liveConnectForm.elements.client_id.value = state.credentials.client_id;
+    }
+    syncLiveCredentialsFromSavedForm();
   }
   const instrumentModeForm = document.getElementById("instrumentModeForm");
   if (instrumentModeForm) {
@@ -422,21 +910,20 @@ function renderState(state) {
   }
 
   const credentialSaveForm = document.getElementById("credentialSaveForm");
-  if (credentialSaveForm && state.credentials.client_id && !credentialSaveForm.elements.client_id.value) {
-    credentialSaveForm.elements.client_id.value = state.credentials.client_id;
+  if (credentialSaveForm) {
+    syncCredentialField(credentialSaveForm, "client_id", state.credentials.client_id || "");
+    syncCredentialField(credentialSaveForm, "openai_model", state.credentials.openai_model || "");
+    syncCredentialField(credentialSaveForm, "deepseek_model", state.credentials.deepseek_model || "");
+    syncCredentialField(credentialSaveForm, "full_ai_provider", state.credentials.full_ai_provider || "");
+    syncCredentialField(credentialSaveForm, "operating_mode", state.credentials.operating_mode || "");
+    syncCredentialField(credentialSaveForm, "nifty_order_lots", String(state.credentials.nifty_order_lots || 1));
+    syncCredentialField(credentialSaveForm, "stock_trade_capital", String(state.credentials.stock_trade_capital || 25000));
+    syncCredentialField(credentialSaveForm, "nifty_expiry_preference", state.credentials.nifty_expiry_preference || "current-weekly");
+    if (!settingsUiState.dirtyFields.size && !settingsUiState.saveInFlight) {
+      setCredentialSaveStatus("Saved locally. Autosave is active.", "saved");
+    }
   }
-  if (credentialSaveForm && state.credentials.openai_model && !credentialSaveForm.elements.openai_model.value) {
-    credentialSaveForm.elements.openai_model.value = state.credentials.openai_model;
-  }
-  if (credentialSaveForm && state.credentials.deepseek_model && !credentialSaveForm.elements.deepseek_model.value) {
-    credentialSaveForm.elements.deepseek_model.value = state.credentials.deepseek_model;
-  }
-  if (credentialSaveForm && state.credentials.full_ai_provider) {
-    credentialSaveForm.elements.full_ai_provider.value = state.credentials.full_ai_provider;
-  }
-  if (credentialSaveForm && state.credentials.operating_mode) {
-    credentialSaveForm.elements.operating_mode.value = state.credentials.operating_mode;
-  }
+  persistBrowserSettingsFromForms();
 
   renderList(elements.learningLog, state.learning_log, (item) => `
     <div class="list-item">
@@ -449,8 +936,54 @@ function renderState(state) {
 }
 
 async function refreshState() {
-  const state = await fetchJson(stateUrl);
+  if (runtimeUiState.stateRefreshInFlight) {
+    return;
+  }
+  runtimeUiState.stateRefreshInFlight = true;
+  try {
+    const headers = {};
+    if (runtimeUiState.stateRevision) {
+      headers["If-None-Match"] = `W/"state-${runtimeUiState.stateRevision}"`;
+    }
+    const response = await fetch(stateUrl, { headers });
+    if (response.status === 304) {
+      return;
+    }
+    const state = await response.json();
+    if (!response.ok) {
+      throw new Error(state.detail || "Request failed");
+    }
+    renderState(state);
+  } finally {
+    runtimeUiState.stateRefreshInFlight = false;
+    scheduleStatePoll();
+  }
+}
+
+async function searchStocks(query) {
+  stockUiState.lastQuery = query || "";
+  const payload = await fetchJson(`/api/stocks/search?q=${encodeURIComponent(stockUiState.lastQuery)}&limit=20`);
+  stockUiState.searchResults = payload.results || [];
+  const state = runtimeUiState.dashboard || await fetchJson(stateUrl);
   renderState(state);
+}
+
+async function addStock(symbol) {
+  const formData = new FormData();
+  formData.append("symbol", symbol);
+  await postForm("/api/stocks/watchlist/add", formData);
+}
+
+async function selectStock(symbol) {
+  const formData = new FormData();
+  formData.append("symbol", symbol);
+  await postForm("/api/stocks/watchlist/select", formData);
+}
+
+async function removeStock(symbol) {
+  const formData = new FormData();
+  formData.append("symbol", symbol);
+  await postForm("/api/stocks/watchlist/remove", formData);
 }
 
 async function postForm(url, formData) {
@@ -478,6 +1011,10 @@ async function runAction(action) {
 }
 
 async function refreshAiHealth() {
+  if (runtimeUiState.aiHealthRefreshInFlight) {
+    return;
+  }
+  runtimeUiState.aiHealthRefreshInFlight = true;
   try {
     const health = await fetchJson("/api/health/ai");
     elements.aiStatusValue.textContent = health.reachable ? `Configured (${health.provider})` : "Not configured";
@@ -487,6 +1024,9 @@ async function refreshAiHealth() {
     elements.aiStatusValue.textContent = "Unknown";
     elements.aiModelStatusValue.textContent = "Unknown";
     elements.aiHealthMessage.textContent = error.message || "Unable to load AI health.";
+  } finally {
+    runtimeUiState.aiHealthRefreshInFlight = false;
+    scheduleAiHealthPoll();
   }
 }
 
@@ -497,17 +1037,35 @@ document.getElementById("loadSampleBtn").addEventListener("click", () => runActi
 }));
 
 document.getElementById("simulateTodayBtn").addEventListener("click", () => runAction(async () => {
-  const liveConnectForm = document.getElementById("liveConnectForm");
+  const replayForm = document.getElementById("historicalReplayForm");
+  const credentials = currentDhanCredentials();
   const formData = new FormData();
-  formData.append("client_id", liveConnectForm.elements.client_id.value || "");
-  formData.append("access_token", liveConnectForm.elements.access_token.value || "");
-  await postForm("/api/simulation/today", formData);
+  formData.append("client_id", credentials.client_id);
+  formData.append("access_token", credentials.access_token);
+  formData.append("decision_duration_minutes", replayForm.elements.decision_duration_minutes.value || "5");
+  await postForm("/api/simulation/today/start", formData);
 }));
+
+document.getElementById("historicalReplayForm").addEventListener("submit", (event) => {
+  event.preventDefault();
+  const form = event.currentTarget;
+  runAction(async () => {
+    const credentials = currentDhanCredentials();
+    const formData = new FormData();
+    formData.append("client_id", credentials.client_id);
+    formData.append("access_token", credentials.access_token);
+    formData.append("replay_date", form.elements.replay_date.value || "");
+    formData.append("previous_context_date", form.elements.previous_context_date.value || "");
+    formData.append("decision_duration_minutes", form.elements.decision_duration_minutes.value || "5");
+    await postForm("/api/simulation/historical/start", formData);
+  });
+});
 
 document.getElementById("instrumentModeForm").addEventListener("submit", (event) => {
   event.preventDefault();
   const form = event.currentTarget;
   runAction(async () => {
+    persistBrowserSettingsFromForms();
     const formData = new FormData(form);
     await postForm("/api/instrument-mode", formData);
   });
@@ -563,22 +1121,53 @@ document.getElementById("noteLearnForm").addEventListener("submit", (event) => {
 
 document.getElementById("liveConnectForm").addEventListener("submit", (event) => {
   event.preventDefault();
-  const form = event.currentTarget;
   runAction(async () => {
-  const formData = new FormData(form);
+  mirrorLiveCredentialsIntoSavedForm();
+  persistBrowserSettingsFromForms();
+  const credentials = currentDhanCredentials();
+  const formData = new FormData();
+  formData.append("client_id", credentials.client_id);
+  formData.append("access_token", credentials.access_token);
   await postForm("/api/live/connect", formData);
   });
 });
 
 document.getElementById("credentialSaveForm").addEventListener("submit", (event) => {
   event.preventDefault();
-  const form = event.currentTarget;
   runAction(async () => {
-  const formData = new FormData(form);
-  await postForm("/api/settings/credentials", formData);
-  form.elements.access_token.value = "";
-  form.elements.openai_api_key.value = "";
-  form.elements.deepseek_api_key.value = "";
+    await saveCredentialSettings({ immediate: true, notify: true });
+  });
+});
+
+document.querySelectorAll("#credentialSaveForm input, #credentialSaveForm select").forEach((field) => {
+  const eventName = field.tagName === "SELECT" ? "change" : "input";
+  field.addEventListener(eventName, () => {
+    scheduleCredentialAutosave(field.name);
+  });
+});
+
+document.querySelectorAll("#liveConnectForm input").forEach((field) => {
+  field.addEventListener("input", () => {
+    noteLiveCredentialEdit(field.name);
+    mirrorLiveCredentialsIntoSavedForm();
+    scheduleCredentialAutosave(field.name);
+  });
+  field.addEventListener("blur", () => {
+    const value = (field.value || "").trim();
+    const savedForm = document.getElementById("credentialSaveForm");
+    const savedValue = (savedForm?.elements[field.name]?.value || "").trim();
+    if (value && value === savedValue) {
+      settingsUiState.liveCredentialDirtyFields.delete(field.name);
+    }
+  });
+});
+
+document.getElementById("instrumentModeForm").elements.instrument_mode.addEventListener("change", () => {
+  const instrumentModeForm = document.getElementById("instrumentModeForm");
+  persistBrowserSettingsFromForms();
+  runAction(async () => {
+    const formData = new FormData(instrumentModeForm);
+    await postForm("/api/instrument-mode", formData);
   });
 });
 
@@ -588,17 +1177,60 @@ document.getElementById("disconnectLiveBtn").addEventListener("click", () => run
   setToast(data.message);
 }));
 
-document.getElementById("syncHistoryBtn").addEventListener("click", () => runAction(async () => {
-  const liveConnectForm = document.getElementById("liveConnectForm");
-  const formData = new FormData();
-  formData.append("client_id", liveConnectForm.elements.client_id.value || "");
-  formData.append("access_token", liveConnectForm.elements.access_token.value || "");
-  await postForm("/api/live/sync-history", formData);
+document.getElementById("startTradingBtn").addEventListener("click", () => runAction(async () => {
+  const data = await fetchJson("/api/trading/start", { method: "POST" });
+  renderState(data.state);
+  setToast(data.message);
 }));
 
+document.getElementById("squareOffBtn").addEventListener("click", () => runAction(async () => {
+  const data = await fetchJson("/api/trading/square-off", { method: "POST" });
+  renderState(data.state);
+  setToast(data.message);
+}));
+
+document.getElementById("syncHistoryBtn").addEventListener("click", () => runAction(async () => {
+  const credentials = currentDhanCredentials();
+  const formData = new FormData();
+  formData.append("client_id", credentials.client_id);
+  formData.append("access_token", credentials.access_token);
+  await postForm("/api/live/sync-history/start", formData);
+}));
+
+document.getElementById("stockSearchForm").addEventListener("submit", (event) => {
+  event.preventDefault();
+  const form = event.currentTarget;
+  runAction(async () => {
+    await searchStocks(form.elements.query.value || "");
+  });
+});
+
+document.addEventListener("click", (event) => {
+  const addButton = event.target.closest(".stock-add-btn");
+  if (addButton) {
+    runAction(async () => {
+      await addStock(addButton.dataset.symbol || "");
+    });
+    return;
+  }
+  const selectButton = event.target.closest(".stock-select-btn");
+  if (selectButton) {
+    runAction(async () => {
+      await selectStock(selectButton.dataset.symbol || "");
+    });
+    return;
+  }
+  const removeButton = event.target.closest(".stock-remove-btn");
+  if (removeButton) {
+    runAction(async () => {
+      await removeStock(removeButton.dataset.symbol || "");
+    });
+  }
+});
+
+restoreBrowserSettings();
+syncLiveCredentialsFromSavedForm();
 refreshState().catch((error) => setToast(error.message));
 refreshAiHealth().catch(() => {});
-window.setInterval(() => {
-  refreshState().catch(() => {});
-  refreshAiHealth().catch(() => {});
-}, 3000);
+setHistoricalReplayDefaults();
+ensureStateStream();

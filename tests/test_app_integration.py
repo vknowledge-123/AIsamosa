@@ -3,7 +3,7 @@ from __future__ import annotations
 import tempfile
 import time
 import unittest
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -11,19 +11,23 @@ from fastapi.testclient import TestClient
 
 import app.main as main_module
 from app.config import get_settings
-from app.schemas import Candle, LiveFeedState, OperatingMode, SimulatedTrade, TradeAction, TradeDecision
+from app.schemas import Candle, InstrumentState, LiveFeedState, OperatingMode, PreviousDayLevels, SimulatedTrade, StrategyContext, TradeAction, TradeDecision
 from app.services.credential_store import CredentialStore
-from app.services.dhan_history import DhanSessionBundle
+from app.services.dhan_history import DhanChartEmptyDataError, DhanChartError, DhanChartRateLimitError, DhanChartService, DhanSessionBundle
 from app.services.dhan_options import OptionContract, OptionQuote
+from app.services.heuristic_engine import HeuristicDecisionEngine, Observation, SetupCandidate, SweepEvent
 from app.services.simulation import SimulationEngine
+from app.services.stock_universe import StockUniverseEntry, StockUniverseService
 
 
 class AppIntegrationTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tempdir = tempfile.TemporaryDirectory()
         self.original_engine = main_module.engine
-        self.test_engine = SimulationEngine(get_settings())
-        self.test_engine.credential_store = CredentialStore(Path(self.tempdir.name) / "credentials.json")
+        self.temp_store = CredentialStore(Path(self.tempdir.name) / "credentials.json")
+        with patch("app.services.simulation.CredentialStore", return_value=self.temp_store):
+            self.test_engine = SimulationEngine(get_settings())
+        self.test_engine.credential_store = self.temp_store
         self.test_engine.ai_service.enabled = False
         self.test_engine.live_feed = self.test_engine._build_live_feed_state()
         main_module.engine = self.test_engine
@@ -34,6 +38,126 @@ class AppIntegrationTests(unittest.TestCase):
         main_module.engine = self.original_engine
         self.tempdir.cleanup()
 
+    def _make_candle(self, offset_minutes: int, open_price: float, high: float, low: float, close: float, volume: float = 1000.0) -> Candle:
+        return Candle(
+            timestamp=datetime(2026, 2, 18, 9, 15) + timedelta(minutes=offset_minutes),
+            open=open_price,
+            high=high,
+            low=low,
+            close=close,
+            volume=volume,
+        )
+
+    def _build_context(
+        self,
+        session_candles: list[Candle],
+        *,
+        previous_close: float = 100.0,
+        active_trade: SimulatedTrade | None = None,
+        recent_closed_trades: list[SimulatedTrade] | None = None,
+    ) -> StrategyContext:
+        previous_day_candles = [
+            Candle(timestamp=datetime(2026, 2, 17, 15, 28), open=99.5, high=101.0, low=98.8, close=100.0, volume=1000),
+            Candle(timestamp=datetime(2026, 2, 17, 15, 29), open=100.0, high=100.8, low=99.6, close=previous_close, volume=900),
+        ]
+        return StrategyContext(
+            instrument=InstrumentState(),
+            current_candle=session_candles[-1],
+            recent_candles=session_candles[-10:],
+            session_candles=session_candles,
+            previous_day_candles=previous_day_candles,
+            previous_day=PreviousDayLevels(high=101.0, low=98.8, close=previous_close),
+            liquidity_zones=[],
+            operator_zones=[],
+            signal_events=[],
+            market_structure="",
+            pending_setup=None,
+            active_trade=active_trade,
+            recent_closed_trades=recent_closed_trades or [],
+            rulebook_markdown="",
+        )
+
+    def _build_observation(self, **overrides) -> Observation:
+        base = Observation(
+            session_phase="primary-trap-window",
+            day_type="trap-day",
+            value_state="fair",
+            range_state="balanced",
+            participation_state="two_sided_active",
+            regime_quality=0.0,
+            previous_day_bias="bullish-recovery",
+            prior_close_psychology="balanced-close",
+            opening_confirmation="flat-open",
+            stop_availability="partially-cleared",
+            operator_bias="neutral",
+            crowding_bias="balanced",
+            vwap=100.0,
+            opening_range_high=101.0,
+            opening_range_low=99.0,
+            first_fifteen_high=101.0,
+            first_fifteen_low=99.0,
+            prior_hour_high=101.0,
+            prior_hour_low=99.0,
+            session_high=101.5,
+            session_low=98.8,
+            prior_session_high=101.2,
+            prior_session_low=99.2,
+            atr=4.0,
+            overlap_ratio=0.42,
+            gap=0.6,
+            strong_intent=False,
+            weak_intent=False,
+            expiry_session=False,
+            large_gap_reset=False,
+            compression_day=False,
+            two_sided_participation=True,
+            previous_close_reclaim_long_ready=False,
+            previous_close_reclaim_short_ready=False,
+            previous_close_touched=False,
+            mapped_buy_liquidity=[],
+            mapped_sell_liquidity=[],
+            buy_sweeps=[],
+            sell_sweeps=[],
+        )
+        for key, value in overrides.items():
+            setattr(base, key, value)
+        return base
+
+    def _build_trade(
+        self,
+        *,
+        entry_time: datetime,
+        entry_spot_price: float,
+        invalidation_level: float,
+        setup_type: str,
+    ) -> SimulatedTrade:
+        return SimulatedTrade(
+            trade_id="trade-1",
+            status="OPEN",
+            direction="LONG_CALL",
+            option_type="CE",
+            strike=100,
+            symbol="NIFTY SPOT",
+            quantity=1,
+            open_quantity=1,
+            entry_time=entry_time,
+            entry_price=10.0,
+            entry_spot_price=entry_spot_price,
+            entry_option_price=10.0,
+            current_price=10.2,
+            current_option_price=10.2,
+            stop_price=9.0,
+            stop_option_price=9.0,
+            target_price=12.0,
+            target_option_price=12.0,
+            invalidation_level=invalidation_level,
+            target_spot_price=entry_spot_price + 2.0,
+            first_target_price=entry_spot_price + 1.0,
+            setup_type=setup_type,
+            setup_score=82.0,
+            market_state="trap-day",
+        )
+
     def test_dashboard_and_health_routes_render(self) -> None:
         with patch.object(self.test_engine.ai_service, "health", return_value={"reachable": True, "model_available": True, "model": "gpt-5.4-mini", "message": "ok"}):
             dashboard = self.client.get("/")
@@ -43,6 +167,16 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertIn("SL Hunting Paper Trader", dashboard.text)
         self.assertEqual(health.status_code, 200)
         self.assertTrue(health.json()["reachable"])
+
+    def test_state_endpoint_returns_304_when_revision_is_unchanged(self) -> None:
+        first = self.client.get("/api/state")
+
+        self.assertEqual(first.status_code, 200)
+        self.assertIn("etag", first.headers)
+
+        second = self.client.get("/api/state", headers={"If-None-Match": first.headers["etag"]})
+
+        self.assertEqual(second.status_code, 304)
 
     def test_upload_rulebook_txt_updates_learning_log(self) -> None:
         self.test_engine.ai_service.enabled = False
@@ -95,6 +229,9 @@ class AppIntegrationTests(unittest.TestCase):
                 "deepseek_model": "deepseek-v4-flash",
                 "full_ai_provider": "deepseek",
                 "operating_mode": "heuristic",
+                "nifty_order_lots": "2",
+                "stock_trade_capital": "50000",
+                "nifty_expiry_preference": "next-weekly",
             },
         )
 
@@ -108,7 +245,256 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertEqual(summary["deepseek_model"], "deepseek-v4-flash")
         self.assertEqual(summary["full_ai_provider"], "deepseek")
         self.assertEqual(summary["operating_mode"], "heuristic")
+        self.assertEqual(summary["nifty_order_lots"], 2)
+        self.assertEqual(summary["stock_trade_capital"], 50000.0)
+        self.assertEqual(summary["nifty_expiry_preference"], "next-weekly")
         self.assertTrue(Path(summary["storage_path"]).exists())
+
+    def test_engine_restores_persisted_stock_mode_and_selected_symbol(self) -> None:
+        store = CredentialStore(Path(self.tempdir.name) / "persisted-ui.json")
+        store.save_ui_preferences(
+            instrument_mode="stock",
+            selected_stock_symbol="TCS",
+            stock_watchlist_symbols=["SBIN", "TCS"],
+        )
+
+        with patch("app.services.simulation.CredentialStore", return_value=store):
+            restored_engine = SimulationEngine(get_settings())
+
+        try:
+            state = restored_engine.get_state()
+            self.assertEqual(state.instrument.mode, "stock")
+            self.assertEqual(state.instrument.symbol, "TCS")
+            self.assertTrue(any(item.symbol == "TCS" for item in restored_engine.stock_watchlist.values()))
+        finally:
+            restored_engine.disconnect_live_feed()
+
+    def test_engine_keeps_persisted_empty_stock_watchlist_empty(self) -> None:
+        store = CredentialStore(Path(self.tempdir.name) / "persisted-empty-ui.json")
+        store.save_ui_preferences(
+            instrument_mode="stock",
+            selected_stock_symbol="",
+            stock_watchlist_symbols=[],
+        )
+
+        with patch("app.services.simulation.CredentialStore", return_value=store):
+            restored_engine = SimulationEngine(get_settings())
+
+        try:
+            state = restored_engine.get_state()
+            self.assertEqual(state.instrument.mode, "stock")
+            self.assertEqual(state.instrument.label, "Stock Watchlist")
+            self.assertEqual(state.instrument.security_id, "")
+            self.assertFalse(restored_engine.stock_watchlist)
+        finally:
+            restored_engine.disconnect_live_feed()
+
+    def test_start_live_trading_arms_execution_state(self) -> None:
+        self.client.post(
+            "/api/settings/credentials",
+            data={"operating_mode": "heuristic", "client_id": "cid-123", "access_token": "tok-456"},
+        )
+        self.test_engine.live_feed_adapter = Mock()
+        with patch.object(self.test_engine, "_start_order_updates", return_value=None):
+            response = self.client.post("/api/trading/start")
+
+        self.assertEqual(response.status_code, 200)
+        state = response.json()["state"]
+        self.assertTrue(state["execution"]["live_trading_enabled"])
+
+    def test_live_connect_uses_saved_credentials_when_form_is_blank(self) -> None:
+        self.client.post(
+            "/api/settings/credentials",
+            data={"client_id": "cid-123", "access_token": "tok-456"},
+        )
+        fake_adapter = Mock()
+        fake_adapter.start = Mock()
+
+        with patch.object(self.test_engine, "sync_dhan_context", return_value=self.test_engine.get_state()) as sync_mock:
+            with patch("app.services.simulation.resolve_quote_subscription", return_value=("IDX", "13", "Quote")):
+                with patch("app.services.simulation.DhanMarketFeedAdapter", return_value=fake_adapter) as adapter_mock:
+                    response = self.client.post("/api/live/connect", data={"client_id": "", "access_token": ""})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(sync_mock.call_count, 1)
+        self.assertEqual(adapter_mock.call_args.args[0], "cid-123")
+        self.assertEqual(adapter_mock.call_args.args[1], "tok-456")
+        fake_adapter.start.assert_called_once()
+
+    def test_background_sync_history_route_starts_job_and_completes(self) -> None:
+        def fake_sync(*, client_id=None, access_token=None):
+            time.sleep(0.05)
+            with self.test_engine.lock:
+                self.test_engine.data_sync = self.test_engine.data_sync.model_copy(
+                    update={"status": "ready", "message": "Background sync completed."}
+                )
+                self.test_engine._mark_state_dirty_locked()
+            return self.test_engine.get_state()
+
+        with patch.object(self.test_engine, "sync_dhan_context", side_effect=fake_sync):
+            response = self.client.post("/api/live/sync-history/start", data={"client_id": "cid", "access_token": "tok"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["state"]["operation_job"]["status"], "running")
+        deadline = time.time() + 2.0
+        final_state = self.test_engine.get_state()
+        while time.time() < deadline and final_state.operation_job.status == "running":
+            time.sleep(0.02)
+            final_state = self.test_engine.get_state()
+        self.assertEqual(final_state.operation_job.status, "success")
+
+    def test_background_historical_replay_route_starts_job_and_rejects_overlap(self) -> None:
+        def fake_replay(*, client_id=None, access_token=None, replay_date=None, previous_context_date=None, replay_decision_duration_minutes=1):
+            time.sleep(0.15)
+            with self.test_engine.lock:
+                self.test_engine.data_sync = self.test_engine.data_sync.model_copy(
+                    update={"status": "ready", "message": f"Replay completed for {replay_date}."}
+                )
+                self.test_engine._mark_state_dirty_locked()
+            return self.test_engine.get_state()
+
+        with patch.object(self.test_engine, "simulate_historical_session", side_effect=fake_replay):
+            first = self.client.post(
+                "/api/simulation/historical/start",
+                data={
+                    "client_id": "cid",
+                    "access_token": "tok",
+                    "replay_date": "2026-05-13",
+                    "previous_context_date": "2026-05-12",
+                    "decision_duration_minutes": "1",
+                },
+            )
+            second = self.client.post(
+                "/api/simulation/historical/start",
+                data={
+                    "client_id": "cid",
+                    "access_token": "tok",
+                    "replay_date": "2026-05-13",
+                    "previous_context_date": "2026-05-12",
+                    "decision_duration_minutes": "1",
+                },
+            )
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(first.json()["state"]["operation_job"]["status"], "running")
+        self.assertEqual(second.status_code, 400)
+        self.assertIn("already running", second.json()["detail"])
+        deadline = time.time() + 2.0
+        final_state = self.test_engine.get_state()
+        while time.time() < deadline and final_state.operation_job.status == "running":
+            time.sleep(0.02)
+            final_state = self.test_engine.get_state()
+        self.assertEqual(final_state.operation_job.status, "success")
+
+    def test_order_update_packet_updates_active_trade_status_and_price(self) -> None:
+        trade = SimulatedTrade(
+            trade_id="trade-active",
+            status="OPEN",
+            direction="LONG_STOCK",
+            instrument_mode="stock",
+            instrument_label="SBIN",
+            price_mode="cash",
+            trade_security_id="3045",
+            quote_exchange_segment="NSE_EQ",
+            option_type="CE",
+            strike=0,
+            symbol="SBIN EQ",
+            quantity=10,
+            open_quantity=10,
+            entry_time=datetime.fromisoformat("2026-05-14T09:15:00"),
+            entry_price=800.0,
+            entry_spot_price=800.0,
+            entry_option_price=800.0,
+            current_price=800.0,
+            current_option_price=800.0,
+            stop_price=790.0,
+            stop_option_price=790.0,
+            target_price=820.0,
+            target_option_price=820.0,
+            broker_order_id="ORD123",
+            broker_status="PENDING",
+            broker_status_message="Waiting",
+        )
+        self.test_engine.active_trade = trade
+        self.test_engine.trade_history = [trade]
+
+        self.test_engine.handle_order_update_packet(
+            {
+                "Data": {
+                    "OrderNo": "ORD123",
+                    "Status": "TRADED",
+                    "AvgTradedPrice": "805.50",
+                }
+            }
+        )
+
+        self.assertEqual(trade.broker_status, "TRADED")
+        self.assertEqual(trade.entry_price, 805.5)
+        self.assertEqual(trade.current_price, 805.5)
+        self.assertEqual(trade.current_quote_source, "dhan-order-update")
+        self.assertIn("TRADED", self.test_engine.execution_state.last_order_message or "")
+
+    def test_order_update_packet_updates_closed_trade_history_entry(self) -> None:
+        trade = SimulatedTrade(
+            trade_id="trade-closed",
+            status="CLOSED",
+            direction="LONG_STOCK",
+            instrument_mode="stock",
+            instrument_label="SBIN",
+            price_mode="cash",
+            trade_security_id="3045",
+            quote_exchange_segment="NSE_EQ",
+            option_type="CE",
+            strike=0,
+            symbol="SBIN EQ",
+            quantity=10,
+            open_quantity=0,
+            closed_quantity=10,
+            entry_time=datetime.fromisoformat("2026-05-14T09:15:00"),
+            entry_price=800.0,
+            entry_spot_price=800.0,
+            entry_option_price=800.0,
+            current_price=810.0,
+            current_option_price=810.0,
+            stop_price=790.0,
+            stop_option_price=790.0,
+            target_price=820.0,
+            target_option_price=820.0,
+            exit_time=datetime.fromisoformat("2026-05-14T09:25:00"),
+            exit_price=810.0,
+            exit_option_price=810.0,
+            broker_order_id="ORD123",
+            broker_exit_order_id="ORD124",
+            broker_status="PENDING",
+            broker_status_message="Exit submitted",
+        )
+        self.test_engine.active_trade = None
+        self.test_engine.trade_history = [trade]
+
+        self.test_engine.handle_order_update_packet(
+            {
+                "Data": {
+                    "OrderNo": "ORD124",
+                    "Status": "TRADED",
+                    "AvgTradedPrice": "812.25",
+                }
+            }
+        )
+
+        self.assertEqual(trade.broker_status, "TRADED")
+        self.assertEqual(trade.exit_price, 812.25)
+        self.assertEqual(trade.exit_option_price, 812.25)
+
+    def test_square_off_route_disables_live_execution(self) -> None:
+        self.test_engine.live_feed_adapter = Mock()
+        self.test_engine.live_trading_enabled = True
+        self.test_engine.execution_state.live_trading_enabled = True
+
+        response = self.client.post("/api/trading/square-off")
+
+        self.assertEqual(response.status_code, 200)
+        state = response.json()["state"]
+        self.assertFalse(state["execution"]["live_trading_enabled"])
 
     def test_heuristic_mode_uses_deterministic_decision_source(self) -> None:
         save_response = self.client.post(
@@ -137,6 +523,1172 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertEqual(state["decision"]["decision_source"], "full-ai-fallback")
         self.assertEqual(state["decision"]["action"], "NO_TRADE")
 
+    def test_previous_close_setup_requires_recent_interaction(self) -> None:
+        engine = HeuristicDecisionEngine()
+        session = [
+            self._make_candle(0, 99.8, 100.2, 99.6, 100.0),
+            self._make_candle(1, 100.0, 100.6, 99.9, 100.5),
+            self._make_candle(2, 103.0, 103.8, 102.8, 103.6),
+            self._make_candle(3, 103.5, 104.0, 103.1, 103.8),
+            self._make_candle(4, 103.7, 104.1, 103.4, 104.0),
+            self._make_candle(5, 103.9, 104.2, 103.6, 104.1),
+            self._make_candle(6, 104.0, 104.4, 103.8, 104.2),
+            self._make_candle(7, 104.1, 104.5, 103.9, 104.3),
+            self._make_candle(8, 104.2, 104.6, 104.0, 104.4),
+            self._make_candle(9, 104.3, 104.7, 104.1, 104.5),
+        ]
+        context = self._build_context(session, previous_close=100.0)
+
+        observation = engine.observe(context)
+
+        self.assertFalse(observation.previous_close_touched)
+        self.assertEqual(engine.build_previous_close_candidates(context, observation), [])
+
+    def test_previous_close_setup_rejects_chasing_price_far_from_level(self) -> None:
+        engine = HeuristicDecisionEngine()
+        session = [
+            self._make_candle(0, 99.7, 100.3, 99.6, 100.1),
+            self._make_candle(1, 100.0, 101.5, 99.9, 101.2),
+            self._make_candle(2, 101.1, 103.5, 101.0, 103.2),
+            self._make_candle(3, 103.0, 106.4, 102.8, 106.0),
+        ]
+        context = self._build_context(session, previous_close=100.0)
+        observation = self._build_observation(
+            atr=4.0,
+            gap=0.8,
+            previous_close_touched=True,
+            previous_close_reclaim_long_ready=True,
+            value_state="inflated",
+        )
+
+        candidates = engine.build_previous_close_candidates(context, observation)
+
+        self.assertEqual(candidates, [])
+
+    def test_previous_close_setup_is_blocked_in_midday_churn(self) -> None:
+        engine = HeuristicDecisionEngine()
+        session = [
+            self._make_candle(0, 99.8, 100.2, 99.7, 100.1),
+            self._make_candle(1, 100.0, 100.8, 99.9, 100.4),
+            self._make_candle(2, 100.3, 101.1, 100.1, 100.9),
+            self._make_candle(3, 100.8, 101.2, 100.4, 100.7),
+        ]
+        context = self._build_context(session, previous_close=100.0)
+        observation = self._build_observation(
+            session_phase="midday",
+            participation_state="fair_value_churn",
+            previous_close_touched=True,
+            previous_close_reclaim_long_ready=True,
+        )
+
+        candidates = engine.build_previous_close_candidates(context, observation)
+
+        self.assertEqual(candidates, [])
+
+    def test_nifty_mode_skips_previous_close_liquidity_path(self) -> None:
+        engine = HeuristicDecisionEngine()
+        session = [
+            self._make_candle(0, 99.8, 100.2, 99.7, 100.1),
+            self._make_candle(1, 100.0, 100.8, 99.9, 100.4),
+            self._make_candle(2, 100.3, 101.1, 100.1, 100.9),
+            self._make_candle(3, 100.8, 101.2, 100.4, 100.7),
+        ]
+        context = self._build_context(session, previous_close=100.0)
+        observation = self._build_observation(
+            previous_close_touched=True,
+            previous_close_reclaim_long_ready=True,
+        )
+
+        candidates = engine.build_candidates(context, observation)
+
+        self.assertEqual(candidates, [])
+
+    def test_stock_mode_keeps_previous_close_liquidity_path(self) -> None:
+        engine = HeuristicDecisionEngine()
+        session = [
+            self._make_candle(0, 99.8, 100.2, 99.7, 100.1),
+            self._make_candle(1, 100.0, 100.8, 99.9, 100.4),
+            self._make_candle(2, 100.3, 101.1, 100.1, 100.9),
+            self._make_candle(3, 100.8, 101.2, 100.4, 100.7),
+        ]
+        context = self._build_context(session, previous_close=100.0).model_copy(
+            update={
+                "instrument": InstrumentState(
+                    mode="stock",
+                    label="SBIN",
+                    symbol="SBIN",
+                    security_id="3045",
+                    exchange_segment="NSE_EQ",
+                    instrument_type="EQUITY",
+                    supports_options=False,
+                    lot_size=1,
+                )
+            }
+        )
+        observation = self._build_observation(
+            previous_close_touched=True,
+            previous_close_reclaim_long_ready=True,
+        )
+
+        candidates = engine.build_candidates(context, observation)
+
+        self.assertTrue(any(candidate.setup_type == "previous_close_reclaim_long" for candidate in candidates))
+
+    def test_active_trade_exits_when_regime_deteriorates_after_entry(self) -> None:
+        engine = HeuristicDecisionEngine()
+        session = [
+            self._make_candle(0, 100.0, 100.8, 99.8, 100.4),
+            self._make_candle(1, 100.3, 100.7, 100.1, 100.5),
+            self._make_candle(2, 100.4, 100.6, 100.2, 100.45),
+            self._make_candle(3, 100.4, 100.55, 100.15, 100.35),
+            self._make_candle(4, 100.3, 100.5, 100.1, 100.3),
+            self._make_candle(5, 100.25, 100.45, 100.05, 100.28),
+        ]
+        trade = self._build_trade(
+            entry_time=session[0].timestamp,
+            entry_spot_price=100.4,
+            invalidation_level=99.4,
+            setup_type="previous_close_reclaim_long",
+        )
+        context = self._build_context(session, previous_close=100.0, active_trade=trade)
+        observation = self._build_observation(
+            session_phase="midday",
+            range_state="compressing",
+            participation_state="post_trend_balance",
+            previous_close_touched=False,
+            previous_close_reclaim_long_ready=False,
+            previous_close_reclaim_short_ready=False,
+            atr=1.0,
+        )
+
+        decision = engine.manage_active_trade(context, observation, current_trade_price=None)
+
+        self.assertEqual(decision.action, TradeAction.exit)
+        self.assertIn("regime has deteriorated", decision.reason.lower())
+
+    def test_early_discount_short_is_blocked_on_gap_down_recovery_context(self) -> None:
+        engine = HeuristicDecisionEngine()
+        session = [
+            self._make_candle(0, 100.0, 100.2, 97.6, 97.9),
+            self._make_candle(1, 97.9, 98.6, 97.8, 98.4),
+            self._make_candle(2, 98.5, 99.1, 98.2, 98.9),
+            self._make_candle(3, 98.9, 99.0, 98.3, 98.4),
+        ]
+        context = self._build_context(session, previous_close=101.5)
+        observation = self._build_observation(
+            session_phase="opening-map",
+            value_state="discount",
+            gap=-2.2,
+            vwap=99.3,
+        )
+        event = SweepEvent(
+            side="buy",
+            level_label="Same-Day Swing High 09:17",
+            level_price=99.0,
+            sweep_index=2,
+            reclaim_index=3,
+            trigger_index=3,
+            sweep_price=99.1,
+            defended_level=99.0,
+            trigger_price=98.5,
+            invalidation_level=99.3,
+            primary=False,
+            quality="tradable",
+            notes=["Same-day high was poked and then faded."],
+        )
+
+        candidate = engine.build_candidate_from_event(context, observation, event, option_type="PE", direction="LONG_PUT")
+
+        self.assertIsNone(candidate)
+
+    def test_minor_retest_becomes_continuation_not_fresh_trap(self) -> None:
+        engine = HeuristicDecisionEngine()
+        session = [
+            self._make_candle(0, 100.0, 100.5, 99.8, 100.2),
+            self._make_candle(1, 100.2, 100.6, 100.0, 100.5),
+            self._make_candle(2, 100.4, 100.9, 100.3, 100.8),
+            self._make_candle(3, 100.8, 101.1, 100.6, 101.0),
+        ]
+        context = self._build_context(session, previous_close=99.8)
+        observation = self._build_observation(
+            value_state="inflated",
+            vwap=100.4,
+            atr=0.6,
+            prior_hour_high=101.0,
+            prior_hour_low=99.8,
+            session_high=101.1,
+            session_low=99.8,
+        )
+        event = SweepEvent(
+            side="sell",
+            level_label="Prior Hour Low",
+            level_price=100.0,
+            sweep_index=1,
+            reclaim_index=1,
+            trigger_index=1,
+            sweep_price=100.0,
+            defended_level=100.0,
+            trigger_price=100.6,
+            invalidation_level=99.7,
+            primary=False,
+            quality="tradable",
+            notes=["Intraday pullback held and reclaimed."],
+        )
+
+        candidate = engine.build_candidate_from_event(context, observation, event, option_type="CE", direction="LONG_CALL")
+
+        self.assertIsNotNone(candidate)
+        self.assertEqual(candidate.setup_type, "bullish_pullback_continuation")
+
+    def test_minor_bearish_retest_becomes_continuation_not_fresh_trap(self) -> None:
+        engine = HeuristicDecisionEngine()
+        session = [
+            self._make_candle(0, 100.0, 100.2, 99.8, 100.0),
+            self._make_candle(1, 100.0, 101.0, 99.9, 100.9),
+            self._make_candle(2, 100.9, 101.1, 100.6, 100.7),
+            self._make_candle(3, 100.7, 100.8, 100.0, 100.1),
+        ]
+        context = self._build_context(session, previous_close=100.0)
+        observation = self._build_observation(
+            value_state="discount",
+            vwap=100.4,
+            atr=0.7,
+            prior_hour_high=101.1,
+            prior_hour_low=99.8,
+            session_high=101.1,
+            session_low=99.8,
+        )
+        event = SweepEvent(
+            side="buy",
+            level_label="Prior Hour High",
+            level_price=101.0,
+            sweep_index=1,
+            reclaim_index=1,
+            trigger_index=1,
+            sweep_price=101.0,
+            defended_level=101.0,
+            trigger_price=100.4,
+            invalidation_level=101.3,
+            primary=False,
+            quality="tradable",
+            notes=["Intraday pullback failed after probing higher."],
+        )
+
+        candidate = engine.build_candidate_from_event(context, observation, event, option_type="PE", direction="LONG_PUT")
+
+        self.assertIsNotNone(candidate)
+        self.assertEqual(candidate.setup_type, "bearish_pullback_continuation")
+
+    def test_fresh_primary_bullish_sweep_stays_reclaim_watch(self) -> None:
+        engine = HeuristicDecisionEngine()
+        session = [
+            self._make_candle(0, 100.0, 100.2, 99.8, 100.1),
+            self._make_candle(1, 100.1, 100.3, 98.9, 99.2),
+            self._make_candle(2, 99.2, 100.8, 99.1, 100.7),
+            self._make_candle(3, 100.7, 101.2, 100.5, 101.0),
+        ]
+        context = self._build_context(session, previous_close=100.2)
+        observation = self._build_observation(
+            value_state="discount",
+            vwap=100.1,
+            atr=0.9,
+            strong_intent=False,
+            session_high=101.2,
+            session_low=98.9,
+        )
+        event = SweepEvent(
+            side="sell",
+            level_label="Previous Day Low",
+            level_price=99.0,
+            sweep_index=1,
+            reclaim_index=2,
+            trigger_index=2,
+            sweep_price=98.9,
+            defended_level=99.0,
+            trigger_price=100.4,
+            invalidation_level=98.7,
+            primary=True,
+            quality="tradable",
+            notes=["Previous day low was swept and reclaimed quickly."],
+        )
+
+        candidate = engine.build_candidate_from_event(context, observation, event, option_type="CE", direction="LONG_CALL")
+
+        self.assertIsNotNone(candidate)
+        self.assertEqual(candidate.setup_type, "bullish_reclaim_watch")
+
+    def test_fresh_primary_bearish_sweep_stays_rejection_watch(self) -> None:
+        engine = HeuristicDecisionEngine()
+        session = [
+            self._make_candle(0, 100.0, 100.2, 99.8, 100.1),
+            self._make_candle(1, 100.1, 101.2, 100.0, 101.1),
+            self._make_candle(2, 101.0, 101.1, 99.4, 99.5),
+            self._make_candle(3, 99.5, 99.8, 99.1, 99.2),
+        ]
+        context = self._build_context(session, previous_close=99.8)
+        observation = self._build_observation(
+            value_state="inflated",
+            vwap=100.0,
+            atr=0.9,
+            strong_intent=False,
+            session_high=101.2,
+            session_low=99.1,
+        )
+        event = SweepEvent(
+            side="buy",
+            level_label="Previous Day High",
+            level_price=101.0,
+            sweep_index=1,
+            reclaim_index=2,
+            trigger_index=2,
+            sweep_price=101.2,
+            defended_level=101.0,
+            trigger_price=99.7,
+            invalidation_level=101.4,
+            primary=True,
+            quality="tradable",
+            notes=["Previous day high was swept and rejected quickly."],
+        )
+
+        candidate = engine.build_candidate_from_event(context, observation, event, option_type="PE", direction="LONG_PUT")
+
+        self.assertIsNotNone(candidate)
+        self.assertEqual(candidate.setup_type, "bearish_rejection_watch")
+
+    def test_stock_mode_allows_early_bullish_retest_hold_before_mature_breakout(self) -> None:
+        engine = HeuristicDecisionEngine()
+        session = [
+            self._make_candle(0, 100.2, 100.4, 99.9, 100.1),
+            self._make_candle(1, 100.1, 100.2, 99.2, 99.4),
+            self._make_candle(2, 99.4, 100.6, 99.3, 100.35),
+            self._make_candle(3, 100.22, 100.48, 100.02, 100.4),
+        ]
+        context = self._build_context(session, previous_close=100.3).model_copy(
+            update={
+                "instrument": InstrumentState(
+                    mode="stock",
+                    label="CHAMBLFERT",
+                    symbol="CHAMBLFERT",
+                    security_id="1134",
+                    exchange_segment="NSE_EQ",
+                    instrument_type="EQUITY",
+                    supports_options=False,
+                    lot_size=1,
+                )
+            }
+        )
+        observation = self._build_observation(
+            value_state="discount",
+            vwap=100.1,
+            atr=0.9,
+            strong_intent=False,
+            weak_intent=False,
+            session_high=100.6,
+            session_low=99.2,
+        )
+        event = SweepEvent(
+            side="sell",
+            level_label="Previous Day Low",
+            level_price=100.0,
+            sweep_index=1,
+            reclaim_index=2,
+            trigger_index=2,
+            sweep_price=99.2,
+            defended_level=100.0,
+            trigger_price=100.6,
+            invalidation_level=99.1,
+            primary=True,
+            quality="tradable",
+            notes=["Previous day low was swept and reclaimed quickly."],
+        )
+
+        candidate = engine.build_candidate_from_event(context, observation, event, option_type="CE", direction="LONG_CALL")
+
+        self.assertIsNotNone(candidate)
+        assert candidate is not None
+        self.assertEqual(candidate.setup_type, "bullish_reclaim_watch")
+        self.assertTrue(candidate.ready_to_enter)
+        self.assertTrue(any("stock mode allows the first shallow defended retest" in note.lower() for note in candidate.notes))
+
+    def test_stock_mode_allows_early_bearish_retest_hold_before_mature_breakdown(self) -> None:
+        engine = HeuristicDecisionEngine()
+        session = [
+            self._make_candle(0, 100.0, 100.2, 99.8, 100.0),
+            self._make_candle(1, 100.0, 101.4, 99.9, 101.2),
+            self._make_candle(2, 101.2, 101.3, 100.2, 100.5),
+            self._make_candle(3, 100.55, 100.78, 100.32, 100.4),
+        ]
+        context = self._build_context(session, previous_close=99.9).model_copy(
+            update={
+                "instrument": InstrumentState(
+                    mode="stock",
+                    label="CHAMBLFERT",
+                    symbol="CHAMBLFERT",
+                    security_id="1134",
+                    exchange_segment="NSE_EQ",
+                    instrument_type="EQUITY",
+                    supports_options=False,
+                    lot_size=1,
+                )
+            }
+        )
+        observation = self._build_observation(
+            value_state="inflated",
+            vwap=100.7,
+            atr=0.9,
+            strong_intent=False,
+            weak_intent=False,
+            session_high=101.4,
+            session_low=99.8,
+        )
+        event = SweepEvent(
+            side="buy",
+            level_label="Previous Day High",
+            level_price=100.8,
+            sweep_index=1,
+            reclaim_index=2,
+            trigger_index=2,
+            sweep_price=101.4,
+            defended_level=100.8,
+            trigger_price=100.2,
+            invalidation_level=101.5,
+            primary=True,
+            quality="tradable",
+            notes=["Previous day high was swept and rejected quickly."],
+        )
+
+        candidate = engine.build_candidate_from_event(context, observation, event, option_type="PE", direction="LONG_PUT")
+
+        self.assertIsNotNone(candidate)
+        assert candidate is not None
+        self.assertEqual(candidate.setup_type, "bearish_rejection_watch")
+        self.assertTrue(candidate.ready_to_enter)
+        self.assertTrue(any("stock mode allows the first shallow defended retest" in note.lower() for note in candidate.notes))
+
+    def test_stock_mode_builds_breakout_pullback_long_without_fresh_sweep(self) -> None:
+        engine = HeuristicDecisionEngine()
+        session = [
+            self._make_candle(0, 100.0, 101.2, 99.9, 101.0),
+            self._make_candle(1, 101.0, 102.4, 100.9, 102.2),
+            self._make_candle(2, 102.2, 103.6, 102.1, 103.4),
+            self._make_candle(3, 103.4, 104.8, 103.3, 104.6),
+            self._make_candle(4, 104.6, 105.1, 104.5, 104.9),
+            self._make_candle(5, 104.95, 105.15, 104.8, 105.0),
+            self._make_candle(6, 104.98, 105.4, 104.88, 105.3),
+            self._make_candle(7, 105.3, 105.95, 105.15, 105.85),
+            self._make_candle(8, 105.85, 106.4, 105.7, 106.25),
+        ]
+        context = self._build_context(session, previous_close=99.8).model_copy(
+            update={
+                "instrument": InstrumentState(
+                    mode="stock",
+                    label="SAIL",
+                    symbol="SAIL",
+                    security_id="2963",
+                    exchange_segment="NSE_EQ",
+                    instrument_type="EQUITY",
+                    supports_options=False,
+                    lot_size=1,
+                )
+            }
+        )
+        observation = self._build_observation(
+            day_type="gap-and-go",
+            value_state="fair",
+            atr=1.0,
+            strong_intent=True,
+            weak_intent=False,
+            session_high=106.4,
+            session_low=99.9,
+        )
+
+        candidates = engine.build_stock_continuation_candidates(context, observation)
+
+        candidate = next((item for item in candidates if item.setup_type == "stock_breakout_pullback_long"), None)
+        self.assertIsNotNone(candidate)
+        assert candidate is not None
+        self.assertTrue(candidate.ready_to_enter)
+        self.assertEqual(candidate.option_type, "CE")
+
+    def test_stock_mode_builds_breakdown_pullback_short_without_fresh_sweep(self) -> None:
+        engine = HeuristicDecisionEngine()
+        session = [
+            self._make_candle(0, 106.0, 106.1, 104.8, 105.0),
+            self._make_candle(1, 105.0, 105.1, 103.6, 103.9),
+            self._make_candle(2, 103.9, 104.0, 102.4, 102.7),
+            self._make_candle(3, 102.7, 102.8, 101.3, 101.6),
+            self._make_candle(4, 101.6, 101.7, 100.9, 101.0),
+            self._make_candle(5, 100.98, 101.18, 100.85, 101.0),
+            self._make_candle(6, 101.02, 101.12, 100.45, 100.6),
+            self._make_candle(7, 100.6, 100.72, 99.95, 100.1),
+            self._make_candle(8, 100.08, 100.18, 99.55, 99.7),
+        ]
+        context = self._build_context(session, previous_close=106.2).model_copy(
+            update={
+                "instrument": InstrumentState(
+                    mode="stock",
+                    label="SAIL",
+                    symbol="SAIL",
+                    security_id="2963",
+                    exchange_segment="NSE_EQ",
+                    instrument_type="EQUITY",
+                    supports_options=False,
+                    lot_size=1,
+                )
+            }
+        )
+        observation = self._build_observation(
+            day_type="gap-and-go",
+            value_state="fair",
+            atr=1.0,
+            strong_intent=True,
+            weak_intent=False,
+            session_high=106.1,
+            session_low=99.55,
+        )
+
+        candidates = engine.build_stock_continuation_candidates(context, observation)
+
+        candidate = next((item for item in candidates if item.setup_type == "stock_breakout_pullback_short"), None)
+        self.assertIsNotNone(candidate)
+        assert candidate is not None
+        self.assertTrue(candidate.ready_to_enter)
+        self.assertEqual(candidate.option_type, "PE")
+
+    def test_stock_mode_same_trend_reentry_after_profitable_winner_gets_boost(self) -> None:
+        engine = HeuristicDecisionEngine()
+        session = [
+            self._make_candle(0, 100.0, 101.2, 99.9, 101.0),
+            self._make_candle(1, 101.0, 102.4, 100.9, 102.2),
+            self._make_candle(2, 102.2, 103.6, 102.1, 103.4),
+            self._make_candle(3, 103.4, 104.8, 103.3, 104.6),
+            self._make_candle(4, 104.6, 105.1, 104.5, 104.9),
+            self._make_candle(5, 104.95, 105.15, 104.8, 105.0),
+            self._make_candle(6, 104.98, 105.4, 104.88, 105.3),
+            self._make_candle(7, 105.3, 105.95, 105.15, 105.85),
+            self._make_candle(8, 105.85, 106.4, 105.7, 106.25),
+        ]
+        winner = SimulatedTrade(
+            trade_id="winner-1",
+            status="CLOSED",
+            direction="LONG_STOCK",
+            instrument_mode="stock",
+            instrument_label="SAIL",
+            price_mode="cash",
+            trade_security_id="2963",
+            quote_exchange_segment="NSE_EQ",
+            option_type="CE",
+            strike=0,
+            symbol="SAIL EQ",
+            quantity=100,
+            open_quantity=0,
+            closed_quantity=100,
+            entry_time=datetime.fromisoformat("2026-05-13T10:00:00"),
+            entry_price=103.5,
+            entry_spot_price=103.5,
+            entry_option_price=103.5,
+            current_price=105.5,
+            current_option_price=105.5,
+            stop_price=102.7,
+            stop_option_price=102.7,
+            target_price=106.0,
+            target_option_price=106.0,
+            invalidation_level=102.7,
+            booked_pnl=180.0,
+            pnl=180.0,
+        )
+        base_context = self._build_context(session, previous_close=99.8).model_copy(
+            update={
+                "instrument": InstrumentState(
+                    mode="stock",
+                    label="SAIL",
+                    symbol="SAIL",
+                    security_id="2963",
+                    exchange_segment="NSE_EQ",
+                    instrument_type="EQUITY",
+                    supports_options=False,
+                    lot_size=1,
+                )
+            }
+        )
+        reentry_context = base_context.model_copy(update={"recent_closed_trades": [winner]})
+        observation = self._build_observation(
+            day_type="gap-and-go",
+            value_state="fair",
+            atr=1.0,
+            strong_intent=True,
+            weak_intent=False,
+            session_high=106.4,
+            session_low=99.9,
+        )
+
+        base_candidate = next(
+            item for item in engine.build_stock_continuation_candidates(base_context, observation) if item.setup_type == "stock_breakout_pullback_long"
+        )
+        reentry_candidate = next(
+            item for item in engine.build_stock_continuation_candidates(reentry_context, observation) if item.setup_type == "stock_breakout_pullback_long"
+        )
+
+        self.assertGreater(reentry_candidate.score, base_candidate.score)
+        self.assertTrue(any("same-trend re-entry" in note.lower() for note in reentry_candidate.notes))
+
+    def test_extreme_gap_reset_blocks_early_bullish_reclaim_chase(self) -> None:
+        engine = HeuristicDecisionEngine()
+        session = [
+            self._make_candle(0, 130.0, 132.0, 99.0, 100.0),
+            self._make_candle(1, 100.0, 100.8, 99.8, 100.3),
+            self._make_candle(2, 100.2, 101.0, 100.1, 100.7),
+            self._make_candle(3, 100.7, 101.4, 100.5, 101.0),
+            self._make_candle(4, 101.0, 101.7, 100.8, 101.2),
+            self._make_candle(5, 101.2, 102.0, 101.0, 101.5),
+            self._make_candle(6, 101.5, 102.4, 101.3, 102.1),
+            self._make_candle(7, 102.1, 104.6, 101.9, 104.0),
+        ]
+        context = self._build_context(session, previous_close=100.0)
+        observation = self._build_observation(
+            atr=6.0,
+            gap=30.0,
+            large_gap_reset=True,
+            opening_confirmation="gap-up-trap-risk",
+            value_state="discount",
+            vwap=104.0,
+            session_phase="opening-map",
+            session_high=104.6,
+            session_low=99.0,
+        )
+        event = SweepEvent(
+            side="sell",
+            level_label="Previous Day Low",
+            level_price=99.0,
+            sweep_index=5,
+            reclaim_index=6,
+            trigger_index=6,
+            sweep_price=99.0,
+            defended_level=99.0,
+            trigger_price=102.0,
+            invalidation_level=98.5,
+            primary=True,
+            quality="tradable",
+            notes=["Violent opening washout reclaimed quickly."],
+        )
+
+        candidate = engine.build_candidate_from_event(context, observation, event, option_type="CE", direction="LONG_CALL")
+
+        self.assertIsNone(candidate)
+
+    def test_extreme_gap_reset_allows_later_retest_confirmed_reclaim(self) -> None:
+        engine = HeuristicDecisionEngine()
+        session = [self._make_candle(0, 130.0, 132.0, 99.0, 100.0)]
+        session.extend(
+            [
+                self._make_candle(index, 100.0 + (index % 3) * 0.2, 100.7 + (index % 2) * 0.2, 99.6, 100.1 + (index % 4) * 0.15)
+                for index in range(1, 20)
+            ]
+        )
+        session.extend(
+            [
+                self._make_candle(20, 100.2, 100.5, 98.8, 99.2),
+                self._make_candle(21, 99.3, 102.0, 99.1, 101.6),
+                self._make_candle(22, 101.8, 103.5, 101.5, 103.1),
+                self._make_candle(23, 103.0, 103.4, 102.5, 102.9),
+            ]
+        )
+        context = self._build_context(session, previous_close=100.0)
+        observation = self._build_observation(
+            atr=6.0,
+            gap=30.0,
+            large_gap_reset=True,
+            opening_confirmation="gap-up-trap-risk",
+            value_state="discount",
+            vwap=101.8,
+            session_phase="primary-trap-window",
+            session_high=103.5,
+            session_low=98.8,
+        )
+        event = SweepEvent(
+            side="sell",
+            level_label="Previous Day Low",
+            level_price=99.0,
+            sweep_index=20,
+            reclaim_index=21,
+            trigger_index=21,
+            sweep_price=98.8,
+            defended_level=99.0,
+            trigger_price=101.8,
+            invalidation_level=98.4,
+            primary=True,
+            quality="tradable",
+            notes=["Opening reset eventually reclaimed after a deeper stabilization."],
+        )
+
+        candidate = engine.build_candidate_from_event(context, observation, event, option_type="CE", direction="LONG_CALL")
+
+        self.assertIsNotNone(candidate)
+        self.assertEqual(candidate.setup_type, "bullish_reclaim_watch")
+
+    def test_gap_down_recovery_short_requires_major_rejection_and_loss_of_acceptance(self) -> None:
+        engine = HeuristicDecisionEngine()
+        session = [
+            self._make_candle(0, 98.0, 98.2, 95.0, 95.4),
+            self._make_candle(1, 95.5, 96.6, 95.2, 96.4),
+            self._make_candle(2, 96.5, 97.6, 96.4, 97.4),
+            self._make_candle(3, 97.3, 98.2, 97.1, 97.9),
+        ]
+        context = self._build_context(session, previous_close=100.0)
+        observation = self._build_observation(
+            gap=-2.0,
+            opening_confirmation="gap-down-confirmed",
+            session_phase="opening-map",
+            value_state="fair",
+            vwap=96.8,
+            atr=1.8,
+            opening_range_high=98.2,
+            opening_range_low=95.0,
+            session_high=98.2,
+            session_low=95.0,
+        )
+        event = SweepEvent(
+            side="buy",
+            level_label="Same-Day Swing High 09:18",
+            level_price=97.9,
+            sweep_index=3,
+            reclaim_index=3,
+            trigger_index=3,
+            sweep_price=98.2,
+            defended_level=97.9,
+            trigger_price=97.0,
+            invalidation_level=98.4,
+            primary=True,
+            quality="tradable",
+            notes=["Early rebound started to stall."],
+        )
+
+        candidate = engine.build_candidate_from_event(context, observation, event, option_type="PE", direction="LONG_PUT")
+
+        self.assertIsNone(candidate)
+
+    def test_gap_down_recovery_long_requires_retest_hold_after_first_burst(self) -> None:
+        engine = HeuristicDecisionEngine()
+        session = [
+            self._make_candle(0, 98.0, 98.2, 95.0, 95.4),
+            self._make_candle(1, 95.5, 96.4, 95.3, 96.2),
+            self._make_candle(2, 96.2, 97.2, 96.0, 97.0),
+            self._make_candle(3, 97.0, 98.0, 97.6, 97.8),
+        ]
+        context = self._build_context(session, previous_close=96.6)
+        observation = self._build_observation(
+            gap=-1.4,
+            opening_confirmation="gap-down-confirmed",
+            session_phase="opening-map",
+            value_state="discount",
+            vwap=96.5,
+            atr=1.2,
+            opening_range_high=98.2,
+            opening_range_low=95.0,
+            session_high=98.0,
+            session_low=95.0,
+        )
+        event = SweepEvent(
+            side="sell",
+            level_label="Previous Day Low",
+            level_price=95.2,
+            sweep_index=1,
+            reclaim_index=2,
+            trigger_index=2,
+            sweep_price=95.0,
+            defended_level=95.2,
+            trigger_price=97.1,
+            invalidation_level=94.8,
+            primary=True,
+            quality="tradable",
+            notes=["Gap-down morning bounced hard from previous day low."],
+        )
+
+        candidate = engine.build_candidate_from_event(context, observation, event, option_type="CE", direction="LONG_CALL")
+
+        self.assertIsNone(candidate)
+
+    def test_extension_filter_blocks_non_primary_chase_entries(self) -> None:
+        engine = HeuristicDecisionEngine()
+        session = [
+            self._make_candle(0, 100.0, 100.3, 99.8, 100.2),
+            self._make_candle(1, 100.2, 102.2, 100.1, 102.0),
+            self._make_candle(2, 102.0, 104.3, 101.9, 104.1),
+            self._make_candle(3, 104.1, 105.1, 104.0, 105.0),
+        ]
+        context = self._build_context(session, previous_close=99.7)
+        observation = self._build_observation(
+            value_state="inflated",
+            vwap=101.2,
+            atr=0.9,
+            strong_intent=True,
+            session_high=105.1,
+            prior_session_high=104.3,
+        )
+        event = SweepEvent(
+            side="sell",
+            level_label="Prior Hour Low",
+            level_price=102.0,
+            sweep_index=1,
+            reclaim_index=1,
+            trigger_index=1,
+            sweep_price=101.9,
+            defended_level=102.0,
+            trigger_price=102.3,
+            invalidation_level=101.7,
+            primary=False,
+            quality="tradable",
+            notes=["Retest held after earlier push."],
+        )
+
+        candidate = engine.build_candidate_from_event(context, observation, event, option_type="CE", direction="LONG_CALL")
+
+        self.assertIsNone(candidate)
+
+    def test_after_two_pm_no_fresh_entries_are_allowed(self) -> None:
+        engine = HeuristicDecisionEngine()
+        session = [
+            Candle(timestamp="2026-02-18T14:04:00", open=100.0, high=100.4, low=99.8, close=100.2, volume=1000),
+            Candle(timestamp="2026-02-18T14:05:00", open=100.2, high=100.8, low=100.1, close=100.7, volume=1100),
+        ]
+        context = self._build_context(session, previous_close=99.8)
+        observation = self._build_observation(session_phase="late-session")
+        candidate = SetupCandidate(
+            setup_type="bullish_reclaim_watch",
+            direction="LONG_CALL",
+            option_type="CE",
+            trigger_basis="close_above",
+            trigger_price=100.4,
+            invalidation_level=99.9,
+            defended_level=100.0,
+            target_spot_price=101.8,
+            first_target_price=101.1,
+            score=85.0,
+            ready_to_enter=True,
+            notes=["Fresh reclaim but not exceptional enough for the closing stretch."],
+            rule_ids=["R58"],
+            event=SweepEvent(
+                side="sell",
+                level_label="Previous Day Low",
+                level_price=99.8,
+                sweep_index=0,
+                reclaim_index=1,
+                trigger_index=1,
+                sweep_price=99.8,
+                defended_level=99.8,
+                trigger_price=100.4,
+                invalidation_level=99.6,
+                primary=True,
+                quality="tradable",
+                notes=["Recovered from a known low."],
+            ),
+        )
+
+        decision = engine.decide_entry(context, observation, [candidate])
+
+        self.assertEqual(decision.action, TradeAction.no_trade)
+        self.assertIn("14:00", decision.reason)
+
+    def test_fresh_entries_remain_allowed_before_two_pm(self) -> None:
+        engine = HeuristicDecisionEngine()
+        session = [
+            Candle(timestamp="2026-02-18T11:04:00", open=100.0, high=100.4, low=99.8, close=100.2, volume=1000),
+            Candle(timestamp="2026-02-18T11:05:00", open=100.2, high=100.8, low=100.1, close=100.7, volume=1100),
+        ]
+        context = self._build_context(session, previous_close=99.8)
+        observation = self._build_observation(session_phase="midday")
+        candidate = SetupCandidate(
+            setup_type="bullish_reclaim_watch",
+            direction="LONG_CALL",
+            option_type="CE",
+            trigger_basis="close_above",
+            trigger_price=100.4,
+            invalidation_level=99.9,
+            defended_level=100.0,
+            target_spot_price=101.8,
+            first_target_price=101.1,
+            score=85.0,
+            ready_to_enter=True,
+            notes=["Fresh reclaim remains valid before the 14:00 cutoff."],
+            rule_ids=["R58"],
+            event=SweepEvent(
+                side="sell",
+                level_label="Previous Day Low",
+                level_price=99.8,
+                sweep_index=0,
+                reclaim_index=1,
+                trigger_index=1,
+                sweep_price=99.8,
+                defended_level=99.8,
+                trigger_price=100.4,
+                invalidation_level=99.6,
+                primary=True,
+                quality="tradable",
+                notes=["Recovered from a known low."],
+            ),
+        )
+
+        decision = engine.decide_entry(context, observation, [candidate])
+
+        self.assertEqual(decision.action, TradeAction.enter_call)
+
+    def test_nifty_can_enter_reversal_from_banknifty_round_sweep_confirmation(self) -> None:
+        engine = HeuristicDecisionEngine()
+        session = [
+            Candle(timestamp="2026-02-18T09:15:00", open=23340.0, high=23345.0, low=23308.0, close=23312.0, volume=1000),
+            Candle(timestamp="2026-02-18T09:16:00", open=23312.0, high=23318.0, low=23292.0, close=23298.0, volume=1100),
+            Candle(timestamp="2026-02-18T09:17:00", open=23298.0, high=23305.0, low=23280.0, close=23288.0, volume=1050),
+            Candle(timestamp="2026-02-18T09:18:00", open=23288.0, high=23318.0, low=23284.0, close=23316.0, volume=1250),
+            Candle(timestamp="2026-02-18T09:19:00", open=23316.0, high=23328.0, low=23310.0, close=23324.0, volume=1300),
+        ]
+        context = self._build_context(session, previous_close=23260.0).model_copy(
+            update={
+                "companion_symbol": "BANKNIFTY",
+                "companion_session_candles": [
+                    Candle(timestamp="2026-02-18T09:15:00", open=50040.0, high=50065.0, low=50010.0, close=50020.0, volume=1000),
+                    Candle(timestamp="2026-02-18T09:16:00", open=50020.0, high=50024.0, low=49992.0, close=50002.0, volume=1050),
+                    Candle(timestamp="2026-02-18T09:17:00", open=50002.0, high=50008.0, low=49972.0, close=49988.0, volume=1100),
+                    Candle(timestamp="2026-02-18T09:18:00", open=49988.0, high=50034.0, low=49980.0, close=50022.0, volume=1300),
+                    Candle(timestamp="2026-02-18T09:19:00", open=50022.0, high=50048.0, low=50016.0, close=50042.0, volume=1350),
+                ],
+                "companion_current_candle": Candle(
+                    timestamp="2026-02-18T09:19:00", open=50022.0, high=50048.0, low=50016.0, close=50042.0, volume=1350
+                ),
+                "companion_recent_candles": [
+                    Candle(timestamp="2026-02-18T09:15:00", open=50040.0, high=50065.0, low=50010.0, close=50020.0, volume=1000),
+                    Candle(timestamp="2026-02-18T09:16:00", open=50020.0, high=50024.0, low=49992.0, close=50002.0, volume=1050),
+                    Candle(timestamp="2026-02-18T09:17:00", open=50002.0, high=50008.0, low=49972.0, close=49988.0, volume=1100),
+                    Candle(timestamp="2026-02-18T09:18:00", open=49988.0, high=50034.0, low=49980.0, close=50022.0, volume=1300),
+                    Candle(timestamp="2026-02-18T09:19:00", open=50022.0, high=50048.0, low=50016.0, close=50042.0, volume=1350),
+                ],
+                "companion_previous_day": PreviousDayLevels(high=50120.0, low=49840.0, close=50010.0),
+                "companion_previous_day_candles": [
+                    Candle(timestamp="2026-02-17T15:28:00", open=50000.0, high=50080.0, low=49920.0, close=50010.0, volume=1000),
+                ],
+            }
+        )
+        observation = engine.observe(context)
+
+        candidates = engine.build_candidates(context, observation)
+        decision = engine.decide_entry(context, observation, candidates)
+
+        self.assertTrue(any(candidate.setup_type == "companion_round_reclaim_long" for candidate in candidates))
+        self.assertEqual(decision.action, TradeAction.enter_call)
+
+    def test_nifty_companion_requires_banknifty_follow_through_after_reclaim(self) -> None:
+        engine = HeuristicDecisionEngine()
+        session = [
+            Candle(timestamp="2026-02-18T09:15:00", open=23340.0, high=23345.0, low=23308.0, close=23312.0, volume=1000),
+            Candle(timestamp="2026-02-18T09:16:00", open=23312.0, high=23318.0, low=23292.0, close=23298.0, volume=1100),
+            Candle(timestamp="2026-02-18T09:17:00", open=23298.0, high=23305.0, low=23280.0, close=23288.0, volume=1050),
+            Candle(timestamp="2026-02-18T09:18:00", open=23288.0, high=23318.0, low=23284.0, close=23316.0, volume=1250),
+        ]
+        context = self._build_context(session, previous_close=23260.0).model_copy(
+            update={
+                "companion_symbol": "BANKNIFTY",
+                "companion_session_candles": [
+                    Candle(timestamp="2026-02-18T09:15:00", open=50040.0, high=50065.0, low=50010.0, close=50020.0, volume=1000),
+                    Candle(timestamp="2026-02-18T09:16:00", open=50020.0, high=50024.0, low=49992.0, close=50002.0, volume=1050),
+                    Candle(timestamp="2026-02-18T09:17:00", open=50002.0, high=50008.0, low=49972.0, close=49988.0, volume=1100),
+                    Candle(timestamp="2026-02-18T09:18:00", open=49988.0, high=50034.0, low=49980.0, close=50022.0, volume=1300),
+                ],
+                "companion_current_candle": Candle(
+                    timestamp="2026-02-18T09:18:00", open=49988.0, high=50034.0, low=49980.0, close=50022.0, volume=1300
+                ),
+                "companion_recent_candles": [
+                    Candle(timestamp="2026-02-18T09:15:00", open=50040.0, high=50065.0, low=50010.0, close=50020.0, volume=1000),
+                    Candle(timestamp="2026-02-18T09:16:00", open=50020.0, high=50024.0, low=49992.0, close=50002.0, volume=1050),
+                    Candle(timestamp="2026-02-18T09:17:00", open=50002.0, high=50008.0, low=49972.0, close=49988.0, volume=1100),
+                    Candle(timestamp="2026-02-18T09:18:00", open=49988.0, high=50034.0, low=49980.0, close=50022.0, volume=1300),
+                ],
+            }
+        )
+        observation = engine.observe(context)
+
+        candidates = engine.build_candidates(context, observation)
+
+        self.assertFalse(any(candidate.setup_type == "companion_round_reclaim_long" for candidate in candidates))
+
+    def test_nifty_mid_noise_filter_skips_fresh_entries(self) -> None:
+        engine = HeuristicDecisionEngine()
+        session = [
+            Candle(timestamp="2026-02-18T12:00:00", open=23300.0, high=23306.0, low=23296.0, close=23302.0, volume=1000),
+            Candle(timestamp="2026-02-18T12:01:00", open=23302.0, high=23307.0, low=23298.0, close=23303.0, volume=1000),
+        ]
+        context = self._build_context(session, previous_close=23290.0)
+        observation = self._build_observation(
+            session_phase="midday",
+            nifty_mid_noise=True,
+        )
+        candidate = SetupCandidate(
+            setup_type="bullish_reclaim_watch",
+            direction="LONG_CALL",
+            option_type="CE",
+            trigger_basis="close_above",
+            trigger_price=23304.0,
+            invalidation_level=23296.0,
+            defended_level=23300.0,
+            target_spot_price=23318.0,
+            first_target_price=23310.0,
+            score=84.0,
+            ready_to_enter=True,
+            notes=["Trap looks valid but the session is still noisy."],
+            rule_ids=["R58"],
+            event=SweepEvent(
+                side="sell",
+                level_label="Round Number 23300.00",
+                level_price=23300.0,
+                sweep_index=0,
+                reclaim_index=1,
+                trigger_index=1,
+                sweep_price=23298.0,
+                defended_level=23300.0,
+                trigger_price=23304.0,
+                invalidation_level=23296.0,
+                primary=True,
+                quality="tradable",
+                notes=["Recovered back above the level."],
+            ),
+        )
+
+        decision = engine.decide_entry(context, observation, [candidate])
+
+        self.assertEqual(decision.action, TradeAction.no_trade)
+        self.assertIn("overlapping noise", decision.reason.lower())
+
+    def test_nifty_higher_timeframe_bearish_bias_blocks_bullish_entry(self) -> None:
+        engine = HeuristicDecisionEngine()
+        session = [
+            self._make_candle(0, 23340.0, 23342.0, 23308.0, 23312.0),
+            self._make_candle(1, 23312.0, 23314.0, 23296.0, 23300.0),
+            self._make_candle(2, 23300.0, 23304.0, 23286.0, 23292.0),
+            self._make_candle(3, 23292.0, 23310.0, 23288.0, 23308.0),
+        ]
+        context = self._build_context(session, previous_close=23320.0)
+        observation = self._build_observation(
+            higher_timeframe_context="bearish_trend",
+            mapped_sell_liquidity=[("Round Number 23300.00", 23300.0, True)],
+        )
+        event = SweepEvent(
+            side="sell",
+            level_label="Round Number 23300.00",
+            level_price=23300.0,
+            sweep_index=2,
+            reclaim_index=3,
+            trigger_index=3,
+            sweep_price=23286.0,
+            defended_level=23300.0,
+            trigger_price=23310.0,
+            invalidation_level=23284.0,
+            primary=True,
+            quality="tradable",
+            notes=["Recovered from a nearby round-number trap."],
+        )
+
+        candidate = engine.build_candidate_from_event(context, observation, event, option_type="CE", direction="LONG_CALL")
+
+        self.assertIsNone(candidate)
+
+    def test_nifty_round_number_tight_sweep_scores_better_than_loose_sweep(self) -> None:
+        engine = HeuristicDecisionEngine()
+        session = [
+            self._make_candle(0, 23340.0, 23342.0, 23308.0, 23312.0),
+            self._make_candle(1, 23312.0, 23314.0, 23296.0, 23300.0),
+            self._make_candle(2, 23300.0, 23304.0, 23298.0, 23302.0),
+            self._make_candle(3, 23302.0, 23312.0, 23300.0, 23310.0),
+        ]
+        context = self._build_context(session, previous_close=23320.0)
+        observation = self._build_observation(
+            higher_timeframe_context="bullish_reversal",
+            mapped_sell_liquidity=[("Round Number 23300.00", 23300.0, True)],
+        )
+        tight_event = SweepEvent(
+            side="sell",
+            level_label="Round Number 23300.00",
+            level_price=23300.0,
+            sweep_index=1,
+            reclaim_index=2,
+            trigger_index=2,
+            sweep_price=23296.0,
+            defended_level=23300.0,
+            trigger_price=23304.0,
+            invalidation_level=23294.0,
+            primary=True,
+            quality="tradable",
+            notes=["Recovered tightly around the round number."],
+        )
+        loose_event = SweepEvent(
+            side="sell",
+            level_label="Round Number 23300.00",
+            level_price=23300.0,
+            sweep_index=1,
+            reclaim_index=2,
+            trigger_index=2,
+            sweep_price=23276.0,
+            defended_level=23300.0,
+            trigger_price=23304.0,
+            invalidation_level=23274.0,
+            primary=True,
+            quality="tradable",
+            notes=["Recovered but front-ran the round number too loosely."],
+        )
+
+        tight_candidate = engine.build_candidate_from_event(context, observation, tight_event, option_type="CE", direction="LONG_CALL")
+        loose_candidate = engine.build_candidate_from_event(context, observation, loose_event, option_type="CE", direction="LONG_CALL")
+
+        self.assertIsNotNone(tight_candidate)
+        self.assertIsNotNone(loose_candidate)
+        assert tight_candidate is not None
+        assert loose_candidate is not None
+        self.assertGreater(tight_candidate.score, loose_candidate.score)
+
+    def test_nifty_shallow_retest_scores_better_than_deep_retest(self) -> None:
+        engine = HeuristicDecisionEngine()
+        shallow_session = [
+            self._make_candle(0, 23340.0, 23342.0, 23308.0, 23312.0),
+            self._make_candle(1, 23312.0, 23314.0, 23296.0, 23300.0),
+            self._make_candle(2, 23300.0, 23312.0, 23298.0, 23308.0),
+            self._make_candle(3, 23308.0, 23310.0, 23301.5, 23309.0),
+            self._make_candle(4, 23309.0, 23318.0, 23306.0, 23316.0),
+        ]
+        deep_session = [
+            self._make_candle(0, 23340.0, 23342.0, 23308.0, 23312.0),
+            self._make_candle(1, 23312.0, 23314.0, 23296.0, 23300.0),
+            self._make_candle(2, 23300.0, 23312.0, 23298.0, 23308.0),
+            self._make_candle(3, 23308.0, 23310.0, 23292.0, 23298.0),
+            self._make_candle(4, 23298.0, 23318.0, 23296.0, 23316.0),
+        ]
+        observation = self._build_observation(
+            higher_timeframe_context="bullish_reversal",
+            mapped_sell_liquidity=[("Round Number 23300.00", 23300.0, True)],
+        )
+        event = SweepEvent(
+            side="sell",
+            level_label="Round Number 23300.00",
+            level_price=23300.0,
+            sweep_index=1,
+            reclaim_index=2,
+            trigger_index=2,
+            sweep_price=23296.0,
+            defended_level=23300.0,
+            trigger_price=23304.0,
+            invalidation_level=23294.0,
+            primary=True,
+            quality="tradable",
+            notes=["Recovered tightly around the round number."],
+        )
+
+        shallow_context = self._build_context(shallow_session, previous_close=23320.0)
+        deep_context = self._build_context(deep_session, previous_close=23320.0)
+        shallow_candidate = engine.build_candidate_from_event(shallow_context, observation, event, option_type="CE", direction="LONG_CALL")
+        deep_candidate = engine.build_candidate_from_event(deep_context, observation, event, option_type="CE", direction="LONG_CALL")
+
+        self.assertIsNotNone(shallow_candidate)
+        self.assertIsNotNone(deep_candidate)
+        assert shallow_candidate is not None
+        assert deep_candidate is not None
+        self.assertGreater(shallow_candidate.score, deep_candidate.score)
+
     def test_sync_history_endpoint_loads_market_context(self) -> None:
         bundle = DhanSessionBundle(
             previous_day_candles=[
@@ -160,6 +1712,33 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertEqual(state["data_sync"]["intraday_candles"], 2)
         self.assertEqual(state["total_candles"], 4)
         self.assertEqual(state["instrument"]["label"], "Nifty 50")
+
+    def test_nifty_sync_history_fetches_banknifty_companion_context(self) -> None:
+        bundles = {
+            "13": DhanSessionBundle(
+                previous_day_candles=[Candle(timestamp="2026-04-23T09:15:00", open=23200, high=23210, low=23190, close=23205, volume=1000)],
+                intraday_candles=[Candle(timestamp="2026-04-24T09:15:00", open=23210, high=23235, low=23200, close=23228, volume=900)],
+                live_open_candle=None,
+                previous_day_source="historical",
+            ),
+            "25": DhanSessionBundle(
+                previous_day_candles=[Candle(timestamp="2026-04-23T09:15:00", open=49800, high=49880, low=49750, close=49820, volume=1000)],
+                intraday_candles=[Candle(timestamp="2026-04-24T09:15:00", open=49830, high=49940, low=49810, close=49910, volume=950)],
+                live_open_candle=None,
+                previous_day_source="historical",
+            ),
+        }
+
+        def fake_fetch_market_context(*, security_id, **kwargs):
+            return bundles[str(security_id)]
+
+        with patch.object(self.test_engine.chart_service, "fetch_market_context", side_effect=fake_fetch_market_context) as fetch_mock:
+            response = self.client.post("/api/live/sync-history", data={"client_id": "cid", "access_token": "tok"})
+
+        self.assertEqual(response.status_code, 200)
+        requested_ids = {call.kwargs["security_id"] for call in fetch_mock.call_args_list}
+        self.assertEqual(requested_ids, {"13", "25"})
+        self.assertTrue(self.test_engine.companion_candles)
 
     def test_signal_history_keeps_earlier_session_signals_with_timestamp(self) -> None:
         bundle = DhanSessionBundle(
@@ -376,6 +1955,46 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertIsNotNone(self.test_engine.pending_setup.consumed_at)
         self.assertEqual(self.test_engine.pending_setup.executed_trade_id, self.test_engine.active_trade.trade_id)
 
+    def test_triggered_pending_setup_preserves_target_and_setup_metadata_on_trade(self) -> None:
+        candles = [
+            Candle(timestamp="2026-05-14T14:18:00", open=23770, high=23775, low=23760, close=23768, volume=900),
+            Candle(timestamp="2026-05-14T14:19:00", open=23768, high=23770, low=23724, close=23740, volume=1200),
+        ]
+        self.test_engine.reset_with_candles(candles)
+        arm_decision = TradeDecision(
+            action=TradeAction.no_trade,
+            confidence=0.84,
+            reason="Arm bearish trigger below 23763.65.",
+            decision_source="heuristic",
+            option_type="PE",
+            target_spot_price=23710.0,
+            first_target_price=23740.0,
+            market_state="gap-reversal",
+            setup_score=79.0,
+            setup_type="bearish_rejection_watch",
+            pending_setup_action="ARM",
+            pending_setup_type="bearish_rejection_watch",
+            pending_setup_direction="LONG_PUT",
+            pending_setup_option_type="PE",
+            pending_setup_trigger_price=23763.65,
+            pending_setup_invalidation_level=23776.65,
+            pending_setup_trigger_basis="close_below",
+            pending_setup_strike=23800,
+            pending_setup_notes="Wait for red candle close below trigger.",
+        )
+        self.test_engine.apply_pending_setup_decision(candles[0], arm_decision)
+
+        triggered = self.test_engine.evaluate_pending_setup_trigger(candles[1])
+        assert triggered is not None
+        self.test_engine.apply_trade_logic(candles[1], triggered, source="replay")
+
+        self.assertIsNotNone(self.test_engine.active_trade)
+        self.assertEqual(self.test_engine.active_trade.setup_type, "bearish_rejection_watch")
+        self.assertEqual(self.test_engine.active_trade.market_state, "gap-reversal")
+        self.assertEqual(self.test_engine.active_trade.target_spot_price, 23710.0)
+        self.assertEqual(self.test_engine.active_trade.first_target_price, 23740.0)
+        self.assertEqual(self.test_engine.active_trade.target_price, 23710.0)
+
     def test_ai_entry_decision_normalizes_call_option_type_before_trade_creation(self) -> None:
         self.test_engine.reset_with_candles(
             [
@@ -457,6 +2076,23 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertEqual(sync_mock.call_count, 1)
         fake_adapter.start.assert_called_once()
 
+    def test_connect_live_feed_in_nifty_mode_subscribes_banknifty_companion(self) -> None:
+        fake_adapter = Mock()
+        fake_adapter.start = Mock()
+
+        with patch.object(self.test_engine, "sync_dhan_context", return_value=self.test_engine.get_state()):
+            with patch(
+                "app.services.simulation.resolve_quote_subscription",
+                side_effect=lambda security_id, segment: (segment, security_id, "Quote"),
+            ):
+                with patch("app.services.simulation.DhanMarketFeedAdapter", return_value=fake_adapter) as adapter_mock:
+                    response = self.client.post("/api/live/connect", data={"client_id": "cid", "access_token": "tok"})
+
+        self.assertEqual(response.status_code, 200)
+        fake_adapter.start.assert_called_once()
+        instruments = adapter_mock.call_args.args[2]
+        self.assertEqual({instrument[1] for instrument in instruments}, {"13", "25"})
+
     def test_switching_to_stock_mode_updates_state(self) -> None:
         response = self.client.post("/api/instrument-mode", data={"instrument_mode": "stock"})
 
@@ -466,6 +2102,190 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertEqual(state["instrument"]["label"], "SBIN")
         self.assertEqual(state["instrument"]["security_id"], "3045")
         self.assertFalse(state["instrument"]["supports_options"])
+        self.assertTrue(state["stock_watchlist"])
+        self.assertEqual(state["stock_watchlist"][0]["symbol"], "SBIN")
+
+    def test_stock_search_endpoint_returns_matching_symbols(self) -> None:
+        response = self.client.get("/api/stocks/search?q=sb")
+
+        self.assertEqual(response.status_code, 200)
+        results = response.json()["results"]
+        self.assertTrue(any(item["symbol"] == "SBIN" for item in results))
+
+    def test_adding_stock_to_watchlist_selects_active_stock(self) -> None:
+        resolved = StockUniverseEntry(symbol="TCS", label="TATA CONSULTANCY SERV LT", security_id="11536")
+        with patch.object(self.test_engine.stock_universe, "preview", return_value=resolved):
+            with patch.object(self.test_engine, "_auto_sync_selected_stock_async", return_value=None):
+                response = self.client.post("/api/stocks/watchlist/add", data={"symbol": "TCS"})
+
+        self.assertEqual(response.status_code, 200)
+        state = response.json()["state"]
+        self.assertEqual(state["instrument"]["mode"], "stock")
+        self.assertEqual(state["instrument"]["symbol"], "TCS")
+        self.assertEqual(state["instrument"]["security_id"], "11536")
+        self.assertTrue(any(item["symbol"] == "TCS" and item["selected"] for item in state["stock_watchlist"]))
+
+    def test_adding_stock_with_credentials_uses_background_selected_sync(self) -> None:
+        preview = StockUniverseEntry(symbol="TCS", label="TCS", security_id="")
+        with patch.object(self.test_engine.stock_universe, "preview", return_value=preview):
+            with patch.object(self.test_engine, "_available_dhan_credentials", return_value=("cid", "tok")):
+                with patch.object(self.test_engine, "_auto_sync_selected_stock_async", return_value=None) as auto_sync_mock:
+                    response = self.client.post("/api/stocks/watchlist/add", data={"symbol": "TCS"})
+
+        self.assertEqual(response.status_code, 200)
+        auto_sync_mock.assert_called_once()
+
+    def test_stock_universe_resolve_refreshes_remote_when_symbol_missing_from_cache(self) -> None:
+        service = StockUniverseService()
+        service._resolved_entries = {
+            "SBIN": StockUniverseEntry(symbol="SBIN", label="STATE BANK OF INDIA", security_id="3045"),
+        }
+        service._remote_master_loaded = False
+
+        def fake_load_master() -> None:
+            service._resolved_entries["SOLARA"] = StockUniverseEntry(
+                symbol="SOLARA",
+                label="SOLARA ACTIVE PHA SCI LTD",
+                security_id="3672",
+            )
+            service._remote_master_loaded = True
+
+        with patch.object(service, "_load_master_locked", side_effect=fake_load_master) as load_mock:
+            resolved = service.resolve("SOLARA")
+
+        self.assertEqual(resolved.security_id, "3672")
+        load_mock.assert_called_once()
+
+    def test_removing_selected_stock_promotes_remaining_watchlist_stock(self) -> None:
+        resolved = StockUniverseEntry(symbol="TCS", label="TATA CONSULTANCY SERV LT", security_id="11536")
+        with patch.object(self.test_engine.stock_universe, "preview", return_value=resolved):
+            with patch.object(self.test_engine, "_auto_sync_selected_stock_async", return_value=None):
+                self.client.post("/api/stocks/watchlist/add", data={"symbol": "TCS"})
+
+        response = self.client.post("/api/stocks/watchlist/remove", data={"symbol": "TCS"})
+
+        self.assertEqual(response.status_code, 200)
+        state = response.json()["state"]
+        self.assertEqual(state["instrument"]["mode"], "stock")
+        self.assertEqual(state["instrument"]["symbol"], "SBIN")
+        self.assertEqual(len(state["stock_watchlist"]), 1)
+        self.assertEqual(state["stock_watchlist"][0]["symbol"], "SBIN")
+        self.assertTrue(state["stock_watchlist"][0]["selected"])
+
+    def test_removing_last_stock_leaves_watchlist_empty(self) -> None:
+        self.client.post("/api/instrument-mode", data={"instrument_mode": "stock"})
+
+        response = self.client.post("/api/stocks/watchlist/remove", data={"symbol": "SBIN"})
+
+        self.assertEqual(response.status_code, 200)
+        state = response.json()["state"]
+        self.assertEqual(state["instrument"]["mode"], "stock")
+        self.assertEqual(state["instrument"]["label"], "Stock Watchlist")
+        self.assertEqual(state["instrument"]["security_id"], "")
+        self.assertEqual(state["stock_watchlist"], [])
+
+    def test_connect_live_feed_in_stock_mode_subscribes_selected_watchlist(self) -> None:
+        fake_adapter = Mock()
+        fake_adapter.start = Mock()
+
+        with patch.object(
+            self.test_engine.stock_universe,
+            "preview",
+            return_value=StockUniverseEntry(symbol="TCS", label="TATA CONSULTANCY SERV LT", security_id="11536"),
+        ):
+            self.test_engine.add_stock_to_watchlist("TCS")
+
+        with patch.object(self.test_engine, "sync_dhan_context", return_value=self.test_engine.get_state()) as sync_mock:
+            with patch(
+                "app.services.simulation.resolve_quote_subscription",
+                side_effect=lambda security_id, segment: (segment, security_id, "Quote"),
+            ):
+                with patch("app.services.simulation.DhanMarketFeedAdapter", return_value=fake_adapter) as adapter_mock:
+                    response = self.client.post("/api/live/connect", data={"client_id": "cid", "access_token": "tok"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(sync_mock.call_count, 1)
+        fake_adapter.start.assert_called_once()
+        instruments = adapter_mock.call_args.args[2]
+        self.assertEqual({instrument[1] for instrument in instruments}, {"3045", "11536"})
+
+    def test_stock_mode_sync_history_updates_all_watchlist_sessions(self) -> None:
+        with patch.object(
+            self.test_engine.stock_universe,
+            "preview",
+            return_value=StockUniverseEntry(symbol="TCS", label="TATA CONSULTANCY SERV LT", security_id="11536"),
+        ):
+            self.test_engine.add_stock_to_watchlist("TCS")
+
+        bundles = {
+            "3045": DhanSessionBundle(
+                previous_day_candles=[Candle(timestamp="2026-05-13T09:15:00", open=790, high=792, low=788, close=791, volume=1000)],
+                intraday_candles=[Candle(timestamp="2026-05-14T09:15:00", open=792, high=794, low=791, close=793, volume=1000)],
+                live_open_candle=None,
+                previous_day_source="historical",
+            ),
+            "11536": DhanSessionBundle(
+                previous_day_candles=[Candle(timestamp="2026-05-13T09:15:00", open=3500, high=3510, low=3490, close=3505, volume=1000)],
+                intraday_candles=[Candle(timestamp="2026-05-14T09:15:00", open=3510, high=3520, low=3508, close=3518, volume=1000)],
+                live_open_candle=None,
+                previous_day_source="historical",
+            ),
+        }
+
+        def fake_fetch_market_context(*, security_id, **kwargs):
+            return bundles[str(security_id)]
+
+        with patch.object(self.test_engine.chart_service, "fetch_market_context", side_effect=fake_fetch_market_context):
+            response = self.client.post("/api/live/sync-history", data={"client_id": "cid", "access_token": "tok"})
+
+        self.assertEqual(response.status_code, 200)
+        state = response.json()["state"]
+        by_symbol = {item["symbol"]: item for item in state["stock_watchlist"]}
+        self.assertEqual(by_symbol["SBIN"]["total_loaded"], 2)
+        self.assertEqual(by_symbol["TCS"]["total_loaded"], 2)
+        self.assertEqual(by_symbol["TCS"]["history_status"], "ready")
+
+    def test_stock_mode_simulate_today_runs_for_all_watchlist_sessions(self) -> None:
+        with patch.object(
+            self.test_engine.stock_universe,
+            "preview",
+            return_value=StockUniverseEntry(symbol="TCS", label="TATA CONSULTANCY SERV LT", security_id="11536"),
+        ):
+            self.test_engine.add_stock_to_watchlist("TCS")
+
+        bundles = {
+            "3045": DhanSessionBundle(
+                previous_day_candles=[Candle(timestamp="2026-05-13T09:15:00", open=790, high=792, low=788, close=791, volume=1000)],
+                intraday_candles=[
+                    Candle(timestamp="2026-05-14T09:15:00", open=792, high=794, low=791, close=793, volume=1000),
+                    Candle(timestamp="2026-05-14T09:16:00", open=793, high=795, low=792, close=794, volume=1000),
+                ],
+                live_open_candle=None,
+                previous_day_source="historical",
+            ),
+            "11536": DhanSessionBundle(
+                previous_day_candles=[Candle(timestamp="2026-05-13T09:15:00", open=3500, high=3510, low=3490, close=3505, volume=1000)],
+                intraday_candles=[
+                    Candle(timestamp="2026-05-14T09:15:00", open=3510, high=3520, low=3508, close=3518, volume=1000),
+                    Candle(timestamp="2026-05-14T09:16:00", open=3518, high=3524, low=3516, close=3522, volume=1000),
+                ],
+                live_open_candle=None,
+                previous_day_source="historical",
+            ),
+        }
+
+        def fake_fetch_market_context(*, security_id, **kwargs):
+            return bundles[str(security_id)]
+
+        with patch.object(self.test_engine.chart_service, "fetch_market_context", side_effect=fake_fetch_market_context):
+            response = self.client.post("/api/simulation/today", data={"client_id": "cid", "access_token": "tok"})
+
+        self.assertEqual(response.status_code, 200)
+        state = response.json()["state"]
+        by_symbol = {item["symbol"]: item for item in state["stock_watchlist"]}
+        self.assertEqual(by_symbol["SBIN"]["intraday_candles"], 2)
+        self.assertEqual(by_symbol["TCS"]["intraday_candles"], 2)
+        self.assertEqual(state["instrument"]["symbol"], "TCS")
 
     def test_simulate_today_replays_intraday_candles_from_session_start(self) -> None:
         bundle = DhanSessionBundle(
@@ -487,17 +2307,326 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertEqual(state["current_index"], 2)
         self.assertEqual(state["data_sync"]["intraday_candles"], 2)
 
+    def test_simulate_today_requests_last_closed_session_before_open(self) -> None:
+        bundle = DhanSessionBundle(
+            previous_day_candles=[
+                Candle(timestamp="2026-05-13T09:15:00", open=790, high=792, low=788, close=791, volume=1000),
+            ],
+            intraday_candles=[
+                Candle(timestamp="2026-05-14T09:15:00", open=792, high=794, low=791, close=793, volume=1000),
+            ],
+            live_open_candle=None,
+            previous_day_source="historical",
+        )
+        with patch.object(self.test_engine.chart_service, "fetch_market_context", return_value=bundle) as fetch_mock:
+            response = self.client.post("/api/simulation/today", data={"client_id": "cid", "access_token": "tok"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(fetch_mock.called)
+        self.assertTrue(
+            any(call.kwargs.get("prefer_last_closed_session_before_open") for call in fetch_mock.call_args_list)
+        )
+
+    def test_historical_simulation_replays_selected_days(self) -> None:
+        bundle = DhanSessionBundle(
+            previous_day_candles=[
+                Candle(timestamp="2026-05-13T09:15:00", open=790, high=792, low=788, close=791, volume=1000),
+            ],
+            intraday_candles=[
+                Candle(timestamp="2026-05-14T09:15:00", open=792, high=794, low=791, close=793, volume=1000),
+                Candle(timestamp="2026-05-14T09:16:00", open=793, high=796, low=792, close=795, volume=1100),
+            ],
+            live_open_candle=None,
+            previous_day_source="historical",
+            replay_session_day=date(2026, 5, 14),
+            intraday_source="historical",
+            previous_context_day=date(2026, 5, 13),
+        )
+        with patch.object(self.test_engine.chart_service, "fetch_market_context_for_days", return_value=bundle) as fetch_mock:
+            response = self.client.post(
+                "/api/simulation/historical",
+                data={
+                    "client_id": "cid",
+                    "access_token": "tok",
+                    "replay_date": "2026-05-14",
+                    "previous_context_date": "2026-05-13",
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(fetch_mock.called)
+        self.assertEqual(fetch_mock.call_args.kwargs["session_day"], date(2026, 5, 14))
+        self.assertEqual(fetch_mock.call_args.kwargs["previous_context_day"], date(2026, 5, 13))
+        state = response.json()["state"]
+        self.assertEqual(state["data_sync"]["replay_session_day"], "2026-05-14")
+        self.assertEqual(state["data_sync"]["previous_context_day"], "2026-05-13")
+
+    def test_historical_replay_uses_completed_selected_duration_candles_for_decisions(self) -> None:
+        self.test_engine.operating_mode = OperatingMode.heuristic
+        bundle = DhanSessionBundle(
+            previous_day_candles=[
+                Candle(timestamp="2026-05-13T09:15:00", open=790, high=792, low=788, close=791, volume=1000),
+            ],
+            intraday_candles=[
+                Candle(timestamp="2026-05-14T09:15:00", open=792, high=793, low=791, close=792.2, volume=1000),
+                Candle(timestamp="2026-05-14T09:16:00", open=792.2, high=793.5, low=792.0, close=793.1, volume=1100),
+                Candle(timestamp="2026-05-14T09:17:00", open=793.1, high=794.0, low=792.8, close=793.4, volume=1200),
+                Candle(timestamp="2026-05-14T09:18:00", open=793.4, high=794.3, low=793.2, close=794.0, volume=1150),
+                Candle(timestamp="2026-05-14T09:19:00", open=794.0, high=795.0, low=793.8, close=794.8, volume=1300),
+                Candle(timestamp="2026-05-14T09:20:00", open=794.8, high=795.2, low=794.1, close=794.5, volume=900),
+            ],
+            live_open_candle=None,
+            previous_day_source="historical",
+            replay_session_day=date(2026, 5, 14),
+            intraday_source="historical",
+            previous_context_day=date(2026, 5, 13),
+        )
+        evaluated_timestamps: list[str] = []
+
+        def fake_heuristic(context):
+            evaluated_timestamps.append(context.current_candle.timestamp.isoformat())
+            return TradeDecision(action=TradeAction.no_trade, confidence=0.25, reason="Test replay duration")
+
+        with patch.object(self.test_engine.chart_service, "fetch_market_context_for_days", return_value=bundle):
+            with patch.object(self.test_engine, "heuristic_decision", side_effect=fake_heuristic):
+                self.test_engine.simulate_historical_session(
+                    client_id="cid",
+                    access_token="tok",
+                    replay_date="2026-05-14",
+                    previous_context_date="2026-05-13",
+                    replay_decision_duration_minutes=5,
+                )
+
+        self.assertEqual(evaluated_timestamps, ["2026-05-14T09:19:00"])
+
+    def test_nifty_replay_entries_use_spot_pricing_not_option_pricing(self) -> None:
+        decision = TradeDecision(
+            action=TradeAction.enter_put,
+            confidence=0.82,
+            reason="Replay should short the spot for bearish Nifty setups.",
+            option_type="PE",
+            invalidation_level=23640.0,
+            target_spot_price=23520.0,
+        )
+        candle = Candle(timestamp="2026-05-14T11:20:00", open=23610, high=23618, low=23598, close=23602, volume=1500)
+
+        trade = self.test_engine._build_entry_trade(candle, decision, source="replay")
+
+        self.assertEqual(trade.price_mode, "cash")
+        self.assertEqual(trade.direction, "SHORT_STOCK")
+        self.assertEqual(trade.symbol, "NIFTY SPOT")
+        self.assertEqual(trade.entry_price, 23602.0)
+        self.assertEqual(trade.stop_price, 23640.0)
+        self.assertEqual(trade.target_price, 23520.0)
+
+    def test_dhan_market_context_uses_closed_session_replay_before_open(self) -> None:
+        service = DhanChartService()
+        previous_context = [Candle(timestamp="2026-05-13T09:15:00", open=100, high=101, low=99, close=100.5, volume=1000)]
+        replay_session = [Candle(timestamp="2026-05-14T09:15:00", open=101, high=103, low=100.5, close=102.5, volume=1200)]
+        market_now = datetime(2026, 5, 15, 1, 30, tzinfo=service.market_timezone)
+
+        with patch.object(
+            service,
+            "fetch_session_day_candles",
+            side_effect=[(previous_context, "historical"), (replay_session, "historical")],
+        ) as session_mock:
+            with patch.object(service, "fetch_intraday_candles") as intraday_mock:
+                bundle = service.fetch_market_context(
+                    client_id="cid",
+                    access_token="tok",
+                    security_id="13",
+                    prefer_last_closed_session_before_open=True,
+                    market_now=market_now,
+                )
+
+        self.assertEqual(bundle.previous_day_candles, previous_context)
+        self.assertEqual(bundle.intraday_candles, replay_session)
+        self.assertIsNone(bundle.live_open_candle)
+        self.assertEqual(bundle.replay_session_day, date(2026, 5, 14))
+        self.assertEqual(bundle.intraday_source, "historical")
+        self.assertEqual(session_mock.call_count, 2)
+        self.assertFalse(intraday_mock.called)
+
+    def test_dhan_market_context_for_days_uses_selected_replay_and_previous_context(self) -> None:
+        service = DhanChartService()
+        previous_context = [Candle(timestamp="2026-05-13T09:15:00", open=100, high=101, low=99, close=100.5, volume=1000)]
+        replay_session = [Candle(timestamp="2026-05-14T09:15:00", open=101, high=103, low=100.5, close=102.5, volume=1200)]
+
+        with patch.object(
+            service,
+            "fetch_session_day_candles",
+            side_effect=[(previous_context, "historical"), (replay_session, "historical")],
+        ) as session_mock:
+            bundle = service.fetch_market_context_for_days(
+                client_id="cid",
+                access_token="tok",
+                session_day=date(2026, 5, 14),
+                previous_context_day=date(2026, 5, 13),
+                security_id="13",
+            )
+
+        self.assertEqual(bundle.previous_day_candles, previous_context)
+        self.assertEqual(bundle.intraday_candles, replay_session)
+        self.assertEqual(bundle.previous_context_day, date(2026, 5, 13))
+        self.assertEqual(bundle.replay_session_day, date(2026, 5, 14))
+        self.assertEqual(session_mock.call_count, 2)
+
+    def test_dhan_chart_error_mentions_endpoint_and_requested_range(self) -> None:
+        service = DhanChartService()
+        service.min_request_gap_seconds = 0
+        response = Mock()
+        response.status_code = 200
+        response.json.return_value = {"data": []}
+
+        with patch("app.services.dhan_history.httpx.Client") as client_cls:
+            client = client_cls.return_value.__enter__.return_value
+            client.post.return_value = response
+            with self.assertRaises(DhanChartError) as exc:
+                service._request_candles(
+                    url=service.intraday_url,
+                    payload={
+                        "securityId": "3045",
+                        "fromDate": "2026-05-14 09:15:00",
+                        "toDate": "2026-05-14 15:30:00",
+                    },
+                    client_id="cid",
+                    access_token="tok",
+                )
+
+        message = str(exc.exception)
+        self.assertIn("intraday", message)
+        self.assertIn("3045", message)
+        self.assertIn("2026-05-14 09:15:00", message)
+
+    def test_dhan_chart_request_retries_after_429_and_succeeds(self) -> None:
+        service = DhanChartService()
+        service.min_request_gap_seconds = 0
+        rate_limited = Mock()
+        rate_limited.status_code = 429
+        rate_limited.headers = {"Retry-After": "0"}
+        rate_limited.json.return_value = {"remarks": "Too many requests"}
+        success = Mock()
+        success.status_code = 200
+        success.headers = {}
+        success.json.return_value = {
+            "data": [
+                {
+                    "timestamp": "2026-05-14T09:15:00",
+                    "open": 100,
+                    "high": 101,
+                    "low": 99,
+                    "close": 100.5,
+                    "volume": 1000,
+                }
+            ]
+        }
+
+        with patch("app.services.dhan_history.httpx.Client") as client_cls:
+            client = client_cls.return_value.__enter__.return_value
+            client.post.side_effect = [rate_limited, success]
+
+            candles = service._request_candles(
+                url=service.intraday_url,
+                payload={
+                    "securityId": "3045",
+                    "fromDate": "2026-05-14 09:15:00",
+                    "toDate": "2026-05-14 09:16:00",
+                },
+                client_id="cid",
+                access_token="tok",
+            )
+
+        self.assertEqual(client.post.call_count, 2)
+        self.assertEqual(len(candles), 1)
+        self.assertEqual(candles[0].close, 100.5)
+
+    def test_dhan_rate_limit_does_not_trigger_intraday_fallback_request(self) -> None:
+        service = DhanChartService()
+
+        with patch.object(
+            service,
+            "_request_candles",
+            side_effect=DhanChartRateLimitError("Dhan chart API rate limit hit (429)."),
+        ) as request_mock:
+            with patch.object(service, "_request_intraday_window") as intraday_mock:
+                with self.assertRaises(DhanChartRateLimitError):
+                    service.fetch_session_day_candles(
+                        client_id="cid",
+                        access_token="tok",
+                        security_id="3045",
+                        session_day=date(2026, 5, 14),
+                        exchange_segment="NSE_EQ",
+                        instrument_type="EQUITY",
+                    )
+
+        self.assertEqual(request_mock.call_count, 1)
+        self.assertFalse(intraday_mock.called)
+
+    def test_dhan_empty_historical_response_uses_intraday_fallback(self) -> None:
+        service = DhanChartService()
+        fallback_candles = [
+            Candle(timestamp="2026-05-14T09:15:00", open=100, high=101, low=99, close=100.5, volume=1000),
+            Candle(timestamp="2026-05-14T09:16:00", open=100.5, high=102, low=100, close=101.5, volume=1100),
+        ]
+
+        with patch.object(
+            service,
+            "_request_candles",
+            side_effect=DhanChartEmptyDataError("No candles returned."),
+        ) as request_mock:
+            with patch.object(service, "_request_intraday_window", return_value=fallback_candles) as intraday_mock:
+                candles, source = service.fetch_session_day_candles(
+                    client_id="cid",
+                    access_token="tok",
+                    security_id="3045",
+                    session_day=date(2026, 5, 14),
+                    exchange_segment="NSE_EQ",
+                    instrument_type="EQUITY",
+                )
+
+        self.assertEqual(request_mock.call_count, 1)
+        self.assertTrue(intraday_mock.called)
+        self.assertEqual(source, "intraday-fallback")
+        self.assertEqual(candles, fallback_candles)
+
+    def test_dhan_historical_400_uses_intraday_fallback_for_replay(self) -> None:
+        service = DhanChartService()
+        fallback_candles = [
+            Candle(timestamp="2026-05-13T09:15:00", open=100, high=101, low=99, close=100.5, volume=1000),
+            Candle(timestamp="2026-05-13T09:16:00", open=100.5, high=102, low=100, close=101.5, volume=1100),
+        ]
+
+        with patch.object(
+            service,
+            "_request_candles",
+            side_effect=DhanChartError("Dhan chart API error 400."),
+        ) as request_mock:
+            with patch.object(service, "_request_intraday_window", return_value=fallback_candles) as intraday_mock:
+                candles, source = service.fetch_session_day_candles(
+                    client_id="cid",
+                    access_token="tok",
+                    security_id="13",
+                    session_day=date(2026, 5, 13),
+                    exchange_segment="IDX_I",
+                    instrument_type="INDEX",
+                )
+
+        self.assertEqual(request_mock.call_count, 1)
+        self.assertTrue(intraday_mock.called)
+        self.assertEqual(source, "intraday-fallback")
+        self.assertEqual(candles, fallback_candles)
+
     def test_heuristic_v2_enters_stock_long_after_multi_candle_reclaim(self) -> None:
         self.test_engine.set_instrument_mode("stock")
         candles = [
             Candle(timestamp="2026-05-13T09:15:00", open=810, high=812, low=806, close=808, volume=1000),
             Candle(timestamp="2026-05-13T09:16:00", open=808, high=811, low=804, close=805, volume=1100),
-            Candle(timestamp="2026-05-14T09:15:00", open=806, high=807, low=803, close=805.5, volume=1300),
-            Candle(timestamp="2026-05-14T09:16:00", open=805.5, high=809, low=803.8, close=808.4, volume=1500),
-            Candle(timestamp="2026-05-14T09:17:00", open=808.4, high=810.2, low=807.9, close=809.8, volume=1450),
-            Candle(timestamp="2026-05-14T09:18:00", open=809.8, high=811.4, low=809.2, close=810.9, volume=1480),
-            Candle(timestamp="2026-05-14T09:19:00", open=810.9, high=812.2, low=810.1, close=811.8, volume=1520),
-            Candle(timestamp="2026-05-14T09:20:00", open=811.8, high=813.1, low=811.0, close=812.6, volume=1550),
+            Candle(timestamp="2026-05-14T09:15:00", open=806, high=808.2, low=805.5, close=807.8, volume=1300),
+            Candle(timestamp="2026-05-14T09:16:00", open=807.8, high=809.4, low=807.2, close=809.1, volume=1500),
+            Candle(timestamp="2026-05-14T09:17:00", open=809.1, high=810.2, low=808.6, close=809.8, volume=1450),
+            Candle(timestamp="2026-05-14T09:18:00", open=809.8, high=810.0, low=803.6, close=804.6, volume=1480),
+            Candle(timestamp="2026-05-14T09:19:00", open=804.6, high=809.8, low=804.2, close=809.6, volume=1520),
+            Candle(timestamp="2026-05-14T09:20:00", open=809.6, high=812.4, low=809.4, close=811.9, volume=1550),
         ]
         self.test_engine.reset_with_candles(candles)
         self.test_engine.current_index = len(candles) - 1
@@ -535,7 +2664,62 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertEqual(decision.pending_setup_action, "INVALIDATE")
         self.assertEqual(decision.action, TradeAction.no_trade)
 
-    def test_heuristic_v2_requests_partial_exit_after_first_target(self) -> None:
+    def test_heuristic_liquidity_map_includes_pivot_levels(self) -> None:
+        previous_day = PreviousDayLevels(high=980.0, low=960.0, close=970.0)
+        previous_day_candles = [
+            Candle(timestamp="2026-05-13T09:15:00", open=968, high=972, low=964, close=970, volume=1000),
+            Candle(timestamp="2026-05-13T09:16:00", open=970, high=980, low=968, close=978, volume=1100),
+            Candle(timestamp="2026-05-13T09:17:00", open=978, high=979, low=960, close=965, volume=1200),
+        ]
+        session = [
+            Candle(timestamp="2026-05-14T09:15:00", open=971, high=973, low=969, close=972, volume=1000),
+            Candle(timestamp="2026-05-14T09:16:00", open=972, high=974, low=970, close=973, volume=1100),
+            Candle(timestamp="2026-05-14T09:17:00", open=973, high=975, low=971, close=974, volume=1200),
+            Candle(timestamp="2026-05-14T09:18:00", open=974, high=976, low=972, close=975, volume=1300),
+            Candle(timestamp="2026-05-14T09:19:00", open=975, high=977, low=973, close=976, volume=1400),
+        ]
+
+        buy_levels, sell_levels = self.test_engine.heuristic_engine.build_liquidity_maps(
+            session,
+            previous_day_candles,
+            previous_day,
+            session[-1].close,
+            4.0,
+        )
+
+        labels = {label for label, _, _ in buy_levels + sell_levels}
+        self.assertIn("Pivot Point", labels)
+        self.assertIn("Pivot R1", labels)
+        self.assertIn("Pivot S1", labels)
+
+    def test_find_liquidity_zones_includes_previous_day_structural_shelves(self) -> None:
+        previous_day = [
+            Candle(timestamp="2026-05-13T09:15:00", open=100, high=104, low=98, close=102, volume=1000),
+            Candle(timestamp="2026-05-13T09:16:00", open=102, high=110, low=101, close=109, volume=1100),
+            Candle(timestamp="2026-05-13T09:17:00", open=109, high=109.8, low=103, close=104, volume=1200),
+            Candle(timestamp="2026-05-13T09:18:00", open=104, high=110.1, low=102, close=103, volume=1200),
+            Candle(timestamp="2026-05-13T09:19:00", open=103, high=105, low=97.8, close=99, volume=1300),
+            Candle(timestamp="2026-05-13T09:20:00", open=99, high=100, low=97.9, close=98.5, volume=1200),
+        ]
+        session = [
+            Candle(timestamp="2026-05-14T09:15:00", open=101, high=102, low=100, close=101.5, volume=1000),
+            Candle(timestamp="2026-05-14T09:16:00", open=101.5, high=103, low=101, close=102.5, volume=1000),
+            Candle(timestamp="2026-05-14T09:17:00", open=102.5, high=103.5, low=101.8, close=103.0, volume=1000),
+            Candle(timestamp="2026-05-14T09:18:00", open=103.0, high=104.0, low=102.1, close=103.4, volume=1000),
+            Candle(timestamp="2026-05-14T09:19:00", open=103.4, high=104.2, low=102.5, close=103.8, volume=1000),
+        ]
+
+        zones = self.test_engine.find_liquidity_zones(
+            session,
+            PreviousDayLevels(high=110.1, low=97.8, close=98.5),
+            previous_day,
+        )
+
+        labels = {zone.label for zone in zones}
+        self.assertTrue(any(label.startswith("Previous-Day Resistance Shelf") for label in labels))
+        self.assertTrue(any(label.startswith("Previous-Day Support Shelf") for label in labels))
+
+    def test_heuristic_v2_trails_stop_instead_of_partial_exit_after_first_target(self) -> None:
         self.test_engine.set_instrument_mode("stock")
         candles = [
             Candle(timestamp="2026-05-13T09:15:00", open=805, high=810, low=803, close=808, volume=1000),
@@ -584,8 +2768,61 @@ class AppIntegrationTests(unittest.TestCase):
 
         decision = self.test_engine.heuristic_decision(self.test_engine.build_context())
 
-        self.assertEqual(decision.action, TradeAction.partial_exit)
-        self.assertGreaterEqual(decision.partial_exit_quantity or 0, 1)
+        self.assertEqual(decision.action, TradeAction.update_stop)
+        self.assertGreaterEqual(decision.invalidation_level or 0, 808)
+        self.assertIsNone(decision.partial_exit_quantity)
+
+    def test_heuristic_v2_does_not_trail_stop_for_nifty_mode(self) -> None:
+        self.test_engine.set_instrument_mode("nifty")
+        candles = [
+            Candle(timestamp="2026-05-13T09:15:00", open=23490, high=23510, low=23480, close=23500, volume=1000),
+            Candle(timestamp="2026-05-14T09:15:00", open=23500, high=23530, low=23495, close=23518, volume=1200),
+            Candle(timestamp="2026-05-14T09:16:00", open=23518, high=23542, low=23510, close=23536, volume=1400),
+        ]
+        self.test_engine.reset_with_candles(candles)
+        self.test_engine.active_trade = SimulatedTrade(
+            trade_id="trade2",
+            status="OPEN",
+            direction="LONG_CALL",
+            instrument_mode="nifty",
+            instrument_label="Nifty 50",
+            price_mode="option",
+            trade_security_id="13",
+            quote_exchange_segment="IDX_I",
+            option_type="CE",
+            strike=23500,
+            symbol="NIFTY 23500 CE",
+            option_security_id="opt-1",
+            quantity=65,
+            open_quantity=65,
+            entry_time=datetime.fromisoformat("2026-05-14T09:15:00"),
+            entry_price=120,
+            entry_spot_price=23500,
+            entry_option_price=120,
+            entry_quote_source="simulated",
+            entry_quote_time=datetime.fromisoformat("2026-05-14T09:15:00"),
+            current_price=144,
+            current_option_price=144,
+            current_quote_source="simulated",
+            current_quote_time=datetime.fromisoformat("2026-05-14T09:16:00"),
+            stop_price=108,
+            stop_option_price=108,
+            target_price=150,
+            target_option_price=150,
+            invalidation_level=23480,
+            target_spot_price=None,
+            first_target_price=23520,
+            exit_time=None,
+            exit_price=None,
+            exit_option_price=None,
+            pnl=0.0,
+        )
+        self.test_engine.current_index = len(candles) - 1
+
+        decision = self.test_engine.heuristic_decision(self.test_engine.build_context())
+
+        self.assertEqual(decision.action, TradeAction.hold)
+        self.assertIsNone(decision.invalidation_level)
 
     def test_heuristic_replaces_stale_long_setup_with_short_when_market_keeps_falling(self) -> None:
         candles = [
@@ -618,13 +2855,14 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertGreaterEqual(decision.setup_score or 0, 58)
 
     def test_heuristic_detects_previous_close_reclaim_long_setup(self) -> None:
+        self.test_engine.set_instrument_mode("stock")
         candles = [
             Candle(timestamp="2026-05-13T09:15:00", open=100, high=101, low=99.2, close=100, volume=1000),
             Candle(timestamp="2026-05-14T09:15:00", open=103, high=103.3, low=102.5, close=102.7, volume=1100),
             Candle(timestamp="2026-05-14T09:16:00", open=102.7, high=102.9, low=99.7, close=100.2, volume=1300),
-            Candle(timestamp="2026-05-14T09:17:00", open=100.2, high=101.1, low=100.0, close=100.9, volume=1350),
-            Candle(timestamp="2026-05-14T09:18:00", open=100.9, high=101.4, low=100.6, close=101.2, volume=1380),
-            Candle(timestamp="2026-05-14T09:19:00", open=101.2, high=102.6, low=101.1, close=102.2, volume=1500),
+            Candle(timestamp="2026-05-14T09:17:00", open=100.2, high=100.3, low=99.9, close=100.1, volume=1350),
+            Candle(timestamp="2026-05-14T09:18:00", open=100.1, high=100.6, low=100.0, close=100.4, volume=1380),
+            Candle(timestamp="2026-05-14T09:19:00", open=100.4, high=100.9, low=100.3, close=100.7, volume=1500),
         ]
         self.test_engine.reset_with_candles(candles)
         self.test_engine.current_index = len(candles) - 1
@@ -634,7 +2872,89 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertEqual(decision.action, TradeAction.enter_call)
         self.assertEqual(decision.setup_type, "previous_close_reclaim_long")
 
+    def test_heuristic_observe_classifies_expanding_range_state(self) -> None:
+        candles = [Candle(timestamp="2026-05-13T09:15:00", open=100, high=101.2, low=99.2, close=100.4, volume=1000)]
+        recent_day = [
+            (100.4, 101.0, 99.9, 100.8),
+            (100.8, 101.1, 100.2, 100.5),
+            (100.5, 101.2, 100.1, 100.9),
+            (100.9, 101.4, 100.5, 101.2),
+            (101.2, 101.5, 100.8, 101.0),
+            (101.0, 101.6, 100.7, 101.4),
+            (101.4, 101.8, 101.0, 101.6),
+            (101.6, 101.9, 101.1, 101.3),
+            (101.3, 101.9, 101.2, 101.8),
+            (101.9, 102.6, 101.8, 102.5),
+            (102.5, 103.2, 102.4, 103.1),
+            (102.1, 102.2, 101.4, 101.6),
+            (102.0, 102.8, 101.9, 102.7),
+            (102.7, 103.5, 102.6, 103.4),
+            (102.0, 102.1, 101.2, 101.4),
+            (101.8, 104.0, 101.7, 103.8),
+        ]
+        for minute, (open_price, high, low, close) in enumerate(recent_day, start=15):
+            candles.append(
+                Candle(
+                    timestamp=f"2026-05-14T09:{minute:02d}:00",
+                    open=open_price,
+                    high=high,
+                    low=low,
+                    close=close,
+                    volume=1100 + minute,
+                )
+            )
+
+        self.test_engine.reset_with_candles(candles)
+        self.test_engine.current_index = len(candles) - 1
+
+        observation = self.test_engine.heuristic_engine.observe(self.test_engine.build_context())
+
+        self.assertEqual(observation.range_state, "expanding")
+        self.assertEqual(observation.participation_state, "two_sided_active")
+        self.assertGreater(observation.regime_quality, 0.0)
+
+    def test_heuristic_observe_classifies_fair_value_churn_participation(self) -> None:
+        candles = [Candle(timestamp="2026-05-13T09:15:00", open=100, high=101.0, low=99.0, close=100.0, volume=1000)]
+        recent_day = [
+            (100.0, 100.6, 99.5, 100.2),
+            (100.2, 100.7, 99.8, 100.0),
+            (100.0, 100.5, 99.6, 100.1),
+            (100.1, 100.6, 99.7, 99.9),
+            (99.9, 100.4, 99.5, 100.0),
+            (100.0, 100.5, 99.6, 100.2),
+            (100.2, 100.7, 99.8, 100.0),
+            (100.0, 100.4, 99.6, 99.9),
+            (99.9, 100.5, 99.6, 100.1),
+            (100.1, 100.6, 99.7, 99.95),
+            (99.95, 100.5, 99.6, 100.05),
+            (100.05, 100.55, 99.7, 99.9),
+            (99.9, 100.45, 99.55, 100.1),
+            (100.1, 100.6, 99.8, 100.0),
+            (100.0, 100.4, 99.65, 99.95),
+            (99.95, 100.5, 99.7, 100.0),
+        ]
+        for minute, (open_price, high, low, close) in enumerate(recent_day, start=15):
+            candles.append(
+                Candle(
+                    timestamp=f"2026-05-14T09:{minute:02d}:00",
+                    open=open_price,
+                    high=high,
+                    low=low,
+                    close=close,
+                    volume=1050 + minute,
+                )
+            )
+
+        self.test_engine.reset_with_candles(candles)
+        self.test_engine.current_index = len(candles) - 1
+
+        observation = self.test_engine.heuristic_engine.observe(self.test_engine.build_context())
+
+        self.assertEqual(observation.participation_state, "fair_value_churn")
+        self.assertLess(observation.regime_quality, 0.0)
+
     def test_heuristic_maps_round_number_equal_clusters_and_swings(self) -> None:
+        self.test_engine.set_instrument_mode("stock")
         candles = [
             Candle(timestamp="2026-05-13T09:15:00", open=23710, high=23742, low=23688, close=23720, volume=1000),
             Candle(timestamp="2026-05-14T09:15:00", open=23720, high=23732, low=23718, close=23728, volume=1100),
@@ -662,6 +2982,7 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertTrue(any("Equal High Cluster" in label or "Equal Low Cluster" in label for label in zone_labels))
 
     def test_heuristic_scores_equal_high_round_number_sweep_more_aggressively(self) -> None:
+        self.test_engine.set_instrument_mode("stock")
         candles = [
             Candle(timestamp="2026-05-13T09:15:00", open=23710, high=23820, low=23688, close=23720, volume=1000),
             Candle(timestamp="2026-05-14T09:15:00", open=23720, high=23734, low=23718, close=23730, volume=1100),
@@ -677,11 +2998,66 @@ class AppIntegrationTests(unittest.TestCase):
         context = self.test_engine.build_context()
         observation = self.test_engine.heuristic_engine.observe(context)
         candidates = self.test_engine.heuristic_engine.build_candidates(context, observation)
-        bearish_candidate = next(candidate for candidate in candidates if candidate.option_type == "PE")
+        bearish_candidate = max(
+            (
+                candidate
+                for candidate in candidates
+                if candidate.option_type == "PE" and candidate.setup_type == "bearish_rejection_watch"
+            ),
+            key=lambda candidate: candidate.score,
+        )
 
         self.assertGreaterEqual(bearish_candidate.score, 35.0)
         self.assertTrue(any("round-number" in note.lower() for note in bearish_candidate.notes))
         self.assertTrue(any("equal-high" in note.lower() for note in bearish_candidate.notes))
+
+    def test_heuristic_regime_filter_downgrades_candidate_score_without_delaying_entry(self) -> None:
+        candles = [
+            Candle(timestamp="2026-05-13T09:15:00", open=23710, high=23820, low=23688, close=23720, volume=1000),
+            Candle(timestamp="2026-05-14T09:15:00", open=23720, high=23734, low=23718, close=23730, volume=1100),
+            Candle(timestamp="2026-05-14T09:16:00", open=23730, high=23749.7, low=23726, close=23746, volume=1200),
+            Candle(timestamp="2026-05-14T09:17:00", open=23746, high=23750.1, low=23740, close=23747, volume=1220),
+            Candle(timestamp="2026-05-14T09:18:00", open=23747, high=23749.8, low=23742, close=23745, volume=1180),
+            Candle(timestamp="2026-05-14T09:19:00", open=23745, high=23758.2, low=23740, close=23743, volume=1500),
+            Candle(timestamp="2026-05-14T09:20:00", open=23743, high=23744, low=23724, close=23730, volume=1650),
+        ]
+        self.test_engine.reset_with_candles(candles)
+        self.test_engine.current_index = len(candles) - 1
+
+        context = self.test_engine.build_context()
+        observation = self.test_engine.heuristic_engine.observe(context)
+        candidates = self.test_engine.heuristic_engine.build_candidates(context, observation)
+        bearish_candidate = max(
+            (
+                candidate
+                for candidate in candidates
+                if candidate.option_type == "PE" and candidate.setup_type == "bearish_rejection_watch"
+            ),
+            key=lambda candidate: candidate.score,
+        )
+
+        baseline_score = bearish_candidate.score
+        baseline_ready = bearish_candidate.ready_to_enter
+        observation.range_state = "compressing"
+        observation.participation_state = "fair_value_churn"
+        observation.regime_quality = self.test_engine.heuristic_engine.regime_quality_score(
+            observation.range_state,
+            observation.participation_state,
+        )
+
+        downgraded_candidate = self.test_engine.heuristic_engine.build_candidate_from_event(
+            context,
+            observation,
+            bearish_candidate.event,
+            option_type="PE",
+            direction="LONG_PUT",
+        )
+
+        self.assertIsNotNone(downgraded_candidate)
+        assert downgraded_candidate is not None
+        self.assertLess(downgraded_candidate.score, baseline_score)
+        self.assertEqual(downgraded_candidate.ready_to_enter, baseline_ready)
+        self.assertTrue(any("fair-value churn" in note.lower() for note in downgraded_candidate.notes))
 
     def test_state_includes_heuristic_trace_and_narrative_entries(self) -> None:
         candles = [
@@ -702,6 +3078,7 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertTrue(state.heuristic_narrative)
 
     def test_heuristic_trace_records_threshold_failure_details(self) -> None:
+        self.test_engine.set_instrument_mode("stock")
         candles = [
             Candle(timestamp="2026-05-13T09:15:00", open=23910, high=23920, low=23888, close=23900, volume=1000),
             Candle(timestamp="2026-05-14T09:15:00", open=23720, high=23734, low=23718, close=23730, volume=1100),

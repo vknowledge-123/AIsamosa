@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
+import threading
+import time as time_module
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -14,12 +16,23 @@ class DhanChartError(RuntimeError):
     pass
 
 
+class DhanChartRateLimitError(DhanChartError):
+    pass
+
+
+class DhanChartEmptyDataError(DhanChartError):
+    pass
+
+
 @dataclass
 class DhanSessionBundle:
     previous_day_candles: list[Candle]
     intraday_candles: list[Candle]
     live_open_candle: Candle | None
     previous_day_source: str
+    replay_session_day: date | None = None
+    intraday_source: str = "intraday"
+    previous_context_day: date | None = None
 
 
 class DhanChartService:
@@ -28,6 +41,12 @@ class DhanChartService:
     market_timezone = ZoneInfo("Asia/Kolkata")
     session_open = time(9, 15)
     session_close = time(15, 30)
+    min_request_gap_seconds = 0.35
+    max_rate_limit_retries = 2
+
+    def __init__(self) -> None:
+        self._request_gap_lock = threading.Lock()
+        self._last_request_started_at = 0.0
 
     def fetch_market_context(
         self,
@@ -36,11 +55,20 @@ class DhanChartService:
         security_id: str = "13",
         exchange_segment: str = "IDX_I",
         instrument_type: str = "INDEX",
+        prefer_last_closed_session_before_open: bool = False,
+        market_now: datetime | None = None,
     ) -> DhanSessionBundle:
-        market_now = datetime.now(self.market_timezone)
-        session_day = market_now.date()
+        market_now = market_now or datetime.now(self.market_timezone)
+        use_closed_session_replay = (
+            prefer_last_closed_session_before_open
+            and market_now.timetz().replace(tzinfo=None) < self.session_open
+        )
+        session_day = self._effective_session_day(
+            market_now,
+            prefer_last_closed_session_before_open=prefer_last_closed_session_before_open,
+        )
         previous_day = self._previous_trading_day(session_day)
-        previous_candles, previous_source = self.fetch_previous_day_candles(
+        previous_candles, previous_source = self.fetch_session_day_candles(
             client_id,
             access_token,
             security_id,
@@ -48,23 +76,95 @@ class DhanChartService:
             exchange_segment,
             instrument_type,
         )
-        intraday_candles, live_open_candle = self.fetch_intraday_candles(
-            client_id,
-            access_token,
-            security_id,
-            session_day,
-            market_now,
-            exchange_segment,
-            instrument_type,
-        )
+        intraday_source = "intraday"
+        if use_closed_session_replay:
+            intraday_candles, intraday_source = self.fetch_session_day_candles(
+                client_id,
+                access_token,
+                security_id,
+                session_day,
+                exchange_segment,
+                instrument_type,
+            )
+            live_open_candle = None
+        else:
+            intraday_candles, live_open_candle = self.fetch_intraday_candles(
+                client_id,
+                access_token,
+                security_id,
+                session_day,
+                market_now,
+                exchange_segment,
+                instrument_type,
+            )
         return DhanSessionBundle(
             previous_day_candles=previous_candles,
             intraday_candles=intraday_candles,
             live_open_candle=live_open_candle,
             previous_day_source=previous_source,
+            replay_session_day=session_day,
+            intraday_source=intraday_source,
+            previous_context_day=previous_day,
+        )
+
+    def fetch_market_context_for_days(
+        self,
+        client_id: str,
+        access_token: str,
+        *,
+        session_day: date,
+        previous_context_day: date,
+        security_id: str = "13",
+        exchange_segment: str = "IDX_I",
+        instrument_type: str = "INDEX",
+    ) -> DhanSessionBundle:
+        if previous_context_day >= session_day:
+            raise ValueError("Previous-day context must be earlier than the replay session day.")
+        previous_candles, previous_source = self.fetch_session_day_candles(
+            client_id,
+            access_token,
+            security_id,
+            previous_context_day,
+            exchange_segment,
+            instrument_type,
+        )
+        replay_candles, replay_source = self.fetch_session_day_candles(
+            client_id,
+            access_token,
+            security_id,
+            session_day,
+            exchange_segment,
+            instrument_type,
+        )
+        return DhanSessionBundle(
+            previous_day_candles=previous_candles,
+            intraday_candles=replay_candles,
+            live_open_candle=None,
+            previous_day_source=previous_source,
+            replay_session_day=session_day,
+            intraday_source=replay_source,
+            previous_context_day=previous_context_day,
         )
 
     def fetch_previous_day_candles(
+        self,
+        client_id: str,
+        access_token: str,
+        security_id: str,
+        session_day: date,
+        exchange_segment: str,
+        instrument_type: str,
+    ) -> tuple[list[Candle], str]:
+        return self.fetch_session_day_candles(
+            client_id,
+            access_token,
+            security_id,
+            session_day,
+            exchange_segment,
+            instrument_type,
+        )
+
+    def fetch_session_day_candles(
         self,
         client_id: str,
         access_token: str,
@@ -93,6 +193,8 @@ class DhanChartService:
             candles = [candle for candle in candles if candle.timestamp.date() == session_day]
             if candles and self._is_intraday_series(candles):
                 return candles, "historical"
+        except DhanChartRateLimitError:
+            raise
         except DhanChartError:
             pass
 
@@ -177,30 +279,57 @@ class DhanChartService:
         client_id: str,
         access_token: str,
     ) -> list[Candle]:
+        attempts = self.max_rate_limit_retries + 1
         headers = {
             "client-id": client_id,
             "access-token": access_token,
             "Content-Type": "application/json",
         }
-        try:
-            with httpx.Client(timeout=20.0) as client:
-                response = client.post(url, json=payload, headers=headers)
-        except httpx.HTTPError as exc:
-            raise DhanChartError(f"Unable to reach Dhan chart API: {exc}") from exc
+        for attempt in range(attempts):
+            self._throttle_request_start()
+            try:
+                with httpx.Client(timeout=20.0) as client:
+                    response = client.post(url, json=payload, headers=headers)
+            except httpx.HTTPError as exc:
+                raise DhanChartError(f"Unable to reach Dhan chart API: {exc}") from exc
 
-        try:
-            body = response.json()
-        except ValueError as exc:
-            raise DhanChartError(f"Dhan chart API returned non-JSON response ({response.status_code}).") from exc
+            body = None
+            try:
+                body = response.json()
+            except ValueError as exc:
+                if response.status_code == 200:
+                    raise DhanChartError(f"Dhan chart API returned non-JSON response ({response.status_code}).") from exc
 
-        if response.status_code != 200:
-            remarks = body.get("remarks") if isinstance(body, dict) else None
-            raise DhanChartError(remarks or f"Dhan chart API error {response.status_code}.")
+            if response.status_code == 429:
+                wait_seconds = self._retry_after_seconds(response.headers.get("Retry-After"))
+                if wait_seconds is None:
+                    wait_seconds = float(attempt + 1)
+                if attempt < attempts - 1:
+                    time_module.sleep(wait_seconds)
+                    continue
+                retry_text = f" Retry after about {wait_seconds:g}s." if wait_seconds > 0 else ""
+                remarks = body.get("remarks") if isinstance(body, dict) else None
+                raise DhanChartRateLimitError(
+                    remarks or f"Dhan chart API rate limit hit (429).{retry_text}"
+                )
 
-        candles = self._parse_candles(body)
-        if not candles:
-            raise DhanChartError("Dhan chart API returned no candles for the requested range.")
-        return candles
+            if response.status_code != 200:
+                remarks = body.get("remarks") if isinstance(body, dict) else None
+                raise DhanChartError(remarks or f"Dhan chart API error {response.status_code}.")
+
+            candles = self._parse_candles(body)
+            if not candles:
+                from_date = payload.get("fromDate", "?")
+                to_date = payload.get("toDate", "?")
+                security_id = payload.get("securityId", "?")
+                endpoint = "intraday" if url == self.intraday_url else "historical"
+                raise DhanChartEmptyDataError(
+                    f"Dhan {endpoint} chart API returned no candles for security {security_id} "
+                    f"between {from_date} and {to_date}."
+                )
+            return candles
+
+        raise DhanChartError("Dhan chart API request failed after retry attempts.")
 
     def _parse_candles(self, payload: Any) -> list[Candle]:
         data = payload.get("data", payload) if isinstance(payload, dict) else payload
@@ -292,8 +421,35 @@ class DhanChartService:
         first_gap = candles[1].timestamp - candles[0].timestamp
         return first_gap <= timedelta(minutes=1, seconds=5)
 
+    def _throttle_request_start(self) -> None:
+        with self._request_gap_lock:
+            now = time_module.monotonic()
+            wait_seconds = self.min_request_gap_seconds - (now - self._last_request_started_at)
+            if wait_seconds > 0:
+                time_module.sleep(wait_seconds)
+            self._last_request_started_at = time_module.monotonic()
+
+    def _retry_after_seconds(self, raw_value: str | None) -> float | None:
+        if raw_value in (None, ""):
+            return None
+        try:
+            return max(float(raw_value), 0.0)
+        except (TypeError, ValueError):
+            return None
+
     def _previous_trading_day(self, session_day: date) -> date:
         previous = session_day - timedelta(days=1)
         while previous.weekday() >= 5:
             previous -= timedelta(days=1)
         return previous
+
+    def _effective_session_day(
+        self,
+        market_now: datetime,
+        *,
+        prefer_last_closed_session_before_open: bool,
+    ) -> date:
+        session_day = market_now.date()
+        if prefer_last_closed_session_before_open and market_now.timetz().replace(tzinfo=None) < self.session_open:
+            return self._previous_trading_day(session_day)
+        return session_day

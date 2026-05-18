@@ -1,0 +1,1480 @@
+{
+  "updated_at": "2026-05-16T14:08:33.383809",
+  "entries": [
+    {
+      "symbol": "GODREJCP",
+      "label": "GODREJ CONSUMER PRODUCTS",
+      "security_id": "10099"
+    },
+    {
+      "symbol": "ADANIENSOL",
+      "label": "ADANI ENERGY SOLUTION LTD",
+      "security_id": "10217"
+    },
+    {
+      "symbol": "FEDERALBNK",
+      "label": "FEDERAL BANK LTD",
+      "security_id": "1023"
+    },
+    {
+      "symbol": "SYNGENE",
+      "label": "SYNGENE INTERNATIONAL LTD",
+      "security_id": "10243"
+    },
+    {
+      "symbol": "LUPIN",
+      "label": "LUPIN LIMITED",
+      "security_id": "10440"
+    },
+    {
+      "symbol": "UNITDSPR",
+      "label": "UNITED SPIRITS LIMITED",
+      "security_id": "10447"
+    },
+    {
+      "symbol": "GUJGASLTD",
+      "label": "GUJARAT GAS LIMITED",
+      "security_id": "10599"
+    },
+    {
+      "symbol": "BHARTIARTL",
+      "label": "BHARTI AIRTEL LIMITED",
+      "security_id": "10604"
+    },
+    {
+      "symbol": "PNB",
+      "label": "PUNJAB NATIONAL BANK",
+      "security_id": "10666"
+    },
+    {
+      "symbol": "INDIAMART",
+      "label": "INDIAMART INTERMESH LTD",
+      "security_id": "10726"
+    },
+    {
+      "symbol": "OFSS",
+      "label": "ORACLE FIN SERV SOFT LTD.",
+      "security_id": "10738"
+    },
+    {
+      "symbol": "UNIONBANK",
+      "label": "UNION BANK OF INDIA",
+      "security_id": "10753"
+    },
+    {
+      "symbol": "ZENSARTECH",
+      "label": "ZENSAR TECHNOLOGIES  LTD",
+      "security_id": "1076"
+    },
+    {
+      "symbol": "CANBK",
+      "label": "CANARA BANK",
+      "security_id": "10794"
+    },
+    {
+      "symbol": "DIVISLAB",
+      "label": "DIVI S LABORATORIES LTD",
+      "security_id": "10940"
+    },
+    {
+      "symbol": "RADICO",
+      "label": "RADICO KHAITAN LTD",
+      "security_id": "10990"
+    },
+    {
+      "symbol": "MARUTI",
+      "label": "MARUTI SUZUKI INDIA LTD.",
+      "security_id": "10999"
+    },
+    {
+      "symbol": "IDFCFIRSTB",
+      "label": "IDFC FIRST BANK LIMITED",
+      "security_id": "11184"
+    },
+    {
+      "symbol": "INDIGO",
+      "label": "INTERGLOBE AVIATION LTD",
+      "security_id": "11195"
+    },
+    {
+      "symbol": "UCOBANK",
+      "label": "UCO BANK",
+      "security_id": "11223"
+    },
+    {
+      "symbol": "JSL",
+      "label": "JINDAL STAINLESS LIMITED",
+      "security_id": "11236"
+    },
+    {
+      "symbol": "IGL",
+      "label": "INDRAPRASTHA GAS LTD",
+      "security_id": "11262"
+    },
+    {
+      "symbol": "UPL",
+      "label": "UPL LIMITED",
+      "security_id": "11287"
+    },
+    {
+      "symbol": "AFFLE",
+      "label": "AFFLE 3I LIMITED",
+      "security_id": "11343"
+    },
+    {
+      "symbol": "PETRONET",
+      "label": "PETRONET LNG LIMITED",
+      "security_id": "11351"
+    },
+    {
+      "symbol": "BIOCON",
+      "label": "BIOCON LIMITED.",
+      "security_id": "11373"
+    },
+    {
+      "symbol": "MAHABANK",
+      "label": "BANK OF MAHARASHTRA",
+      "security_id": "11377"
+    },
+    {
+      "symbol": "POONAWALLA",
+      "label": "POONAWALLA FINCORP LTD",
+      "security_id": "11403"
+    },
+    {
+      "symbol": "GLAXO",
+      "label": "GLAXOSMITHKLINE PHARMA LT",
+      "security_id": "1153"
+    },
+    {
+      "symbol": "TCS",
+      "label": "TATA CONSULTANCY SERV LT",
+      "security_id": "11536"
+    },
+    {
+      "symbol": "COFORGE",
+      "label": "COFORGE LIMITED",
+      "security_id": "11543"
+    },
+    {
+      "symbol": "PPLPHARMA",
+      "label": "PIRAMAL PHARMA LIMITED",
+      "security_id": "11571"
+    },
+    {
+      "symbol": "WESTLIFE",
+      "label": "WESTLIFE FOODWORLD LTD",
+      "security_id": "11580"
+    },
+    {
+      "symbol": "ASTRAMICRO",
+      "label": "ASTRA MICROWAVE LTD",
+      "security_id": "11618"
+    },
+    {
+      "symbol": "NTPC",
+      "label": "NTPC LTD",
+      "security_id": "11630"
+    },
+    {
+      "symbol": "LALPATHLAB",
+      "label": "DR. LAL PATH LABS LTD.",
+      "security_id": "11654"
+    },
+    {
+      "symbol": "ALKEM",
+      "label": "ALKEM LABORATORIES LTD.",
+      "security_id": "11703"
+    },
+    {
+      "symbol": "JSWSTEEL",
+      "label": "JSW STEEL LIMITED",
+      "security_id": "11723"
+    },
+    {
+      "symbol": "JPPOWER",
+      "label": "JAIPRAKASH POWER VEN. LTD",
+      "security_id": "11763"
+    },
+    {
+      "symbol": "IIFL",
+      "label": "IIFL FINANCE LIMITED",
+      "security_id": "11809"
+    },
+    {
+      "symbol": "NH",
+      "label": "NARAYANA HRUDAYALAYA LTD.",
+      "security_id": "11840"
+    },
+    {
+      "symbol": "AMBER",
+      "label": "AMBER ENTERPRISES (I) LTD",
+      "security_id": "1185"
+    },
+    {
+      "symbol": "GLAND",
+      "label": "GLAND PHARMA LIMITED",
+      "security_id": "1186"
+    },
+    {
+      "symbol": "GRANULES",
+      "label": "GRANULES INDIA LIMITED",
+      "security_id": "11872"
+    },
+    {
+      "symbol": "DCXINDIA",
+      "label": "DCX SYSTEMS LIMITED",
+      "security_id": "11895"
+    },
+    {
+      "symbol": "YESBANK",
+      "label": "YES BANK LIMITED",
+      "security_id": "11915"
+    },
+    {
+      "symbol": "MEDANTA",
+      "label": "GLOBAL HEALTH LIMITED",
+      "security_id": "11956"
+    },
+    {
+      "symbol": "SUZLON",
+      "label": "SUZLON ENERGY LIMITED",
+      "security_id": "12018"
+    },
+    {
+      "symbol": "KAYNES",
+      "label": "KAYNES TECHNOLOGY IND LTD",
+      "security_id": "12092"
+    },
+    {
+      "symbol": "CASTROLIND",
+      "label": "CASTROL INDIA LIMITED",
+      "security_id": "1250"
+    },
+    {
+      "symbol": "ABB",
+      "label": "ABB INDIA LIMITED",
+      "security_id": "13"
+    },
+    {
+      "symbol": "360ONE",
+      "label": "360 ONE WAM LIMITED",
+      "security_id": "13061"
+    },
+    {
+      "symbol": "AIAENG",
+      "label": "AIA ENGINEERING LIMITED",
+      "security_id": "13086"
+    },
+    {
+      "symbol": "PVRINOX",
+      "label": "PVR INOX LIMITED",
+      "security_id": "13147"
+    },
+    {
+      "symbol": "M&MFIN",
+      "label": "M&M FIN. SERVICES LTD",
+      "security_id": "13285"
+    },
+    {
+      "symbol": "CENTURYPLY",
+      "label": "CENTURY PLYBOARDS (I) LTD",
+      "security_id": "13305"
+    },
+    {
+      "symbol": "KEI",
+      "label": "KEI INDUSTRIES LTD.",
+      "security_id": "13310"
+    },
+    {
+      "symbol": "HDFCBANK",
+      "label": "HDFC BANK LTD",
+      "security_id": "1333"
+    },
+    {
+      "symbol": "SOLARINDS",
+      "label": "SOLAR INDUSTRIES (I) LTD",
+      "security_id": "13332"
+    },
+    {
+      "symbol": "KFINTECH",
+      "label": "KFIN TECHNOLOGIES LIMITED",
+      "security_id": "13359"
+    },
+    {
+      "symbol": "SUNTV",
+      "label": "SUN TV NETWORK LIMITED",
+      "security_id": "13404"
+    },
+    {
+      "symbol": "RATNAMANI",
+      "label": "RATNAMANI MET & TUB LTD.",
+      "security_id": "13451"
+    },
+    {
+      "symbol": "HEROMOTOCO",
+      "label": "HERO MOTOCORP LIMITED",
+      "security_id": "1348"
+    },
+    {
+      "symbol": "EMAMILTD",
+      "label": "EMAMI LIMITED",
+      "security_id": "13517"
+    },
+    {
+      "symbol": "GMRAIRPORT",
+      "label": "GMR AIRPORTS LIMITED",
+      "security_id": "13528"
+    },
+    {
+      "symbol": "TECHM",
+      "label": "TECH MAHINDRA LIMITED",
+      "security_id": "13538"
+    },
+    {
+      "symbol": "IRCTC",
+      "label": "INDIAN RAIL TOUR CORP LTD",
+      "security_id": "13611"
+    },
+    {
+      "symbol": "HINDALCO",
+      "label": "HINDALCO  INDUSTRIES  LTD",
+      "security_id": "1363"
+    },
+    {
+      "symbol": "FLUOROCHEM",
+      "label": "GUJARAT FLUOROCHEM LTD",
+      "security_id": "13750"
+    },
+    {
+      "symbol": "NAUKRI",
+      "label": "INFO EDGE (I) LTD",
+      "security_id": "13751"
+    },
+    {
+      "symbol": "GESHIP",
+      "label": "THE GE SHPG.LTD",
+      "security_id": "13776"
+    },
+    {
+      "symbol": "HINDUNILVR",
+      "label": "HINDUSTAN UNILEVER LTD.",
+      "security_id": "1394"
+    },
+    {
+      "symbol": "HINDPETRO",
+      "label": "HINDUSTAN PETROLEUM CORP",
+      "security_id": "1406"
+    },
+    {
+      "symbol": "NETWORK18",
+      "label": "NETWORK18 MEDIA & INV LTD",
+      "security_id": "14111"
+    },
+    {
+      "symbol": "HINDZINC",
+      "label": "HINDUSTAN ZINC LIMITED",
+      "security_id": "1424"
+    },
+    {
+      "symbol": "PFC",
+      "label": "POWER FIN CORP LTD.",
+      "security_id": "14299"
+    },
+    {
+      "symbol": "INDIANB",
+      "label": "INDIAN BANK",
+      "security_id": "14309"
+    },
+    {
+      "symbol": "HSCL",
+      "label": "HIMADRI SPECIALITY CHEM L",
+      "security_id": "14334"
+    },
+    {
+      "symbol": "IDEA",
+      "label": "VODAFONE IDEA LIMITED",
+      "security_id": "14366"
+    },
+    {
+      "symbol": "PAGEIND",
+      "label": "PAGE INDUSTRIES LTD",
+      "security_id": "14413"
+    },
+    {
+      "symbol": "ASTRAL",
+      "label": "ASTRAL LIMITED",
+      "security_id": "14418"
+    },
+    {
+      "symbol": "FORTIS",
+      "label": "FORTIS HEALTHCARE LTD",
+      "security_id": "14592"
+    },
+    {
+      "symbol": "CENTRALBK",
+      "label": "CENTRAL BANK OF INDIA",
+      "security_id": "14894"
+    },
+    {
+      "symbol": "KPRMILL",
+      "label": "KPR MILL LTD.",
+      "security_id": "14912"
+    },
+    {
+      "symbol": "MOTILALOFS",
+      "label": "MOTILAL OSWAL FIN LTD",
+      "security_id": "14947"
+    },
+    {
+      "symbol": "POWERGRID",
+      "label": "POWER GRID CORP. LTD.",
+      "security_id": "14977"
+    },
+    {
+      "symbol": "CERA",
+      "label": "CERA SANITARYWARE LTD",
+      "security_id": "15039"
+    },
+    {
+      "symbol": "ASTERDM",
+      "label": "ASTER DM HEALTHCARE LTD.",
+      "security_id": "1508"
+    },
+    {
+      "symbol": "INDHOTEL",
+      "label": "THE INDIAN HOTELS CO. LTD",
+      "security_id": "1512"
+    },
+    {
+      "symbol": "COLPAL",
+      "label": "COLGATE PALMOLIVE LTD.",
+      "security_id": "15141"
+    },
+    {
+      "symbol": "NMDC",
+      "label": "NMDC LTD.",
+      "security_id": "15332"
+    },
+    {
+      "symbol": "RECLTD",
+      "label": "REC LIMITED",
+      "security_id": "15355"
+    },
+    {
+      "symbol": "VGUARD",
+      "label": "V-GUARD IND LTD.",
+      "security_id": "15362"
+    },
+    {
+      "symbol": "MANKIND",
+      "label": "MANKIND PHARMA LIMITED",
+      "security_id": "15380"
+    },
+    {
+      "symbol": "APOLLOHOSP",
+      "label": "APOLLO HOSPITALS ENTER. L",
+      "security_id": "157"
+    },
+    {
+      "symbol": "INFY",
+      "label": "INFOSYS LIMITED",
+      "security_id": "1594"
+    },
+    {
+      "symbol": "IOC",
+      "label": "INDIAN OIL CORP LTD",
+      "security_id": "1624"
+    },
+    {
+      "symbol": "IPCALAB",
+      "label": "IPCA LABORATORIES LTD",
+      "security_id": "1633"
+    },
+    {
+      "symbol": "ITC",
+      "label": "ITC LTD",
+      "security_id": "1660"
+    },
+    {
+      "symbol": "BAJAJ-AUTO",
+      "label": "BAJAJ AUTO LIMITED",
+      "security_id": "16669"
+    },
+    {
+      "symbol": "BAJAJFINSV",
+      "label": "BAJAJ FINSERV LTD.",
+      "security_id": "16675"
+    },
+    {
+      "symbol": "UBL",
+      "label": "UNITED BREWERIES LTD",
+      "security_id": "16713"
+    },
+    {
+      "symbol": "GVT&D",
+      "label": "GE VERNOVA T&D INDIA LTD",
+      "security_id": "16783"
+    },
+    {
+      "symbol": "PATANJALI",
+      "label": "PATANJALI FOODS LIMITED",
+      "security_id": "17029"
+    },
+    {
+      "symbol": "CROMPTON",
+      "label": "CROMPT GREA CON ELEC LTD",
+      "security_id": "17094"
+    },
+    {
+      "symbol": "CYIENTDLM",
+      "label": "CYIENT DLM LIMITED",
+      "security_id": "17187"
+    },
+    {
+      "symbol": "JBCHEPHARM",
+      "label": "J B CHEMICALS AND PHARMA",
+      "security_id": "1726"
+    },
+    {
+      "symbol": "BLS",
+      "label": "BLS INTL SERVS LTD",
+      "security_id": "17279"
+    },
+    {
+      "symbol": "LLOYDSME",
+      "label": "LLOYDS METALS N ENERGY L",
+      "security_id": "17313"
+    },
+    {
+      "symbol": "ADANIPOWER",
+      "label": "ADANI POWER LTD",
+      "security_id": "17388"
+    },
+    {
+      "symbol": "NHPC",
+      "label": "NHPC LTD",
+      "security_id": "17400"
+    },
+    {
+      "symbol": "OIL",
+      "label": "OIL INDIA LTD",
+      "security_id": "17438"
+    },
+    {
+      "symbol": "MGL",
+      "label": "MAHANAGAR GAS LTD.",
+      "security_id": "17534"
+    },
+    {
+      "symbol": "LTM",
+      "label": "LTM LIMITED",
+      "security_id": "17818"
+    },
+    {
+      "symbol": "JSWENERGY",
+      "label": "JSW ENERGY LIMITED",
+      "security_id": "17869"
+    },
+    {
+      "symbol": "DBCORP",
+      "label": "D.B.CORP LTD",
+      "security_id": "17881"
+    },
+    {
+      "symbol": "ABBOTINDIA",
+      "label": "ABBOTT INDIA LIMITED",
+      "security_id": "17903"
+    },
+    {
+      "symbol": "HINDCOPPER",
+      "label": "HINDUSTAN COPPER LTD",
+      "security_id": "17939"
+    },
+    {
+      "symbol": "NESTLEIND",
+      "label": "NESTLE INDIA LIMITED",
+      "security_id": "17963"
+    },
+    {
+      "symbol": "SBICARD",
+      "label": "SBI CARDS & PAY SER LTD",
+      "security_id": "17971"
+    },
+    {
+      "symbol": "WHIRLPOOL",
+      "label": "WHIRLPOOL OF INDIA LTD",
+      "security_id": "18011"
+    },
+    {
+      "symbol": "KAJARIACER",
+      "label": "KAJARIA CERAMICS LTD",
+      "security_id": "1808"
+    },
+    {
+      "symbol": "JUBLFOOD",
+      "label": "JUBILANT FOODWORKS LTD",
+      "security_id": "18096"
+    },
+    {
+      "symbol": "DBREALTY",
+      "label": "VALOR ESTATE LIMITED",
+      "security_id": "18124"
+    },
+    {
+      "symbol": "HATHWAY",
+      "label": "HATHWAY CABLE & DATACOM",
+      "security_id": "18154"
+    },
+    {
+      "symbol": "PERSISTENT",
+      "label": "PERSISTENT SYSTEMS LTD",
+      "security_id": "18365"
+    },
+    {
+      "symbol": "RBLBANK",
+      "label": "RBL BANK LIMITED",
+      "security_id": "18391"
+    },
+    {
+      "symbol": "POWERINDIA",
+      "label": "HITACHI ENERGY INDIA LTD",
+      "security_id": "18457"
+    },
+    {
+      "symbol": "LTTS",
+      "label": "L&T TECHNOLOGY SER. LTD.",
+      "security_id": "18564"
+    },
+    {
+      "symbol": "ICICIPRULI",
+      "label": "ICICI PRU LIFE INS CO LTD",
+      "security_id": "18652"
+    },
+    {
+      "symbol": "NUVAMA",
+      "label": "NUVAMA WEALTH MANAGE LTD",
+      "security_id": "18721"
+    },
+    {
+      "symbol": "SJVN",
+      "label": "SJVN LTD",
+      "security_id": "18883"
+    },
+    {
+      "symbol": "VBL",
+      "label": "VARUN BEVERAGES LIMITED",
+      "security_id": "18921"
+    },
+    {
+      "symbol": "CUMMINSIND",
+      "label": "CUMMINS INDIA LTD",
+      "security_id": "1901"
+    },
+    {
+      "symbol": "MANAPPURAM",
+      "label": "MANAPPURAM FINANCE LTD",
+      "security_id": "19061"
+    },
+    {
+      "symbol": "KOTAKBANK",
+      "label": "KOTAK MAHINDRA BANK LTD",
+      "security_id": "1922"
+    },
+    {
+      "symbol": "LAURUSLABS",
+      "label": "LAURUS LABS LIMITED",
+      "security_id": "19234"
+    },
+    {
+      "symbol": "BSE",
+      "label": "BSE LIMITED",
+      "security_id": "19585"
+    },
+    {
+      "symbol": "DEEPAKNTR",
+      "label": "DEEPAK NITRITE LTD",
+      "security_id": "19943"
+    },
+    {
+      "symbol": "LICHSGFIN",
+      "label": "LIC HOUSING FINANCE LTD",
+      "security_id": "1997"
+    },
+    {
+      "symbol": "TATATECH",
+      "label": "TATA TECHNOLOGIES LIMITED",
+      "security_id": "20293"
+    },
+    {
+      "symbol": "M&M",
+      "label": "MAHINDRA & MAHINDRA LTD",
+      "security_id": "2031"
+    },
+    {
+      "symbol": "COALINDIA",
+      "label": "COAL INDIA LTD",
+      "security_id": "20374"
+    },
+    {
+      "symbol": "HUDCO",
+      "label": "HSG & URBAN DEV CORPN LTD",
+      "security_id": "20825"
+    },
+    {
+      "symbol": "PSB",
+      "label": "PUNJAB & SIND BANK",
+      "security_id": "21001"
+    },
+    {
+      "symbol": "TEJASNET",
+      "label": "TEJAS NETWORKS LIMITED",
+      "security_id": "21131"
+    },
+    {
+      "symbol": "CDSL",
+      "label": "CENTRAL DEPO SER (I) LTD",
+      "security_id": "21174"
+    },
+    {
+      "symbol": "ASHOKLEY",
+      "label": "ASHOK LEYLAND LTD",
+      "security_id": "212"
+    },
+    {
+      "symbol": "AUBANK",
+      "label": "AU SMALL FINANCE BANK LTD",
+      "security_id": "21238"
+    },
+    {
+      "symbol": "MFSL",
+      "label": "MAX FINANCIAL SERV LTD",
+      "security_id": "2142"
+    },
+    {
+      "symbol": "BDL",
+      "label": "BHARAT DYNAMICS LIMITED",
+      "security_id": "2144"
+    },
+    {
+      "symbol": "COCHINSHIP",
+      "label": "COCHIN SHIPYARD LIMITED",
+      "security_id": "21508"
+    },
+    {
+      "symbol": "ABCAPITAL",
+      "label": "ADITYA BIRLA CAPITAL LTD.",
+      "security_id": "21614"
+    },
+    {
+      "symbol": "DIXON",
+      "label": "DIXON TECHNO (INDIA) LTD",
+      "security_id": "21690"
+    },
+    {
+      "symbol": "ICICIGI",
+      "label": "ICICI LOMBARD GIC LIMITED",
+      "security_id": "21770"
+    },
+    {
+      "symbol": "SBILIFE",
+      "label": "SBI LIFE INSURANCE CO LTD",
+      "security_id": "21808"
+    },
+    {
+      "symbol": "BOSCHLTD",
+      "label": "BOSCH LIMITED",
+      "security_id": "2181"
+    },
+    {
+      "symbol": "HFCL",
+      "label": "HFCL LIMITED",
+      "security_id": "21951"
+    },
+    {
+      "symbol": "IEX",
+      "label": "INDIAN ENERGY EXC LTD",
+      "security_id": "220"
+    },
+    {
+      "symbol": "MAXHEALTH",
+      "label": "MAX HEALTHCARE INS LTD",
+      "security_id": "22377"
+    },
+    {
+      "symbol": "BANDHANBNK",
+      "label": "BANDHAN BANK LIMITED",
+      "security_id": "2263"
+    },
+    {
+      "symbol": "MRF",
+      "label": "MRF LTD",
+      "security_id": "2277"
+    },
+    {
+      "symbol": "HAL",
+      "label": "HINDUSTAN AERONAUTICS LTD",
+      "security_id": "2303"
+    },
+    {
+      "symbol": "BHARTIHEXA",
+      "label": "BHARTI HEXACOM LIMITED",
+      "security_id": "23489"
+    },
+    {
+      "symbol": "MUTHOOTFIN",
+      "label": "MUTHOOT FINANCE LIMITED",
+      "security_id": "23650"
+    },
+    {
+      "symbol": "TBOTEK",
+      "label": "TBO TEK LIMITED",
+      "security_id": "23740"
+    },
+    {
+      "symbol": "NEULANDLAB",
+      "label": "NEULAND LAB LTD.",
+      "security_id": "2406"
+    },
+    {
+      "symbol": "PIIND",
+      "label": "PI INDUSTRIES LTD",
+      "security_id": "24184"
+    },
+    {
+      "symbol": "MIDHANI",
+      "label": "MISHRA DHATU NIGAM LTD",
+      "security_id": "2463"
+    },
+    {
+      "symbol": "ONGC",
+      "label": "OIL AND NATURAL GAS CORP.",
+      "security_id": "2475"
+    },
+    {
+      "symbol": "LTF",
+      "label": "L&T FINANCE LIMITED",
+      "security_id": "24948"
+    },
+    {
+      "symbol": "ADANIENT",
+      "label": "ADANI ENTERPRISES LIMITED",
+      "security_id": "25"
+    },
+    {
+      "symbol": "APLLTD",
+      "label": "ALEMBIC PHARMA LTD",
+      "security_id": "25328"
+    },
+    {
+      "symbol": "PGEL",
+      "label": "PG ELECTROPLAST LTD",
+      "security_id": "25358"
+    },
+    {
+      "symbol": "TRITURBINE",
+      "label": "TRIVENI TURBINE LIMITED",
+      "security_id": "25584"
+    },
+    {
+      "symbol": "POLYMED",
+      "label": "POLY MEDICURE LIMITED",
+      "security_id": "25718"
+    },
+    {
+      "symbol": "APLAPOLLO",
+      "label": "APL APOLLO TUBES LTD",
+      "security_id": "25780"
+    },
+    {
+      "symbol": "LEMONTREE",
+      "label": "LEMON TREE HOTELS LTD",
+      "security_id": "2606"
+    },
+    {
+      "symbol": "PFIZER",
+      "label": "PFIZER LTD",
+      "security_id": "2643"
+    },
+    {
+      "symbol": "PIDILITIND",
+      "label": "PIDILITE INDUSTRIES LTD",
+      "security_id": "2664"
+    },
+    {
+      "symbol": "SWIGGY",
+      "label": "SWIGGY LIMITED",
+      "security_id": "27066"
+    },
+    {
+      "symbol": "MTARTECH",
+      "label": "MTAR TECHNOLOGIES LIMITED",
+      "security_id": "2709"
+    },
+    {
+      "symbol": "AUROPHARMA",
+      "label": "AUROBINDO PHARMA LTD",
+      "security_id": "275"
+    },
+    {
+      "symbol": "RELIANCE",
+      "label": "RELIANCE INDUSTRIES LTD",
+      "security_id": "2885"
+    },
+    {
+      "symbol": "UNIMECH",
+      "label": "UNIMECH AEROSPACE N MFG L",
+      "security_id": "28960"
+    },
+    {
+      "symbol": "INDUSTOWER",
+      "label": "INDUS TOWERS LIMITED",
+      "security_id": "29135"
+    },
+    {
+      "symbol": "KALYANKJIL",
+      "label": "KALYAN JEWELLERS IND LTD",
+      "security_id": "2955"
+    },
+    {
+      "symbol": "SAIL",
+      "label": "STEEL AUTHORITY OF INDIA",
+      "security_id": "2963"
+    },
+    {
+      "symbol": "NAZARA",
+      "label": "NAZARA TECHNOLOGIES LTD",
+      "security_id": "2987"
+    },
+    {
+      "symbol": "SBIN",
+      "label": "STATE BANK OF INDIA",
+      "security_id": "3045"
+    },
+    {
+      "symbol": "VEDL",
+      "label": "VEDANTA LIMITED",
+      "security_id": "3063"
+    },
+    {
+      "symbol": "MCX",
+      "label": "MULTI COMMODITY EXCHANGE",
+      "security_id": "31181"
+    },
+    {
+      "symbol": "TIINDIA",
+      "label": "TUBE INVEST OF INDIA LTD",
+      "security_id": "312"
+    },
+    {
+      "symbol": "NBCC",
+      "label": "NBCC (INDIA) LIMITED",
+      "security_id": "31415"
+    },
+    {
+      "symbol": "SIEMENS",
+      "label": "SIEMENS LTD",
+      "security_id": "3150"
+    },
+    {
+      "symbol": "BAJFINANCE",
+      "label": "BAJAJ FINANCE LIMITED",
+      "security_id": "317"
+    },
+    {
+      "symbol": "ANGELONE",
+      "label": "ANGEL ONE LIMITED",
+      "security_id": "324"
+    },
+    {
+      "symbol": "SRF",
+      "label": "SRF LTD",
+      "security_id": "3273"
+    },
+    {
+      "symbol": "SUNDARMFIN",
+      "label": "SUNDARAM FINANCE LTD",
+      "security_id": "3339"
+    },
+    {
+      "symbol": "BALKRISIND",
+      "label": "BALKRISHNA IND. LTD",
+      "security_id": "335"
+    },
+    {
+      "symbol": "SUNPHARMA",
+      "label": "SUN PHARMACEUTICAL IND L",
+      "security_id": "3351"
+    },
+    {
+      "symbol": "SUPREMEIND",
+      "label": "SUPREME INDUSTRIES LTD",
+      "security_id": "3363"
+    },
+    {
+      "symbol": "TATACHEM",
+      "label": "TATA CHEMICALS LTD",
+      "security_id": "3405"
+    },
+    {
+      "symbol": "TATAELXSI",
+      "label": "TATA ELXSI LIMITED",
+      "security_id": "3411"
+    },
+    {
+      "symbol": "HONAUT",
+      "label": "HONEYWELL AUTOMATION IND",
+      "security_id": "3417"
+    },
+    {
+      "symbol": "CAMS",
+      "label": "COMPUTER AGE MNGT SER LTD",
+      "security_id": "342"
+    },
+    {
+      "symbol": "TATAPOWER",
+      "label": "TATA POWER CO LTD",
+      "security_id": "3426"
+    },
+    {
+      "symbol": "TATACONSUM",
+      "label": "TATA CONSUMER PRODUCT LTD",
+      "security_id": "3432"
+    },
+    {
+      "symbol": "TMPV",
+      "label": "TATA MOTORS PASS VEH LTD",
+      "security_id": "3456"
+    },
+    {
+      "symbol": "THERMAX",
+      "label": "THERMAX LTD",
+      "security_id": "3475"
+    },
+    {
+      "symbol": "TATASTEEL",
+      "label": "TATA STEEL LIMITED",
+      "security_id": "3499"
+    },
+    {
+      "symbol": "TITAN",
+      "label": "TITAN COMPANY LIMITED",
+      "security_id": "3506"
+    },
+    {
+      "symbol": "TORNTPHARM",
+      "label": "TORRENT PHARMACEUTICALS L",
+      "security_id": "3518"
+    },
+    {
+      "symbol": "ADANIGREEN",
+      "label": "ADANI GREEN ENERGY LTD",
+      "security_id": "3563"
+    },
+    {
+      "symbol": "NAM-INDIA",
+      "label": "NIPPON L I A M LTD",
+      "security_id": "357"
+    },
+    {
+      "symbol": "SOLARA",
+      "label": "SOLARA ACTIVE PHA SCI LTD",
+      "security_id": "3672"
+    },
+    {
+      "symbol": "BATAINDIA",
+      "label": "BATA INDIA LTD",
+      "security_id": "371"
+    },
+    {
+      "symbol": "VOLTAS",
+      "label": "VOLTAS LTD",
+      "security_id": "3718"
+    },
+    {
+      "symbol": "TATACOMM",
+      "label": "TATA COMMUNICATIONS LTD",
+      "security_id": "3721"
+    },
+    {
+      "symbol": "WIPRO",
+      "label": "WIPRO LTD",
+      "security_id": "3787"
+    },
+    {
+      "symbol": "ZEEL",
+      "label": "ZEE ENTERTAINMENT ENT LTD",
+      "security_id": "3812"
+    },
+    {
+      "symbol": "BEL",
+      "label": "BHARAT ELECTRONICS LTD",
+      "security_id": "383"
+    },
+    {
+      "symbol": "NATCOPHARM",
+      "label": "NATCO PHARMA LTD.",
+      "security_id": "3918"
+    },
+    {
+      "symbol": "BEML",
+      "label": "BEML LIMITED",
+      "security_id": "395"
+    },
+    {
+      "symbol": "AEGISLOG",
+      "label": "AEGIS LOGISTICS LIMITED",
+      "security_id": "40"
+    },
+    {
+      "symbol": "MARICO",
+      "label": "MARICO LIMITED",
+      "security_id": "4067"
+    },
+    {
+      "symbol": "MOTHERSON",
+      "label": "SAMVRDHNA MTHRSN INTL LTD",
+      "security_id": "4204"
+    },
+    {
+      "symbol": "BHARATFORG",
+      "label": "BHARAT FORGE LTD",
+      "security_id": "422"
+    },
+    {
+      "symbol": "HDFCAMC",
+      "label": "HDFC AMC LIMITED",
+      "security_id": "4244"
+    },
+    {
+      "symbol": "SHRIRAMFIN",
+      "label": "SHRIRAM FINANCE LIMITED",
+      "security_id": "4306"
+    },
+    {
+      "symbol": "BHEL",
+      "label": "BHEL",
+      "security_id": "438"
+    },
+    {
+      "symbol": "CREDITACC",
+      "label": "CREDITACCESS GRAMEEN LTD",
+      "security_id": "4421"
+    },
+    {
+      "symbol": "MPHASIS",
+      "label": "MPHASIS LIMITED",
+      "security_id": "4503"
+    },
+    {
+      "symbol": "DYNAMATECH",
+      "label": "DYNAMATIC TECHNOLOGIES",
+      "security_id": "4525"
+    },
+    {
+      "symbol": "BANKBARODA",
+      "label": "BANK OF BARODA",
+      "security_id": "4668"
+    },
+    {
+      "symbol": "HDFCLIFE",
+      "label": "HDFC LIFE INS CO LTD",
+      "security_id": "467"
+    },
+    {
+      "symbol": "SONACOMS",
+      "label": "SONA BLW PRECISION FRGS L",
+      "security_id": "4684"
+    },
+    {
+      "symbol": "GAIL",
+      "label": "GAIL (INDIA) LTD",
+      "security_id": "4717"
+    },
+    {
+      "symbol": "BANKINDIA",
+      "label": "BANK OF INDIA",
+      "security_id": "4745"
+    },
+    {
+      "symbol": "KIMS",
+      "label": "KRISHNA INST OF MED SCI L",
+      "security_id": "4847"
+    },
+    {
+      "symbol": "SAREGAMA",
+      "label": "SAREGAMA INDIA LIMITED",
+      "security_id": "4892"
+    },
+    {
+      "symbol": "ICICIBANK",
+      "label": "ICICI BANK LTD.",
+      "security_id": "4963"
+    },
+    {
+      "symbol": "MAZDOCK",
+      "label": "MAZAGON DOCK SHIPBUIL LTD",
+      "security_id": "509"
+    },
+    {
+      "symbol": "ETERNAL",
+      "label": "ETERNAL LIMITED",
+      "security_id": "5097"
+    },
+    {
+      "symbol": "INDUSINDBK",
+      "label": "INDUSIND BANK LIMITED",
+      "security_id": "5258"
+    },
+    {
+      "symbol": "BPCL",
+      "label": "BHARAT PETROLEUM CORP  LT",
+      "security_id": "526"
+    },
+    {
+      "symbol": "UTIAMC",
+      "label": "UTI ASSET MNGMT CO LTD",
+      "security_id": "527"
+    },
+    {
+      "symbol": "DEVYANI",
+      "label": "DEVYANI INTERNATIONAL LTD",
+      "security_id": "5373"
+    },
+    {
+      "symbol": "BRITANNIA",
+      "label": "BRITANNIA INDUSTRIES LTD",
+      "security_id": "547"
+    },
+    {
+      "symbol": "GRSE",
+      "label": "GARDEN REACH SHIP&ENG LTD",
+      "security_id": "5475"
+    },
+    {
+      "symbol": "CYIENT",
+      "label": "CYIENT LIMITED",
+      "security_id": "5748"
+    },
+    {
+      "symbol": "CANFINHOME",
+      "label": "CAN FIN HOMES LTD",
+      "security_id": "583"
+    },
+    {
+      "symbol": "AXISBANK",
+      "label": "AXIS BANK LIMITED",
+      "security_id": "5900"
+    },
+    {
+      "symbol": "INTELLECT",
+      "label": "INTELLECT DESIGN ARENA",
+      "security_id": "5926"
+    },
+    {
+      "symbol": "ABSLAMC",
+      "label": "ADIT BIRL SUN LIF AMC LTD",
+      "security_id": "6018"
+    },
+    {
+      "symbol": "ATGL",
+      "label": "ADANI TOTAL GAS LIMITED",
+      "security_id": "6066"
+    },
+    {
+      "symbol": "ABREL",
+      "label": "ADITYA BIRLA REAL EST LTD",
+      "security_id": "625"
+    },
+    {
+      "symbol": "CESC",
+      "label": "CESC LTD",
+      "security_id": "628"
+    },
+    {
+      "symbol": "NATIONALUM",
+      "label": "NATIONAL ALUMINIUM CO LTD",
+      "security_id": "6364"
+    },
+    {
+      "symbol": "CHAMBLFERT",
+      "label": "CHAMBAL FERTILIZERS LTD",
+      "security_id": "637"
+    },
+    {
+      "symbol": "NYKAA",
+      "label": "FSN E COMMERCE VENTURES",
+      "security_id": "6545"
+    },
+    {
+      "symbol": "SONATSOFTW",
+      "label": "SONATA SOFTWARE LTD",
+      "security_id": "6596"
+    },
+    {
+      "symbol": "POLICYBZR",
+      "label": "PB FINTECH LIMITED",
+      "security_id": "6656"
+    },
+    {
+      "symbol": "PAYTM",
+      "label": "ONE 97 COMMUNICATIONS LTD",
+      "security_id": "6705"
+    },
+    {
+      "symbol": "SAPPHIRE",
+      "label": "SAPPHIRE FOODS INDIA LTD",
+      "security_id": "6718"
+    },
+    {
+      "symbol": "JINDALSTEL",
+      "label": "JINDAL STEEL LIMITED",
+      "security_id": "6733"
+    },
+    {
+      "symbol": "EXIDEIND",
+      "label": "EXIDE INDUSTRIES LTD",
+      "security_id": "676"
+    },
+    {
+      "symbol": "CHOLAFIN",
+      "label": "CHOLAMANDALAM IN & FIN CO",
+      "security_id": "685"
+    },
+    {
+      "symbol": "CIPLA",
+      "label": "CIPLA LTD",
+      "security_id": "694"
+    },
+    {
+      "symbol": "BSOFT",
+      "label": "BIRLASOFT LIMITED",
+      "security_id": "6994"
+    },
+    {
+      "symbol": "ANANDRATHI",
+      "label": "ANAND RATHI WEALTH LTD",
+      "security_id": "7145"
+    },
+    {
+      "symbol": "HCLTECH",
+      "label": "HCL TECHNOLOGIES LTD",
+      "security_id": "7229"
+    },
+    {
+      "symbol": "DATAPATTNS",
+      "label": "DATA PATTERNS INDIA LTD",
+      "security_id": "7358"
+    },
+    {
+      "symbol": "COROMANDEL",
+      "label": "COROMANDEL INTERNTL. LTD",
+      "security_id": "739"
+    },
+    {
+      "symbol": "GLENMARK",
+      "label": "GLENMARK PHARMACEUTICALS",
+      "security_id": "7406"
+    },
+    {
+      "symbol": "ZENTEC",
+      "label": "ZEN TECHNOLOGIES LIMITED",
+      "security_id": "7508"
+    },
+    {
+      "symbol": "CGPOWER",
+      "label": "CG POWER AND IND SOL LTD",
+      "security_id": "760"
+    },
+    {
+      "symbol": "DABUR",
+      "label": "DABUR INDIA LTD",
+      "security_id": "772"
+    },
+    {
+      "symbol": "INOXWIND",
+      "label": "INOX WIND LIMITED",
+      "security_id": "7852"
+    },
+    {
+      "symbol": "ZYDUSLIFE",
+      "label": "ZYDUS LIFESCIENCES LTD",
+      "security_id": "7929"
+    },
+    {
+      "symbol": "AJANTPHARM",
+      "label": "AJANTA PHARMA LIMITED",
+      "security_id": "8124"
+    },
+    {
+      "symbol": "BLUESTARCO",
+      "label": "BLUE STAR LIMITED",
+      "security_id": "8311"
+    },
+    {
+      "symbol": "TVSMOTOR",
+      "label": "TVS MOTOR COMPANY  LTD",
+      "security_id": "8479"
+    },
+    {
+      "symbol": "CHALET",
+      "label": "CHALET HOTELS LIMITED",
+      "security_id": "8546"
+    },
+    {
+      "symbol": "NLCINDIA",
+      "label": "NLC INDIA LIMITED",
+      "security_id": "8585"
+    },
+    {
+      "symbol": "DRREDDY",
+      "label": "DR. REDDY S LABORATORIES",
+      "security_id": "881"
+    },
+    {
+      "symbol": "EICHERMOT",
+      "label": "EICHER MOTORS LTD",
+      "security_id": "910"
+    },
+    {
+      "symbol": "TIPSMUSIC",
+      "label": "TIPS MUSIC LIMITED",
+      "security_id": "9117"
+    },
+    {
+      "symbol": "EIHOTEL",
+      "label": "EIH LIMITED",
+      "security_id": "919"
+    },
+    {
+      "symbol": "IOB",
+      "label": "INDIAN OVERSEAS BANK",
+      "security_id": "9348"
+    },
+    {
+      "symbol": "RAINBOW",
+      "label": "RAINBOW CHILDRENS MED LTD",
+      "security_id": "9408"
+    },
+    {
+      "symbol": "ESCORTS",
+      "label": "ESCORTS KUBOTA LIMITED",
+      "security_id": "958"
+    },
+    {
+      "symbol": "POLYCAB",
+      "label": "POLYCAB INDIA LIMITED",
+      "security_id": "9590"
+    },
+    {
+      "symbol": "KPITTECH",
+      "label": "KPIT TECHNOLOGIES LIMITED",
+      "security_id": "9683"
+    },
+    {
+      "symbol": "HAVELLS",
+      "label": "HAVELLS INDIA LIMITED",
+      "security_id": "9819"
+    }
+  ]
+}
