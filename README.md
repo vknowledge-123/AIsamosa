@@ -87,6 +87,20 @@ uvicorn app.main:app --reload
 - Dhan order placement is intentionally not enabled in this build.
 - The live feed aggregates incoming ticks into 1-minute candles before strategy evaluation.
 - Dashboard-saved Dhan, OpenAI, and DeepSeek secrets are stored locally in plain text in the project folder.
+- For production deployment, run a single process only. This app keeps live feed and session state in memory, so do not use multiple workers.
+
+## Google Cloud deployment
+
+Production VM deployment files are in [deploy/gcp/README.md](deploy/gcp/README.md).
+
+Recommended baseline:
+
+- region: `asia-south1`
+- zone: `asia-south1-a`
+- machine type: `e2-standard-2`
+- static regional external IP
+- `systemd` + `nginx`
+- run with `uvicorn app.main:app` and no `--reload`
 
 ## Source notes
 

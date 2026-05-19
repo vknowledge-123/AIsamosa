@@ -1876,11 +1876,11 @@ class AppIntegrationTests(unittest.TestCase):
 
         self.assertIsNone(candidate)
 
-    def test_after_two_pm_no_fresh_entries_are_allowed(self) -> None:
+    def test_after_three_pm_no_fresh_entries_are_allowed(self) -> None:
         engine = HeuristicDecisionEngine()
         session = [
-            Candle(timestamp="2026-02-18T14:04:00", open=100.0, high=100.4, low=99.8, close=100.2, volume=1000),
-            Candle(timestamp="2026-02-18T14:05:00", open=100.2, high=100.8, low=100.1, close=100.7, volume=1100),
+            Candle(timestamp="2026-02-18T15:04:00", open=100.0, high=100.4, low=99.8, close=100.2, volume=1000),
+            Candle(timestamp="2026-02-18T15:05:00", open=100.2, high=100.8, low=100.1, close=100.7, volume=1100),
         ]
         context = self._build_context(session, previous_close=99.8)
         observation = self._build_observation(session_phase="late-session")
@@ -1918,9 +1918,9 @@ class AppIntegrationTests(unittest.TestCase):
         decision = engine.decide_entry(context, observation, [candidate])
 
         self.assertEqual(decision.action, TradeAction.no_trade)
-        self.assertIn("14:00", decision.reason)
+        self.assertIn("15:00", decision.reason)
 
-    def test_fresh_entries_remain_allowed_before_two_pm(self) -> None:
+    def test_fresh_entries_remain_allowed_before_three_pm(self) -> None:
         engine = HeuristicDecisionEngine()
         session = [
             Candle(timestamp="2026-02-18T11:04:00", open=100.0, high=100.4, low=99.8, close=100.2, volume=1000),
@@ -1940,7 +1940,7 @@ class AppIntegrationTests(unittest.TestCase):
             first_target_price=101.1,
             score=85.0,
             ready_to_enter=True,
-            notes=["Fresh reclaim remains valid before the 14:00 cutoff."],
+            notes=["Fresh reclaim remains valid before the 15:00 cutoff."],
             rule_ids=["R58"],
             event=SweepEvent(
                 side="sell",

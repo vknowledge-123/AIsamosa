@@ -1745,7 +1745,7 @@ class HeuristicDecisionEngine:
 
     def entry_thresholds_for_timestamp(self, timestamp) -> tuple[float, float, bool]:
         current_time = timestamp.time()
-        if current_time >= dt_time(14, 0):
+        if current_time >= dt_time(15, 0):
             return 999.0, 999.0, True
         return self.enter_threshold, self.arm_threshold, False
 
@@ -1869,7 +1869,7 @@ class HeuristicDecisionEngine:
             return TradeDecision(
                 action=TradeAction.no_trade,
                 confidence=min(0.8, best.score / 100),
-                reason="After 14:00 heuristic mode does not open fresh trades, so this setup is skipped.",
+                reason="After 15:00 heuristic mode does not open fresh trades, so this setup is skipped.",
                 decision_source="heuristic",
                 market_state=observation.day_type,
                 setup_score=round(best.score, 2),

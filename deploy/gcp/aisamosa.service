@@ -1,0 +1,17 @@
+[Unit]
+Description=AIsamosa FastAPI app
+After=network.target
+
+[Service]
+Type=simple
+User=aisamosa
+Group=aisamosa
+WorkingDirectory=/opt/aisamosa
+EnvironmentFile=/etc/aisamosa/aisamosa.env
+ExecStart=/opt/aisamosa/.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+Restart=always
+RestartSec=5
+TimeoutStopSec=20
+
+[Install]
+WantedBy=multi-user.target
