@@ -59,6 +59,15 @@
           <input type="text" name="query" placeholder="Search symbols like SBIN, TCS, RELIANCE" />
           <button type="submit">Search Stock Universe</button>
         </form>
+        <form id="stockBulkImportForm" class="stack-form">
+          <label>Bulk Stock Paste</label>
+          <textarea
+            name="bulk_text"
+            rows="7"
+            placeholder="Paste an NSE table here. The app will extract first-column symbols like AMBER, GLAND, SJVN and add them to the watchlist."
+          ></textarea>
+          <button type="submit">Add Bulk Stocks</button>
+        </form>
         <div id="stockSearchResults" class="list-surface">
           <div class="list-item empty-state">Search results will appear here in stock mode.</div>
         </div>
@@ -127,7 +136,7 @@
             <p id="syncUpdatedValue">-</p>
           </div>
           <div class="list-item">
-            <strong>Feed Error</strong>
+            <strong>Feed Detail</strong>
             <p id="liveErrorValue">None</p>
           </div>
           <div class="list-item">
@@ -204,6 +213,18 @@
           <input type="number" name="nifty_order_lots" min="1" step="1" value="1" />
           <label>Stock Trade Capital</label>
           <input type="number" name="stock_trade_capital" min="1" step="100" value="25000" />
+          <label class="checkbox-row">
+            <input type="checkbox" name="stock_partial_profit_enabled" checked />
+            <span>Enable Stock Partial Profit Booking</span>
+          </label>
+          <label class="checkbox-row">
+            <input type="checkbox" name="stock_trailing_stop_enabled" checked />
+            <span>Enable Stock SL Trailing</span>
+          </label>
+          <label class="checkbox-row">
+            <input type="checkbox" name="stock_heuristic_early_exit_enabled" checked />
+            <span>Allow Stock Heuristic Early Exits</span>
+          </label>
           <label>Nifty Expiry Preference</label>
           <select name="nifty_expiry_preference">
             <option value="current-weekly">Current Weekly</option>
@@ -216,6 +237,7 @@
           <div class="list-item">
             <strong>Saved Dhan Client ID</strong>
             <p id="savedClientIdValue">Not saved</p>
+            <p id="savedDhanCredentialMessage">No credential warnings.</p>
           </div>
           <div class="list-item">
             <strong>Dhan Access Token</strong>
@@ -256,6 +278,18 @@
           <div class="list-item">
             <strong>Nifty Expiry Preference</strong>
             <p id="savedExpiryPreferenceValue">current-weekly</p>
+          </div>
+          <div class="list-item">
+            <strong>Stock Partial Profit Booking</strong>
+            <p id="savedStockPartialProfitValue">Enabled</p>
+          </div>
+          <div class="list-item">
+            <strong>Stock SL Trailing</strong>
+            <p id="savedStockTrailingStopValue">Enabled</p>
+          </div>
+          <div class="list-item">
+            <strong>Stock Heuristic Early Exits</strong>
+            <p id="savedStockHeuristicExitValue">Enabled</p>
           </div>
           <div class="list-item">
             <strong>Storage Path</strong>
@@ -347,6 +381,24 @@
       <article class="panel stat-panel">
         <span>Unrealized P&amp;L</span>
         <strong id="unrealizedValue">0</strong>
+      </article>
+    </section>
+
+    <section class="grid three-col">
+      <article class="panel stat-panel">
+        <span>All-Stock P&amp;L</span>
+        <strong id="integratedPnlValue">0</strong>
+        <p id="integratedPnlDetail" class="caption">Realized 0.00 | Open 0.00</p>
+      </article>
+      <article class="panel stat-panel">
+        <span>Max P&amp;L</span>
+        <strong id="integratedPnlMaxValue">0</strong>
+        <p id="integratedPnlMaxTime" class="caption">-</p>
+      </article>
+      <article class="panel stat-panel">
+        <span>Lowest P&amp;L</span>
+        <strong id="integratedPnlMinValue">0</strong>
+        <p id="integratedPnlMinTime" class="caption">-</p>
       </article>
     </section>
 

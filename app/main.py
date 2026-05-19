@@ -117,6 +117,23 @@ async def add_stock_to_watchlist(symbol: str = Form(...)):
     return {"message": f"Added {state.instrument.symbol} to the stock watchlist.", "state": state}
 
 
+@app.post("/api/stocks/watchlist/bulk-add")
+async def bulk_add_stocks_to_watchlist(bulk_text: str = Form(...)):
+    try:
+        state, added_symbols, skipped_symbols = await run_in_threadpool(engine.add_bulk_stocks_to_watchlist, bulk_text)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    message = f"Added {len(added_symbols)} stock(s) to the watchlist: {', '.join(added_symbols)}."
+    if skipped_symbols:
+        message += f" Skipped: {', '.join(skipped_symbols)}."
+    return {
+        "message": message,
+        "state": state,
+        "added_symbols": added_symbols,
+        "skipped_symbols": skipped_symbols,
+    }
+
+
 @app.post("/api/stocks/watchlist/select")
 async def select_stock(symbol: str = Form(...)):
     try:
@@ -356,7 +373,13 @@ async def save_credentials(
     nifty_order_lots: int = Form(default=1),
     stock_trade_capital: float = Form(default=25000.0),
     nifty_expiry_preference: str = Form(default="current-weekly"),
+    stock_partial_profit_enabled: str = Form(default="true"),
+    stock_trailing_stop_enabled: str = Form(default="true"),
+    stock_heuristic_early_exit_enabled: str = Form(default="true"),
 ):
+    partial_profit_enabled = stock_partial_profit_enabled.strip().lower() in {"1", "true", "yes", "on"}
+    trailing_stop_enabled = stock_trailing_stop_enabled.strip().lower() in {"1", "true", "yes", "on"}
+    heuristic_early_exit_enabled = stock_heuristic_early_exit_enabled.strip().lower() in {"1", "true", "yes", "on"}
     state = await run_in_threadpool(
         engine.save_credentials,
         client_id=client_id,
@@ -370,5 +393,8 @@ async def save_credentials(
         nifty_order_lots=nifty_order_lots,
         stock_trade_capital=stock_trade_capital,
         nifty_expiry_preference=nifty_expiry_preference,
+        stock_partial_profit_enabled=partial_profit_enabled,
+        stock_trailing_stop_enabled=trailing_stop_enabled,
+        stock_heuristic_early_exit_enabled=heuristic_early_exit_enabled,
     )
     return {"message": "Dhan, AI, sizing, expiry, and trading-mode settings saved locally for reuse.", "state": state}

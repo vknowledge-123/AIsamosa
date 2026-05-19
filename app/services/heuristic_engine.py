@@ -86,6 +86,8 @@ class Observation:
     sell_sweeps: list[SweepEvent]
     higher_timeframe_context: str = "neutral"
     nifty_mid_noise: bool = False
+    stock_dow_bias: str = "neutral"
+    stock_dow_state: str = "mixed"
 
 
 class HeuristicDecisionEngine:
@@ -127,7 +129,7 @@ class HeuristicDecisionEngine:
         else:
             decision = self.decide_entry(context, observation, candidates)
         self.record_trace(context, observation, decision, candidates)
-        self.record_narrative(context, observation, decision)
+        self.record_narrative(context, observation, decision, candidates)
         return decision
 
     def observe(self, context: StrategyContext) -> Observation:
@@ -217,6 +219,7 @@ class HeuristicDecisionEngine:
         stop_availability = self.assess_stop_availability(buy_sweeps, sell_sweeps)
         higher_timeframe_context = self.higher_timeframe_context(context, atr)
         nifty_mid_noise = self.is_nifty_mid_noise(context, atr, overlap_ratio, mapped_buy_liquidity, mapped_sell_liquidity)
+        stock_dow_bias, stock_dow_state = self._classify_stock_dow_structure(session, atr)
 
         return Observation(
             session_phase=session_phase,
@@ -260,6 +263,8 @@ class HeuristicDecisionEngine:
             sell_sweeps=sell_sweeps,
             higher_timeframe_context=higher_timeframe_context,
             nifty_mid_noise=nifty_mid_noise,
+            stock_dow_bias=stock_dow_bias,
+            stock_dow_state=stock_dow_state,
         )
 
     def classify_session_phase(self, candle_count: int) -> str:
@@ -901,6 +906,17 @@ class HeuristicDecisionEngine:
             return False
         if not event.primary or setup_type not in {"bullish_reclaim_watch", "bearish_rejection_watch"}:
             return False
+        if not self._stock_dow_trend_allows(observation, option_type=option_type, strict=True):
+            return False
+        if not self._stock_retracement_reclaim_confirmed(
+            context,
+            observation,
+            event,
+            option_type=option_type,
+            reclaim_candle=reclaim_candle,
+            current=current,
+        ):
+            return False
         if hold_count < 1 or continuation_count > 0 or observation.weak_intent:
             return False
         if current_strength < 0.3 or reclaim_strength < 0.55:
@@ -947,11 +963,314 @@ class HeuristicDecisionEngine:
             return trade
         return None
 
+    def _classify_stock_dow_structure(self, session: list[Candle], atr: float) -> tuple[str, str]:
+        if len(session) < 3:
+            return "neutral", "insufficient"
+
+        swing_highs, swing_lows = self._detect_session_swings(session, atr)
+        recent_highs = [price for _, price in swing_highs[-3:]]
+        recent_lows = [price for _, price in swing_lows[-3:]]
+
+        bullish_hh_hl = (
+            len(recent_highs) >= 2
+            and len(recent_lows) >= 2
+            and recent_highs[-1] > recent_highs[-2]
+            and recent_lows[-1] > recent_lows[-2]
+        )
+        bearish_lh_ll = (
+            len(recent_highs) >= 2
+            and len(recent_lows) >= 2
+            and recent_highs[-1] < recent_highs[-2]
+            and recent_lows[-1] < recent_lows[-2]
+        )
+        if bullish_hh_hl:
+            return "bullish", "higher-high-higher-low"
+        if bearish_lh_ll:
+            return "bearish", "lower-high-lower-low"
+
+        recent = session[-5:] if len(session) >= 5 else session
+        up_closes = sum(1 for candle in recent if candle.close > candle.open)
+        down_closes = sum(1 for candle in recent if candle.close < candle.open)
+        displacement = session[-1].close - session[0].open
+        if up_closes >= max(2, len(recent) - 1) and displacement > atr * 0.6:
+            return "bullish", "early-uptrend"
+        if down_closes >= max(2, len(recent) - 1) and displacement < -atr * 0.6:
+            return "bearish", "early-downtrend"
+        return "mixed", "transition"
+
+    def _stock_dow_trend_allows(self, observation: Observation, *, option_type: str, strict: bool = False) -> bool:
+        if option_type == "CE":
+            if observation.stock_dow_bias == "bearish":
+                return False
+            if strict and observation.stock_dow_bias != "bullish":
+                return False
+            return True
+        if observation.stock_dow_bias == "bullish":
+            return False
+        if strict and observation.stock_dow_bias != "bearish":
+            return False
+        return True
+
+    def _stock_retracement_reclaim_confirmed(
+        self,
+        context: StrategyContext,
+        observation: Observation,
+        event: SweepEvent,
+        *,
+        option_type: str,
+        reclaim_candle: Candle,
+        current: Candle,
+    ) -> bool:
+        if context.instrument.supports_options:
+            return True
+        if event.reclaim_index is None:
+            return False
+        session = context.session_candles
+        if len(session) <= event.reclaim_index + 2:
+            return False
+        post_reclaim_window = session[event.reclaim_index + 1 : -1]
+        if not post_reclaim_window:
+            return False
+        if option_type == "CE":
+            opposite_seen = any(candle.close < candle.open for candle in post_reclaim_window)
+            defended_retest = any(
+                candle.low <= event.defended_level + observation.atr * 0.12 for candle in post_reclaim_window
+            )
+            reclaim_back = current.close > max(candle.high for candle in post_reclaim_window)
+            return (
+                opposite_seen
+                and defended_retest
+                and reclaim_back
+                and current.close > event.defended_level
+                and current.close >= reclaim_candle.close - observation.atr * 0.08
+            )
+        opposite_seen = any(candle.close > candle.open for candle in post_reclaim_window)
+        defended_retest = any(
+            candle.high >= event.defended_level - observation.atr * 0.12 for candle in post_reclaim_window
+        )
+        reclaim_back = current.close < min(candle.low for candle in post_reclaim_window)
+        return (
+            opposite_seen
+            and defended_retest
+            and reclaim_back
+            and current.close < event.defended_level
+            and current.close <= reclaim_candle.close + observation.atr * 0.08
+        )
+
+    def _stock_continuation_setup_names(self) -> set[str]:
+        return {
+            "stock_breakout_pullback_long",
+            "stock_breakout_pullback_short",
+            "stock_first_pullback_trend_long",
+            "stock_first_pullback_trend_short",
+        }
+
+    def _effective_entry_thresholds(
+        self,
+        context: StrategyContext,
+        observation: Observation,
+        best: SetupCandidate | None,
+    ) -> tuple[float, float, bool]:
+        enter_threshold, arm_threshold, allow_only_exceptional = self.entry_thresholds_for_timestamp(
+            context.current_candle.timestamp
+        )
+        if (
+            best is not None
+            and not context.instrument.supports_options
+            and best.setup_type in self._stock_continuation_setup_names()
+        ):
+            enter_threshold -= 6.0
+            arm_threshold -= 4.0
+            if observation.day_type in {"gap-and-go", "trend-day"}:
+                enter_threshold -= 2.0
+                arm_threshold -= 2.0
+            if observation.strong_intent:
+                enter_threshold -= 2.0
+                arm_threshold -= 1.0
+        return max(0.0, enter_threshold), max(0.0, arm_threshold), allow_only_exceptional
+
+    def _build_stock_first_pullback_candidate(
+        self,
+        context: StrategyContext,
+        observation: Observation,
+        *,
+        option_type: str,
+        recent_same_side_winner: SimulatedTrade | None,
+    ) -> SetupCandidate | None:
+        if context.instrument.supports_options:
+            return None
+        session = context.session_candles
+        if len(session) < 6:
+            return None
+        current = context.current_candle
+        current_strength = self.candle_strength(current)
+        if current_strength < 0.45:
+            return None
+
+        pullback_window = session[-4:-1]
+        anchor_window = session[:-4]
+        if len(pullback_window) < 3 or len(anchor_window) < 2:
+            return None
+
+        pullback_up_closes = sum(1 for candle in pullback_window if candle.close > candle.open)
+        pullback_down_closes = sum(1 for candle in pullback_window if candle.close < candle.open)
+        pullback_high = max(candle.high for candle in pullback_window)
+        pullback_low = min(candle.low for candle in pullback_window)
+        pullback_close_floor = min(candle.close for candle in pullback_window)
+        pullback_close_ceiling = max(candle.close for candle in pullback_window)
+        pullback_range = max(pullback_high - pullback_low, 0.01)
+        opening_price = session[0].open
+        directional_extension_r = (
+            (current.close - opening_price) / max(observation.atr, 0.01)
+            if option_type == "CE"
+            else (opening_price - current.close) / max(observation.atr, 0.01)
+        )
+        opening_phase = observation.session_phase in {"opening-map", "primary-trap-window"}
+        minimum_trend_extension_r = 0.35
+
+        if option_type == "CE":
+            if not self._stock_dow_trend_allows(observation, option_type=option_type, strict=True):
+                return None
+            if directional_extension_r < minimum_trend_extension_r:
+                return None
+            if opening_phase and observation.opening_confirmation == "gap-down-confirmed":
+                return None
+            if (
+                opening_phase
+                and observation.previous_day_bias.startswith("bearish")
+                and current.close < observation.opening_range_high
+                and observation.crowding_bias != "short-comfort"
+            ):
+                return None
+            if observation.day_type not in {"gap-and-go", "trend-day", "trap-day"} and directional_extension_r < 2.2:
+                return None
+            if current.close <= current.open or current.close <= observation.vwap:
+                return None
+            if pullback_down_closes < 1:
+                return None
+            if current.close < pullback_close_ceiling - observation.atr * 0.08:
+                return None
+            if pullback_range > max(observation.atr * 1.45, abs(opening_price - current.close) * 0.55):
+                return None
+            defended_level = pullback_low
+            trigger_price = max(candle.high for candle in pullback_window)
+            if current.close < pullback_close_ceiling - observation.atr * 0.12:
+                return None
+            invalidation = round(pullback_low - observation.atr * 0.18, 2)
+            risk = max(current.close - invalidation, observation.atr * 0.7)
+            target_spot = self.next_upside_target(context, current.close, risk)
+            score = 66.0
+            notes = [
+                "Strong stock uptrend printed a shallow first pullback and resumed without needing a full trap reversal.",
+                "Trend-following stock mode accepts the first defended retracement when momentum and structure stay aligned.",
+            ]
+            setup_type = "stock_first_pullback_trend_long"
+            direction = "LONG_CALL"
+            level_label = f"First Pullback Demand {defended_level:.2f}"
+            sweep_price = round(pullback_low, 2)
+        else:
+            if not self._stock_dow_trend_allows(observation, option_type=option_type, strict=True):
+                return None
+            if directional_extension_r < minimum_trend_extension_r:
+                return None
+            if opening_phase and observation.opening_confirmation in {"gap-up-confirmed", "gap-up-trap-risk"}:
+                return None
+            if (
+                opening_phase
+                and observation.previous_day_bias.startswith("bullish")
+                and current.close > observation.opening_range_low
+                and observation.crowding_bias != "long-comfort"
+            ):
+                return None
+            if observation.day_type not in {"gap-and-go", "trend-day", "trap-day"} and directional_extension_r < 2.2:
+                return None
+            if current.close >= current.open or current.close >= observation.vwap:
+                return None
+            if pullback_up_closes < 1:
+                return None
+            if current.close > pullback_close_floor + observation.atr * 0.12:
+                return None
+            if pullback_range > max(observation.atr * 1.45, abs(opening_price - current.close) * 0.55):
+                return None
+            defended_level = pullback_high
+            trigger_price = min(candle.low for candle in pullback_window)
+            invalidation = round(pullback_high + observation.atr * 0.18, 2)
+            risk = max(invalidation - current.close, observation.atr * 0.7)
+            target_spot = self.next_downside_target(context, current.close, risk)
+            score = 66.0
+            notes = [
+                "Strong stock downtrend printed a shallow first pullback and resumed without needing a full trap rejection.",
+                "Trend-following stock mode accepts the first defended retracement when momentum and structure stay aligned.",
+            ]
+            setup_type = "stock_first_pullback_trend_short"
+            direction = "LONG_PUT"
+            level_label = f"First Pullback Supply {defended_level:.2f}"
+            sweep_price = round(pullback_high, 2)
+
+        rule_ids = ["R107", "R108", "R109", "R111", "R112"]
+        if recent_same_side_winner is not None:
+            score += 6
+            notes.append("Recent same-side winner confirms this stock is still respecting trend continuation entries.")
+            rule_ids.append("R110")
+        if observation.strong_intent:
+            score += 8
+            notes.append("Directional intent remains strong, so the first pullback continuation deserves more trust.")
+        if observation.day_type == "gap-and-go":
+            score += 6
+            notes.append("Gap-and-go day type supports earlier continuation participation in stock mode.")
+        if observation.value_state == "discount" and option_type == "PE":
+            score += 5
+            notes.append("Discount pricing is acceptable here because stock mode prioritizes trend continuation over mean-reversion on strong losers.")
+        if observation.value_state == "inflated" and option_type == "CE":
+            score += 5
+            notes.append("Inflated pricing is acceptable here because stock mode prioritizes trend continuation over fade logic on strong gainers.")
+        if observation.two_sided_participation:
+            score += 3
+        room = abs(target_spot - current.close)
+        if room >= risk * 1.45:
+            score += 6
+            notes.append("There is still enough room left for the trend leg to continue cleanly.")
+        else:
+            score -= 8
+            notes.append("The move is already mature, so the first-pullback continuation needs tighter expectations.")
+
+        event = SweepEvent(
+            side="sell" if option_type == "CE" else "buy",
+            level_label=level_label,
+            level_price=round(defended_level, 2),
+            sweep_index=max(len(session) - 4, 0),
+            reclaim_index=len(session) - 1,
+            trigger_index=len(session) - 1,
+            sweep_price=sweep_price,
+            defended_level=round(defended_level, 2),
+            trigger_price=round(current.close, 2),
+            invalidation_level=invalidation,
+            primary=True,
+            quality="tradable",
+            notes=list(notes),
+        )
+        return SetupCandidate(
+            setup_type=setup_type,
+            direction=direction,
+            option_type=option_type,
+            trigger_basis="close_above" if option_type == "CE" else "close_below",
+            trigger_price=round(current.close, 2),
+            invalidation_level=invalidation,
+            defended_level=round(defended_level, 2),
+            target_spot_price=round(target_spot, 2),
+            first_target_price=round(current.close + risk, 2) if option_type == "CE" else round(current.close - risk, 2),
+            score=max(0.0, min(score, 100.0)),
+            ready_to_enter=True,
+            notes=notes,
+            rule_ids=rule_ids,
+            event=event,
+        )
+
     def build_stock_continuation_candidates(self, context: StrategyContext, observation: Observation) -> list[SetupCandidate]:
         if context.instrument.supports_options:
             return []
         session = context.session_candles
-        if len(session) < 8:
+        if len(session) < 6:
             return []
         current = context.current_candle
         recent = session[-4:]
@@ -974,15 +1293,20 @@ class HeuristicDecisionEngine:
             or (current.close - session[0].open) > observation.atr * 2.0
         )
         bullish_pullback_holding = (
-            strong_bullish_trend
+            self._stock_dow_trend_allows(observation, option_type="CE", strict=True)
+            and len(session) >= 8
+            and strong_bullish_trend
             and recent_pullback_low >= breakout_shelf_high - observation.atr * 0.4
             and current.close >= breakout_shelf_high
             and current.close > current.open
             and current_strength >= 0.42
-            and observation.value_state != "inflated"
+            and (
+                observation.value_state != "inflated"
+                or (observation.day_type in {"gap-and-go", "trend-day"} and observation.strong_intent)
+            )
         )
         if bullish_pullback_holding:
-            score = 58.0
+            score = 62.0
             notes = [
                 "Breakout pullback held above the recent breakout shelf without needing a brand-new full sweep.",
                 "Stock mode allows same-trend continuation entries in strong gainers once the first defended pullback is accepted.",
@@ -994,10 +1318,14 @@ class HeuristicDecisionEngine:
                 rule_ids.append("R110")
             if observation.strong_intent:
                 score += 6
+                notes.append("Strong directional intent makes this continuation setup more trustworthy in stock mode.")
             if observation.two_sided_participation:
                 score += 3
             if observation.stop_availability == "partially-cleared":
                 score += 3
+            if observation.value_state == "inflated":
+                score += 4
+                notes.append("Inflated pricing is acceptable because the trend is still acting cleanly and stock mode allows momentum continuation.")
             risk = max(current.close - recent_pullback_low, observation.atr * 0.75)
             target_spot = self.next_upside_target(context, current.close, risk)
             room = target_spot - current.close
@@ -1044,15 +1372,20 @@ class HeuristicDecisionEngine:
             or (session[0].open - current.close) > observation.atr * 2.0
         )
         bearish_pullback_holding = (
-            strong_bearish_trend
+            self._stock_dow_trend_allows(observation, option_type="PE", strict=True)
+            and len(session) >= 8
+            and strong_bearish_trend
             and recent_pullback_high <= breakout_shelf_low + observation.atr * 0.4
             and current.close <= breakout_shelf_low
             and current.close < current.open
             and current_strength >= 0.42
-            and observation.value_state != "discount"
+            and (
+                observation.value_state != "discount"
+                or (observation.day_type in {"gap-and-go", "trend-day"} and observation.strong_intent)
+            )
         )
         if bearish_pullback_holding:
-            score = 58.0
+            score = 62.0
             notes = [
                 "Breakdown pullback held below the recent breakdown shelf without needing a brand-new full sweep.",
                 "Stock mode allows same-trend continuation entries in strong losers once the first defended pullback is accepted.",
@@ -1064,10 +1397,14 @@ class HeuristicDecisionEngine:
                 rule_ids.append("R110")
             if observation.strong_intent:
                 score += 6
+                notes.append("Strong directional intent makes this continuation setup more trustworthy in stock mode.")
             if observation.two_sided_participation:
                 score += 3
             if observation.stop_availability == "partially-cleared":
                 score += 3
+            if observation.value_state == "discount":
+                score += 4
+                notes.append("Discount pricing is acceptable because the trend is still acting cleanly and stock mode allows momentum continuation.")
             risk = max(recent_pullback_high - current.close, observation.atr * 0.75)
             target_spot = self.next_downside_target(context, current.close, risk)
             room = current.close - target_spot
@@ -1109,7 +1446,29 @@ class HeuristicDecisionEngine:
                 event=event,
             )
 
-        return [candidate for candidate in (bullish_candidate, bearish_candidate) if candidate is not None]
+        first_pullback_long = self._build_stock_first_pullback_candidate(
+            context,
+            observation,
+            option_type="CE",
+            recent_same_side_winner=recent_bullish_winner,
+        )
+        first_pullback_short = self._build_stock_first_pullback_candidate(
+            context,
+            observation,
+            option_type="PE",
+            recent_same_side_winner=recent_bearish_winner,
+        )
+
+        return [
+            candidate
+            for candidate in (
+                bullish_candidate,
+                bearish_candidate,
+                first_pullback_long,
+                first_pullback_short,
+            )
+            if candidate is not None
+        ]
 
     def _nifty_round_distance_adjustment(self, observation: Observation, level_label: str, sweep_price: float, level_price: float) -> tuple[float, str | None]:
         if "round number" not in level_label.lower():
@@ -1486,7 +1845,11 @@ class HeuristicDecisionEngine:
             )
 
         best = self.select_best_candidate(candidates)
-        enter_threshold, arm_threshold, allow_only_exceptional = self.entry_thresholds_for_timestamp(context.current_candle.timestamp)
+        enter_threshold, arm_threshold, allow_only_exceptional = self._effective_entry_thresholds(
+            context,
+            observation,
+            best,
+        )
         if best is None:
             return TradeDecision(
                 action=TradeAction.no_trade,
@@ -2299,6 +2662,14 @@ class HeuristicDecisionEngine:
             target_spot = self.next_upside_target(context, max(current.close, reclaim_candle.close), risk)
             first_target = current.close + risk
             retest_hold = hold_count >= 1 and current.close > event.defended_level and current.low <= reclaim_candle.high + observation.atr * 0.15
+            stock_retracement_confirmed = self._stock_retracement_reclaim_confirmed(
+                context,
+                observation,
+                event,
+                option_type=option_type,
+                reclaim_candle=reclaim_candle,
+                current=current,
+            )
             stock_early_entry = self._stock_early_retest_entry(
                 context,
                 observation,
@@ -2312,9 +2683,21 @@ class HeuristicDecisionEngine:
                 hold_count=hold_count,
                 continuation_count=continuation_count,
             )
+            stock_opening_retest_required = (
+                not context.instrument.supports_options
+                and setup_type in {"bullish_reclaim_watch", "bearish_rejection_watch"}
+                and observation.session_phase in {"opening-map", "primary-trap-window"}
+            )
             ready_to_enter = (
-                current.close > reclaim_candle.high and current.close > event.defended_level and current.close > current.open
-            ) or (retest_hold and follow_through) or stock_early_entry
+                current.close > reclaim_candle.high
+                and current.close > event.defended_level
+                and current.close > current.open
+                and (not stock_opening_retest_required or stock_retracement_confirmed)
+            ) or (
+                retest_hold
+                and follow_through
+                and (not stock_opening_retest_required or stock_retracement_confirmed)
+            ) or stock_early_entry
             trigger_basis = "close_above"
             trigger_price = (
                 round(max(event.defended_level, current.low), 2)
@@ -2326,6 +2709,14 @@ class HeuristicDecisionEngine:
             target_spot = self.next_downside_target(context, min(current.close, reclaim_candle.close), risk)
             first_target = current.close - risk
             retest_hold = hold_count >= 1 and current.close < event.defended_level and current.high >= reclaim_candle.low - observation.atr * 0.15
+            stock_retracement_confirmed = self._stock_retracement_reclaim_confirmed(
+                context,
+                observation,
+                event,
+                option_type=option_type,
+                reclaim_candle=reclaim_candle,
+                current=current,
+            )
             stock_early_entry = self._stock_early_retest_entry(
                 context,
                 observation,
@@ -2339,9 +2730,21 @@ class HeuristicDecisionEngine:
                 hold_count=hold_count,
                 continuation_count=continuation_count,
             )
+            stock_opening_retest_required = (
+                not context.instrument.supports_options
+                and setup_type in {"bullish_reclaim_watch", "bearish_rejection_watch"}
+                and observation.session_phase in {"opening-map", "primary-trap-window"}
+            )
             ready_to_enter = (
-                current.close < reclaim_candle.low and current.close < event.defended_level and current.close < current.open
-            ) or (retest_hold and follow_through) or stock_early_entry
+                current.close < reclaim_candle.low
+                and current.close < event.defended_level
+                and current.close < current.open
+                and (not stock_opening_retest_required or stock_retracement_confirmed)
+            ) or (
+                retest_hold
+                and follow_through
+                and (not stock_opening_retest_required or stock_retracement_confirmed)
+            ) or stock_early_entry
             trigger_basis = "close_below"
             trigger_price = (
                 round(min(event.defended_level, current.high), 2)
@@ -2355,6 +2758,15 @@ class HeuristicDecisionEngine:
                 "Stock mode allows the first shallow defended retest after a primary sweep, so entry can trigger before a mature multi-candle rally."
             )
             rule_ids.extend(["R105", "R106"])
+        elif (
+            not context.instrument.supports_options
+            and setup_type in {"bullish_reclaim_watch", "bearish_rejection_watch"}
+            and observation.session_phase in {"opening-map", "primary-trap-window"}
+            and not stock_retracement_confirmed
+        ):
+            score -= 12
+            notes.append("Stock mode now waits for an actual retracement and reclaim before entering during the opening phase.")
+            rule_ids.extend(["R63", "R69", "R79", "R100"])
         if ready_to_enter and hold_count >= 1 and continuation_count == 0:
             score += 4
             notes.append("Retest held after the break, so continuation entry is acceptable without chasing the breakout candle.")
@@ -2542,6 +2954,8 @@ class HeuristicDecisionEngine:
         current_price = current_trade_price if current_trade_price is not None else current_spot
         risk = max(abs(trade.entry_spot_price - (trade.invalidation_level or trade.entry_spot_price)), observation.atr * 0.6)
         bullish_trade = trade.direction in {"LONG_CALL", "LONG_STOCK"}
+        stock_mode_trade = not context.instrument.supports_options and trade.price_mode == "cash"
+        heuristic_early_exit_enabled = (not stock_mode_trade) or context.stock_heuristic_early_exit_enabled
         progress_r = (
             (current_spot - trade.entry_spot_price) / max(risk, 0.01)
             if bullish_trade
@@ -2553,7 +2967,7 @@ class HeuristicDecisionEngine:
         regime_deteriorated = observation.participation_state in {"fair_value_churn", "post_trend_balance"} and (
             observation.session_phase == "midday" or observation.range_state == "compressing"
         )
-        if regime_deteriorated and bars_since_entry >= 5 and progress_r <= 0.25 and (
+        if heuristic_early_exit_enabled and regime_deteriorated and bars_since_entry >= 5 and progress_r <= 0.25 and (
             setup_is_previous_close or observation.range_state == "compressing"
         ):
             return TradeDecision(
@@ -2572,7 +2986,7 @@ class HeuristicDecisionEngine:
 
         opposing_candidates = self.build_candidates(context, observation)
         strongest_opposite = next((candidate for candidate in opposing_candidates if (candidate.option_type == "PE") == bullish_trade), None)
-        if strongest_opposite and strongest_opposite.ready_to_enter and strongest_opposite.score >= 78:
+        if heuristic_early_exit_enabled and strongest_opposite and strongest_opposite.ready_to_enter and strongest_opposite.score >= 78:
             return TradeDecision(
                 action=TradeAction.exit,
                 confidence=min(0.95, strongest_opposite.score / 100),
@@ -2583,7 +2997,63 @@ class HeuristicDecisionEngine:
                 setup_score=strongest_opposite.score,
                 setup_type=strongest_opposite.setup_type,
                 rule_ids_used=strongest_opposite.rule_ids + ["R45"],
+                )
+
+        if (
+            stock_mode_trade
+            and context.stock_partial_profit_enabled
+            and trade.first_target_price is not None
+            and trade.partial_exit_count == 0
+        ):
+            first_target_tagged = (
+                context.current_candle.high >= trade.first_target_price
+                if bullish_trade
+                else context.current_candle.low <= trade.first_target_price
             )
+            if first_target_tagged:
+                partial_exit_quantity = max(
+                    1,
+                    min(
+                        trade.open_quantity if trade.open_quantity is not None else trade.quantity,
+                        max(1, (trade.open_quantity if trade.open_quantity is not None else trade.quantity) // 2),
+                    ),
+                )
+                return TradeDecision(
+                    action=TradeAction.partial_exit,
+                    confidence=0.84,
+                    reason=(
+                        "First stock target was tagged intrabar, so book partial profits early and reduce exposure "
+                        "before the trend retracement deepens."
+                    ),
+                    decision_source="heuristic",
+                    option_type=trade.option_type,
+                    partial_exit_quantity=partial_exit_quantity,
+                    market_state=observation.day_type,
+                    setup_type=trade.setup_type,
+                    rule_ids_used=["R41", "R42", "R46", "R74", "R99", "R113"],
+                )
+
+        if stock_mode_trade and context.stock_trailing_stop_enabled and trade.partial_exit_count > 0:
+            latest_defense = self.latest_defended_zone(context, bullish_trade, observation)
+            if bullish_trade:
+                new_invalidation = max(trade.invalidation_level or trade.entry_spot_price, trade.entry_spot_price, latest_defense)
+            else:
+                new_invalidation = min(trade.invalidation_level or trade.entry_spot_price, trade.entry_spot_price, latest_defense)
+            if trade.invalidation_level is None or abs(new_invalidation - trade.invalidation_level) >= 0.05:
+                return TradeDecision(
+                    action=TradeAction.update_stop,
+                    confidence=0.82,
+                    reason=(
+                        "Partial profits are booked on the stock trade, so tighten the stop aggressively toward "
+                        "breakeven or the newest defended zone."
+                    ),
+                    decision_source="heuristic",
+                    option_type=trade.option_type,
+                    invalidation_level=round(new_invalidation, 2),
+                    market_state=observation.day_type,
+                    setup_type=trade.setup_type,
+                    rule_ids_used=["R41", "R42", "R43", "R46", "R74", "R99", "R113"],
+                )
 
         if trade.invalidation_level is not None:
             if bullish_trade and current_spot < trade.invalidation_level:
@@ -2687,6 +3157,60 @@ class HeuristicDecisionEngine:
             f"{observation.participation_state}. {joined_notes}"
         )
 
+    def _append_candle_ref(
+        self,
+        refs_by_index: dict[int, dict],
+        session: list[Candle],
+        index: int | None,
+        label: str,
+    ) -> None:
+        if index is None or index < 0 or index >= len(session):
+            return
+        existing = refs_by_index.get(index)
+        if existing is not None:
+            labels = existing["_labels"]
+            if label not in labels:
+                labels.append(label)
+                existing["label"] = " / ".join(labels)
+            return
+        refs_by_index[index] = {
+            "label": label,
+            "_labels": [label],
+            "index": index,
+            "candle": session[index],
+        }
+
+    def _event_candle_refs(
+        self,
+        context: StrategyContext,
+        event: SweepEvent | None,
+        *,
+        include_decision_candle: bool = True,
+    ) -> list[dict]:
+        session = context.session_candles
+        refs_by_index: dict[int, dict] = {}
+        if include_decision_candle and session:
+            self._append_candle_ref(refs_by_index, session, len(session) - 1, "Decision candle")
+        if event is not None:
+            self._append_candle_ref(refs_by_index, session, event.sweep_index, "Sweep candle")
+            self._append_candle_ref(refs_by_index, session, event.reclaim_index, "Reclaim candle")
+            self._append_candle_ref(refs_by_index, session, event.trigger_index, "Trigger candle")
+        ordered = sorted(refs_by_index.values(), key=lambda item: item["index"])
+        for ref in ordered:
+            ref.pop("_labels", None)
+        return ordered
+
+    def _matched_event(
+        self,
+        context: StrategyContext,
+        best: SetupCandidate | None,
+    ) -> tuple[str | None, float | None, list[dict]]:
+        event = best.event if best is not None else None
+        matched_level_label = event.level_label if event is not None else None
+        matched_level_price = round(event.level_price, 2) if event is not None else None
+        candle_refs = self._event_candle_refs(context, event)
+        return matched_level_label, matched_level_price, candle_refs
+
     def record_trace(
         self,
         context: StrategyContext,
@@ -2707,6 +3231,7 @@ class HeuristicDecisionEngine:
             invalidation_level = decision.invalidation_level
         if invalidation_level is None and best is not None:
             invalidation_level = round(best.invalidation_level, 2)
+        matched_level_label, matched_level_price, candle_refs = self._matched_event(context, best)
 
         status = "informational"
         block_reason = None
@@ -2728,10 +3253,10 @@ class HeuristicDecisionEngine:
         elif best is None:
             status = "no_setup_identified"
             block_reason = "No setup family reached minimum structural quality."
-        elif best.score < self.entry_thresholds_for_timestamp(context.current_candle.timestamp)[1]:
+        elif best.score < self._effective_entry_thresholds(context, observation, best)[1]:
             status = "failed_threshold"
             block_reason = (
-                f"Best setup score {best.score:.1f} stayed below arm threshold {self.entry_thresholds_for_timestamp(context.current_candle.timestamp)[1]:.1f}."
+                f"Best setup score {best.score:.1f} stayed below arm threshold {self._effective_entry_thresholds(context, observation, best)[1]:.1f}."
             )
         elif not best.ready_to_enter:
             status = "setup_identified_waiting_confirmation"
@@ -2790,17 +3315,30 @@ class HeuristicDecisionEngine:
                 "setup_score": setup_score,
                 "trigger_price": trigger_price,
                 "invalidation_level": invalidation_level,
+                "matched_level_label": matched_level_label,
+                "matched_level_price": matched_level_price,
+                "candle_refs": candle_refs,
                 "block_reason": block_reason,
                 "detail": detail,
             }
         )
 
-    def record_narrative(self, context: StrategyContext, observation: Observation, decision: TradeDecision) -> None:
+    def record_narrative(
+        self,
+        context: StrategyContext,
+        observation: Observation,
+        decision: TradeDecision,
+        candidates: list[SetupCandidate] | None = None,
+    ) -> None:
         current = context.current_candle
+        candidates = candidates if candidates is not None else self.build_candidates(context, observation)
+        best = self.select_best_candidate(candidates)
+        best_matched_level_label, best_matched_level_price, best_candle_refs = self._matched_event(context, best)
         for event in observation.buy_sweeps[:2] + observation.sell_sweeps[:2]:
             if event.reclaim_index == len(context.session_candles) - 1:
                 title = f"{event.level_label} {event.quality} {'buyer' if event.side == 'buy' else 'seller'} trap"
                 detail = " ".join(event.notes[:3])
+                matched_level_price = round(event.level_price, 2)
                 self._push_narrative(
                     timestamp=current.timestamp,
                     event_type="major-sweep",
@@ -2808,6 +3346,9 @@ class HeuristicDecisionEngine:
                     direction="LONG_PUT" if event.side == "buy" else "LONG_CALL",
                     price=event.level_price,
                     status=event.quality,
+                    matched_level_label=event.level_label,
+                    matched_level_price=matched_level_price,
+                    candle_refs=self._event_candle_refs(context, event),
                     detail=detail,
                 )
 
@@ -2821,6 +3362,9 @@ class HeuristicDecisionEngine:
                 direction="LONG_CALL" if observation.previous_close_reclaim_long_ready else "LONG_PUT",
                 price=context.previous_day.close,
                 status="defended",
+                matched_level_label="Previous Day Close",
+                matched_level_price=round(context.previous_day.close, 2),
+                candle_refs=self._event_candle_refs(context, None),
                 detail="Previous-day close was revisited and is now acting as a live reversal or defense reference.",
             )
 
@@ -2832,6 +3376,9 @@ class HeuristicDecisionEngine:
                 direction=decision.pending_setup_direction,
                 price=decision.pending_setup_trigger_price,
                 status=decision.pending_setup_action.lower(),
+                matched_level_label=best_matched_level_label,
+                matched_level_price=best_matched_level_price,
+                candle_refs=best_candle_refs,
                 detail=decision.reason,
             )
 
@@ -2843,6 +3390,9 @@ class HeuristicDecisionEngine:
                 direction="LONG_CALL" if decision.action == TradeAction.enter_call else "LONG_PUT" if decision.action == TradeAction.enter_put else None,
                 price=context.current_candle.close,
                 status=decision.action.value.lower(),
+                matched_level_label=best_matched_level_label,
+                matched_level_price=best_matched_level_price,
+                candle_refs=best_candle_refs,
                 detail=decision.reason,
             )
 
@@ -2855,6 +3405,9 @@ class HeuristicDecisionEngine:
         direction: str | None,
         price: float | None,
         status: str | None,
+        matched_level_label: str | None,
+        matched_level_price: float | None,
+        candle_refs: list[dict] | None,
         detail: str,
     ) -> None:
         if event_type in {"gap-fill", "major-sweep"}:
@@ -2878,6 +3431,9 @@ class HeuristicDecisionEngine:
                 "direction": direction,
                 "price": price,
                 "status": status,
+                "matched_level_label": matched_level_label,
+                "matched_level_price": matched_level_price,
+                "candle_refs": list(candle_refs or []),
                 "detail": detail,
             }
         )

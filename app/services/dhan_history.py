@@ -41,6 +41,7 @@ class DhanChartService:
     market_timezone = ZoneInfo("Asia/Kolkata")
     session_open = time(9, 15)
     session_close = time(15, 30)
+    intraday_request_lead = timedelta(minutes=1)
     min_request_gap_seconds = 0.35
     max_rate_limit_retries = 2
 
@@ -198,7 +199,7 @@ class DhanChartService:
         except DhanChartError:
             pass
 
-        session_start = datetime.combine(session_day, self.session_open)
+        session_start = self._intraday_request_start(session_day)
         session_end = datetime.combine(session_day, self.session_close)
         candles = self._request_intraday_window(
             client_id=client_id,
@@ -222,6 +223,7 @@ class DhanChartService:
         instrument_type: str,
     ) -> tuple[list[Candle], Candle | None]:
         session_start = datetime.combine(session_day, self.session_open, tzinfo=self.market_timezone)
+        request_start = self._intraday_request_start(session_day).replace(tzinfo=self.market_timezone)
         session_end = datetime.combine(session_day, self.session_close, tzinfo=self.market_timezone)
         if market_now <= session_start:
             return [], None
@@ -231,7 +233,7 @@ class DhanChartService:
             client_id=client_id,
             access_token=access_token,
             security_id=security_id,
-            window_start=session_start.replace(tzinfo=None),
+            window_start=request_start.replace(tzinfo=None),
             window_end=request_end.replace(tzinfo=None),
             exchange_segment=exchange_segment,
             instrument_type=instrument_type,
@@ -243,6 +245,10 @@ class DhanChartService:
         if market_now < session_end and candles[-1].timestamp == current_bucket:
             return candles[:-1], candles[-1]
         return candles, None
+
+    def _intraday_request_start(self, session_day: date) -> datetime:
+        session_start = datetime.combine(session_day, self.session_open)
+        return session_start - self.intraday_request_lead
 
     def _request_intraday_window(
         self,

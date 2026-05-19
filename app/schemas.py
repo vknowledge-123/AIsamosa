@@ -41,6 +41,12 @@ class Candle(BaseModel):
     volume: float = 0.0
 
 
+class HeuristicCandleReference(BaseModel):
+    label: str
+    index: int | None = None
+    candle: Candle
+
+
 class PreviousDayLevels(BaseModel):
     high: float = 0.0
     low: float = 0.0
@@ -78,6 +84,9 @@ class HeuristicTraceEntry(BaseModel):
     setup_score: float | None = None
     trigger_price: float | None = None
     invalidation_level: float | None = None
+    matched_level_label: str | None = None
+    matched_level_price: float | None = None
+    candle_refs: list[HeuristicCandleReference] = Field(default_factory=list)
     block_reason: str | None = None
     detail: str = ""
 
@@ -89,6 +98,9 @@ class HeuristicNarrativeEvent(BaseModel):
     direction: str | None = None
     price: float | None = None
     status: str | None = None
+    matched_level_label: str | None = None
+    matched_level_price: float | None = None
+    candle_refs: list[HeuristicCandleReference] = Field(default_factory=list)
     detail: str = ""
 
 
@@ -147,6 +159,9 @@ class StrategyContext(BaseModel):
     active_trade: "SimulatedTrade | None" = None
     recent_closed_trades: list["SimulatedTrade"] = Field(default_factory=list)
     rulebook_markdown: str
+    stock_partial_profit_enabled: bool = True
+    stock_trailing_stop_enabled: bool = True
+    stock_heuristic_early_exit_enabled: bool = True
 
 
 class PendingSetup(BaseModel):
@@ -277,12 +292,16 @@ class LiveFeedState(BaseModel):
     last_packet_type: str | None = None
     last_tick_at: datetime | None = None
     last_ltp: float | None = None
+    status_message: str | None = None
     error: str | None = None
+    retry_attempt: int = 0
+    next_retry_at: datetime | None = None
     current_candle: Candle | None = None
 
 
 class CredentialSummary(BaseModel):
     client_id: str | None = None
+    resolved_client_id: str | None = None
     dhan_access_token_saved: bool = False
     openai_api_key_saved: bool = False
     openai_model: str = "gpt-5.4-mini"
@@ -293,6 +312,10 @@ class CredentialSummary(BaseModel):
     nifty_order_lots: int = 1
     stock_trade_capital: float = 25000.0
     nifty_expiry_preference: str = "current-weekly"
+    stock_partial_profit_enabled: bool = True
+    stock_trailing_stop_enabled: bool = True
+    stock_heuristic_early_exit_enabled: bool = True
+    dhan_credential_message: str | None = None
     storage_path: str
     last_updated: datetime | None = None
 
@@ -338,6 +361,16 @@ class OperationJobState(BaseModel):
     completed_at: datetime | None = None
 
 
+class IntegratedPnlState(BaseModel):
+    realized_pnl: float = 0.0
+    unrealized_pnl: float = 0.0
+    total_pnl: float = 0.0
+    max_total_pnl: float = 0.0
+    max_total_pnl_at: datetime | None = None
+    min_total_pnl: float = 0.0
+    min_total_pnl_at: datetime | None = None
+
+
 class DashboardState(BaseModel):
     state_revision: int = 0
     mode: str
@@ -363,6 +396,7 @@ class DashboardState(BaseModel):
     balance: float
     realized_pnl: float
     unrealized_pnl: float
+    integrated_pnl: IntegratedPnlState = Field(default_factory=IntegratedPnlState)
     ai_enabled: bool
     live_feed: LiveFeedState
     execution: ExecutionState = Field(default_factory=ExecutionState)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 from datetime import datetime
 from pathlib import Path
@@ -36,6 +37,9 @@ class CredentialStore:
         nifty_order_lots: int | None = None,
         stock_trade_capital: float | None = None,
         nifty_expiry_preference: str | None = None,
+        stock_partial_profit_enabled: bool | None = None,
+        stock_trailing_stop_enabled: bool | None = None,
+        stock_heuristic_early_exit_enabled: bool | None = None,
     ) -> None:
         payload = self.load()
         updated = False
@@ -49,6 +53,10 @@ class CredentialStore:
             normalized = access_token.strip()
             if payload.get("access_token") != normalized:
                 payload["access_token"] = normalized
+                updated = True
+            embedded_client_id = self._extract_dhan_client_id_from_token(normalized)
+            if embedded_client_id and payload.get("client_id") != embedded_client_id:
+                payload["client_id"] = embedded_client_id
                 updated = True
         if openai_api_key and openai_api_key.strip():
             normalized = openai_api_key.strip()
@@ -94,6 +102,21 @@ class CredentialStore:
             normalized = nifty_expiry_preference.strip().lower()
             if payload.get("nifty_expiry_preference") != normalized:
                 payload["nifty_expiry_preference"] = normalized
+                updated = True
+        if stock_partial_profit_enabled is not None:
+            normalized = bool(stock_partial_profit_enabled)
+            if payload.get("stock_partial_profit_enabled") != normalized:
+                payload["stock_partial_profit_enabled"] = normalized
+                updated = True
+        if stock_trailing_stop_enabled is not None:
+            normalized = bool(stock_trailing_stop_enabled)
+            if payload.get("stock_trailing_stop_enabled") != normalized:
+                payload["stock_trailing_stop_enabled"] = normalized
+                updated = True
+        if stock_heuristic_early_exit_enabled is not None:
+            normalized = bool(stock_heuristic_early_exit_enabled)
+            if payload.get("stock_heuristic_early_exit_enabled") != normalized:
+                payload["stock_heuristic_early_exit_enabled"] = normalized
                 updated = True
 
         if not updated:
@@ -150,7 +173,26 @@ class CredentialStore:
         payload = self.load()
         client_id = payload.get("client_id") or settings.dhan_client_id
         access_token = payload.get("access_token") or settings.dhan_access_token
-        return client_id, access_token
+        resolved_client_id, resolved_token, _ = self.resolve_dhan_credentials(client_id, access_token)
+        return resolved_client_id, resolved_token
+
+    def resolve_dhan_credentials(
+        self,
+        client_id: str | None,
+        access_token: str | None,
+    ) -> tuple[str | None, str | None, str | None]:
+        normalized_client_id = (client_id or "").strip() or None
+        normalized_token = (access_token or "").strip() or None
+        if not normalized_token:
+            return normalized_client_id, normalized_token, None
+        embedded_client_id = self._extract_dhan_client_id_from_token(normalized_token)
+        if embedded_client_id and embedded_client_id != normalized_client_id:
+            return (
+                embedded_client_id,
+                normalized_token,
+                "Dhan access token belongs to a different client ID. The app is using the client ID embedded inside the token.",
+            )
+        return normalized_client_id, normalized_token, None
 
     def get_openai_settings(self, settings: Settings) -> tuple[str | None, str]:
         payload = self.load()
@@ -201,6 +243,18 @@ class CredentialStore:
             return "next-weekly"
         return "current-weekly"
 
+    def get_stock_partial_profit_enabled(self, settings: Settings) -> bool:
+        payload = self.load()
+        return self._coerce_bool(payload.get("stock_partial_profit_enabled"), True)
+
+    def get_stock_trailing_stop_enabled(self, settings: Settings) -> bool:
+        payload = self.load()
+        return self._coerce_bool(payload.get("stock_trailing_stop_enabled"), True)
+
+    def get_stock_heuristic_early_exit_enabled(self, settings: Settings) -> bool:
+        payload = self.load()
+        return self._coerce_bool(payload.get("stock_heuristic_early_exit_enabled"), True)
+
     def get_ui_preferences(self) -> tuple[InstrumentMode, str | None, list[str]]:
         payload = self.load()
         raw_mode = str(payload.get("instrument_mode") or InstrumentMode.nifty.value).strip().lower()
@@ -228,6 +282,10 @@ class CredentialStore:
                 last_updated = None
         return CredentialSummary(
             client_id=payload.get("client_id") or settings.dhan_client_id,
+            resolved_client_id=self.resolve_dhan_credentials(
+                payload.get("client_id") or settings.dhan_client_id,
+                payload.get("access_token") or settings.dhan_access_token,
+            )[0],
             dhan_access_token_saved=bool(payload.get("access_token") or settings.dhan_access_token),
             openai_api_key_saved=bool(payload.get("openai_api_key") or settings.openai_api_key),
             openai_model=payload.get("openai_model") or settings.openai_model,
@@ -238,6 +296,45 @@ class CredentialStore:
             nifty_order_lots=self.get_nifty_order_lots(settings),
             stock_trade_capital=self.get_stock_trade_capital(settings),
             nifty_expiry_preference=self.get_nifty_expiry_preference(settings),
+            stock_partial_profit_enabled=self.get_stock_partial_profit_enabled(settings),
+            stock_trailing_stop_enabled=self.get_stock_trailing_stop_enabled(settings),
+            stock_heuristic_early_exit_enabled=self.get_stock_heuristic_early_exit_enabled(settings),
+            dhan_credential_message=self.resolve_dhan_credentials(
+                payload.get("client_id") or settings.dhan_client_id,
+                payload.get("access_token") or settings.dhan_access_token,
+            )[2],
             storage_path=str(self.path.resolve()),
             last_updated=last_updated,
         )
+
+    def _extract_dhan_client_id_from_token(self, access_token: str | None) -> str | None:
+        token = (access_token or "").strip()
+        if not token:
+            return None
+        parts = token.split(".")
+        if len(parts) < 2:
+            return None
+        payload = parts[1]
+        padding = "=" * (-len(payload) % 4)
+        try:
+            decoded = base64.urlsafe_b64decode((payload + padding).encode("utf-8")).decode("utf-8")
+            data = json.loads(decoded)
+        except Exception:
+            return None
+        client_id = str(data.get("dhanClientId") or "").strip()
+        return client_id or None
+
+    @staticmethod
+    def _coerce_bool(value: object, default: bool) -> bool:
+        if value is None:
+            return default
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return bool(value)
+        normalized = str(value).strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+        return default

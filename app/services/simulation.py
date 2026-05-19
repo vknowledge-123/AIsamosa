@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import queue
+import re
 import threading
 import uuid
 from dataclasses import dataclass, field
@@ -15,6 +16,7 @@ from app.schemas import (
     DashboardState,
     ExecutionState,
     FullAIProvider,
+    IntegratedPnlState,
     InstrumentMode,
     LiveFeedState,
     OperationJobState,
@@ -114,6 +116,20 @@ class SimulationEngine:
             daemon=True,
         )
         self._live_packet_worker.start()
+        self._live_evaluation_queue: queue.Queue[tuple[str | None, int] | None] = queue.Queue()
+        self._live_evaluation_worker = threading.Thread(
+            target=self._run_live_evaluation_worker,
+            name="live-evaluation-worker",
+            daemon=True,
+        )
+        self._live_evaluation_worker.start()
+        self._watchlist_subscription_refresh_event = threading.Event()
+        self._watchlist_subscription_worker = threading.Thread(
+            target=self._run_watchlist_subscription_worker,
+            name="watchlist-subscription-worker",
+            daemon=True,
+        )
+        self._watchlist_subscription_worker.start()
         self.signal_history: list[SignalEvent] = []
         self._signal_history_keys: set[tuple[str, str, str]] = set()
         self._active_option_subscription: tuple | None = None
@@ -128,6 +144,10 @@ class SimulationEngine:
         self.live_trading_enabled = False
         self.pending_setup: PendingSetup | None = None
         self._default_heuristic_engine = self.heuristic_engine
+        self._integrated_pnl_peak: float | None = None
+        self._integrated_pnl_peak_at: datetime | None = None
+        self._integrated_pnl_trough: float | None = None
+        self._integrated_pnl_trough_at: datetime | None = None
         self._restore_persisted_ui_preferences_locked()
         if not self.stock_watchlist and not self._has_saved_stock_watchlist_preferences():
             self._ensure_default_stock_watchlist()
@@ -236,6 +256,9 @@ class SimulationEngine:
         connected: bool = False,
         status: str = "disconnected",
         source: str = "sample",
+        status_message: str | None = None,
+        retry_attempt: int = 0,
+        next_retry_at: datetime | None = None,
     ) -> LiveFeedState:
         return LiveFeedState(
             connected=connected,
@@ -243,6 +266,9 @@ class SimulationEngine:
             source=source,
             security_id=self.instrument_spec.security_id,
             instrument_label=self.instrument_spec.label,
+            status_message=status_message,
+            retry_attempt=retry_attempt,
+            next_retry_at=next_retry_at,
         )
 
     def instrument_state(self):
@@ -367,6 +393,10 @@ class SimulationEngine:
         stored_client, stored_token = self.credential_store.get_dhan_credentials(self.settings)
         client = (client_id or self._runtime_dhan_client_id or stored_client or "").strip()
         token = (access_token or self._runtime_dhan_access_token or stored_token or "").strip()
+        client, token, message = self.credential_store.resolve_dhan_credentials(client, token)
+        if message:
+            if not self.rulebook_service.learning_log or self.rulebook_service.learning_log[0] != message:
+                self.rulebook_service.learning_log.insert(0, message)
         return client, token
 
     def _normalize_replay_decision_duration_minutes(self, minutes: int | None) -> int:
@@ -488,6 +518,9 @@ class SimulationEngine:
             active_trade=self.active_trade,
             recent_closed_trades=recent_closed_trades,
             rulebook_markdown=self.rulebook_service.get_rulebook(),
+            stock_partial_profit_enabled=self.credential_store.get_stock_partial_profit_enabled(self.settings),
+            stock_trailing_stop_enabled=self.credential_store.get_stock_trailing_stop_enabled(self.settings),
+            stock_heuristic_early_exit_enabled=self.credential_store.get_stock_heuristic_early_exit_enabled(self.settings),
         )
 
     def _ensure_default_stock_watchlist(self) -> None:
@@ -565,6 +598,81 @@ class SimulationEngine:
             heuristic_engine=self.heuristic_engine,
         )
 
+    def _session_mark_price_locked(self, session: StockRuntimeSession) -> float | None:
+        trade = session.active_trade
+        if trade is None:
+            return None
+        if trade.price_mode != "cash":
+            return trade.current_price
+        reference_candle = None
+        if session.live_current_candle is not None:
+            reference_candle = session.live_current_candle
+        elif 0 <= session.current_index < len(session.candles):
+            reference_candle = session.candles[session.current_index]
+        elif session.candles:
+            reference_candle = session.candles[-1]
+        if reference_candle is None:
+            return trade.current_price
+        return self.current_trade_market_price(reference_candle.close, trade)
+
+    def _trade_pnl_for_session_locked(self, session: StockRuntimeSession) -> float | None:
+        trade = session.active_trade
+        if trade is None:
+            return None
+        if trade.price_mode == "cash":
+            mark_price = self._session_mark_price_locked(session)
+            if mark_price is not None:
+                return self.calculate_trade_pnl(trade, mark_price)
+        return trade.pnl
+
+    def _build_integrated_pnl_state_locked(self, reference_time: datetime | None = None) -> IntegratedPnlState:
+        realized_component = 0.0
+        unrealized_component = 0.0
+        selected_runtime_view = self._selected_runtime_session_view_locked()
+        if self.stock_watchlist:
+            for symbol in self.stock_watchlist:
+                session = (
+                    selected_runtime_view
+                    if symbol == self.selected_stock_symbol and selected_runtime_view is not None
+                    else self.stock_sessions.get(symbol)
+                )
+                if session is None:
+                    continue
+                realized_component += session.realized_pnl
+                session_trade_pnl = self._trade_pnl_for_session_locked(session)
+                if session_trade_pnl is not None:
+                    unrealized_component += session_trade_pnl
+        else:
+            realized_component = self.realized_pnl
+            if self.active_trade is not None:
+                mark_price = self.current_trade_market_price(
+                    (self.live_current_candle or self.candles[self.current_index]).close,
+                    self.active_trade,
+                ) if self.active_trade.price_mode == "cash" and (
+                    self.live_current_candle is not None or 0 <= self.current_index < len(self.candles)
+                ) else self.active_trade.current_price
+                unrealized_component = self.calculate_trade_pnl(self.active_trade, mark_price)
+
+        realized_component = round(realized_component, 2)
+        unrealized_component = round(unrealized_component, 2)
+        total_pnl = round(realized_component + unrealized_component, 2)
+        stamp = reference_time or datetime.now()
+        if self._integrated_pnl_peak is None or total_pnl > self._integrated_pnl_peak:
+            self._integrated_pnl_peak = total_pnl
+            self._integrated_pnl_peak_at = stamp
+        if self._integrated_pnl_trough is None or total_pnl < self._integrated_pnl_trough:
+            self._integrated_pnl_trough = total_pnl
+            self._integrated_pnl_trough_at = stamp
+        return IntegratedPnlState(
+            realized_pnl=realized_component,
+            unrealized_pnl=unrealized_component,
+            total_pnl=total_pnl,
+            max_total_pnl=self._integrated_pnl_peak or 0.0,
+            max_total_pnl_at=self._integrated_pnl_peak_at,
+            min_total_pnl=self._integrated_pnl_trough or 0.0,
+            min_total_pnl_at=self._integrated_pnl_trough_at,
+        )
+
     def _add_stock_to_watchlist_locked(self, symbol: str, *, make_selected: bool = False) -> InstrumentSpec:
         entry = self.stock_universe.preview(symbol)
         spec = build_stock_instrument(
@@ -617,8 +725,8 @@ class SimulationEngine:
                     )
                     self._mark_state_dirty_locked()
                     return self.get_state()
-        self._sync_watchlist_subscriptions()
-        self._auto_sync_selected_stock_async()
+        self._schedule_watchlist_subscription_refresh()
+        self._auto_prepare_watchlist_symbols_async([spec.symbol])
         with self.lock:
             self.rulebook_service.learning_log.insert(
                 0,
@@ -627,6 +735,73 @@ class SimulationEngine:
             self._persist_ui_preferences_locked()
             self._mark_state_dirty_locked()
             return self.get_state()
+
+    def extract_bulk_stock_symbols(self, raw_text: str) -> tuple[list[str], list[str]]:
+        seen: set[str] = set()
+        added: list[str] = []
+        skipped: list[str] = []
+        for raw_line in (raw_text or "").splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            if line.lower().startswith("symbol"):
+                continue
+            candidate = re.split(r"\t+|\s{2,}|,", line, maxsplit=1)[0].strip().upper()
+            if not candidate or candidate in seen:
+                continue
+            seen.add(candidate)
+            try:
+                self.stock_universe.preview(candidate)
+            except ValueError:
+                skipped.append(candidate)
+                continue
+            added.append(candidate)
+        return added, skipped
+
+    def add_bulk_stocks_to_watchlist(self, raw_text: str) -> tuple[DashboardState, list[str], list[str]]:
+        symbols, skipped = self.extract_bulk_stock_symbols(raw_text)
+        if not symbols:
+            raise ValueError("No valid stock symbols were found in the pasted text.")
+        with self.lock:
+            previous_mode = self.instrument_mode
+            had_live_feed = self.live_feed_adapter is not None
+        with self.lock:
+            if self.instrument_mode == InstrumentMode.stock and self.selected_stock_symbol:
+                self._capture_stock_session_locked(self.selected_stock_symbol)
+            first_selected = self.selected_stock_symbol is None or previous_mode != InstrumentMode.stock
+            selected_symbol = self.selected_stock_symbol
+            added_symbols: list[str] = []
+            for symbol in symbols:
+                spec = self._add_stock_to_watchlist_locked(symbol, make_selected=False)
+                added_symbols.append(spec.symbol)
+                if first_selected and selected_symbol is None:
+                    selected_symbol = spec.symbol
+            if selected_symbol:
+                self.selected_stock_symbol = selected_symbol
+                self._load_stock_session_locked(selected_symbol)
+        if had_live_feed and previous_mode != InstrumentMode.stock:
+            client, token = self._available_dhan_credentials()
+            self.disconnect_live_feed()
+            if client and token:
+                self.connect_live_feed(client_id=client, access_token=token)
+                with self.lock:
+                    self.rulebook_service.learning_log.insert(
+                        0,
+                        f"Moved the live feed from {previous_mode.value} mode into the stock watchlist feed.",
+                    )
+                    self._mark_state_dirty_locked()
+                    return self.get_state(), added_symbols, skipped
+        self._schedule_watchlist_subscription_refresh()
+        self._auto_prepare_watchlist_symbols_async(added_symbols)
+        with self.lock:
+            skipped_note = f" Skipped {', '.join(skipped)}." if skipped else ""
+            self.rulebook_service.learning_log.insert(
+                0,
+                f"Bulk-added {len(added_symbols)} stock(s) to the watchlist: {', '.join(added_symbols)}.{skipped_note}",
+            )
+            self._persist_ui_preferences_locked()
+            self._mark_state_dirty_locked()
+            return self.get_state(), added_symbols, skipped
 
     def remove_stock_from_watchlist(self, symbol: str) -> DashboardState:
         normalized = (symbol or "").strip().upper()
@@ -665,7 +840,7 @@ class SimulationEngine:
             )
             self._persist_ui_preferences_locked()
             self._mark_state_dirty_locked()
-        self._sync_watchlist_subscriptions()
+        self._schedule_watchlist_subscription_refresh()
         with self.lock:
             return self.get_state()
 
@@ -694,8 +869,8 @@ class SimulationEngine:
                     )
                     self._mark_state_dirty_locked()
                     return self.get_state()
-        self._sync_watchlist_subscriptions()
-        self._auto_sync_selected_stock_async()
+        self._schedule_watchlist_subscription_refresh()
+        self._auto_prepare_watchlist_symbols_async([spec.symbol])
         with self.lock:
             self.rulebook_service.learning_log.insert(0, f"Selected {spec.symbol} as the active stock chart.")
             self._persist_ui_preferences_locked()
@@ -703,8 +878,12 @@ class SimulationEngine:
             return self.get_state()
 
     def _auto_sync_selected_stock_async(self) -> None:
+        self._auto_prepare_watchlist_symbols_async([self.selected_stock_symbol] if self.selected_stock_symbol else [])
+
+    def _auto_prepare_watchlist_symbols_async(self, symbols: list[str]) -> None:
         client, token = self._available_dhan_credentials()
         with self.lock:
+            unique_symbols = [symbol for symbol in dict.fromkeys(symbols) if symbol]
             selected_symbol = self.selected_stock_symbol
             if selected_symbol:
                 selected_spec = self.stock_watchlist.get(selected_symbol)
@@ -731,19 +910,32 @@ class SimulationEngine:
                         message=f"Preparing {self.instrument_spec.label} in the background and syncing 1-minute context.",
                     )
                 self._mark_state_dirty_locked()
-        if not selected_symbol:
+        if not unique_symbols:
             return
         worker = threading.Thread(
-            target=self._run_selected_stock_prepare,
-            args=(selected_symbol, client or None, token or None),
-            name=f"stock-sync-{selected_symbol.lower()}",
+            target=self._run_watchlist_prepare_batch,
+            args=(unique_symbols, client or None, token or None),
+            name=f"watchlist-prepare-{(selected_symbol or unique_symbols[0]).lower()}",
             daemon=True,
         )
         worker.start()
 
+    def _run_watchlist_prepare_batch(self, symbols: list[str], client_id: str | None, access_token: str | None) -> None:
+        unique_symbols = [symbol for symbol in dict.fromkeys(symbols) if symbol]
+        if not unique_symbols:
+            return
+        with ThreadPoolExecutor(max_workers=self._max_stock_sync_workers(len(unique_symbols))) as executor:
+            futures = [
+                executor.submit(self._run_selected_stock_prepare, symbol, client_id, access_token)
+                for symbol in unique_symbols
+            ]
+            for future in as_completed(futures):
+                future.result()
+
     def _run_selected_stock_prepare(self, symbol: str, client_id: str | None, access_token: str | None) -> None:
         try:
             self._resolve_watchlist_symbol_if_needed(symbol)
+            self._schedule_watchlist_subscription_refresh()
             if client_id and access_token:
                 self._sync_stock_symbol_now(symbol, client_id=client_id, access_token=access_token)
             else:
@@ -955,6 +1147,7 @@ class SimulationEngine:
         for symbol, spec in self.stock_watchlist.items():
             meta = self.stock_watch_meta.get(symbol, {})
             session = selected_runtime_view if symbol == self.selected_stock_symbol and selected_runtime_view is not None else self.stock_sessions.get(symbol)
+            active_trade_pnl = self._trade_pnl_for_session_locked(session) if session is not None else None
             items.append(
                 StockWatchItem(
                     symbol=symbol,
@@ -974,36 +1167,82 @@ class SimulationEngine:
                     decision_reason=session.decision.reason if session and session.decision is not None else None,
                     has_active_trade=session.active_trade is not None if session else False,
                     active_trade_direction=session.active_trade.direction if session and session.active_trade is not None else None,
-                    active_trade_pnl=session.active_trade.pnl if session and session.active_trade is not None else None,
+                    active_trade_pnl=active_trade_pnl,
                     realized_pnl=session.realized_pnl if session else 0.0,
                 )
             )
         items.sort(key=lambda item: (not item.selected, item.symbol))
         return items
 
+    def _live_feed_adapter_running_locked(self) -> bool:
+        if self.live_feed_adapter is None:
+            return False
+        is_running = getattr(self.live_feed_adapter, "is_running", None)
+        if callable(is_running):
+            try:
+                return bool(is_running())
+            except Exception:
+                return False
+        return self.live_feed.status in {"connecting", "connected", "reconnecting"}
+
     def _sync_watchlist_subscriptions(self) -> None:
+        plan = self._build_watchlist_subscription_plan()
+        if plan is None:
+            return
+        adapter, current, desired = plan
+        changed = False
+        for security_id, subscription in current.items():
+            if security_id not in desired:
+                adapter.unsubscribe_symbols([subscription])
+                with self.lock:
+                    if self.live_feed_adapter is adapter:
+                        self._stock_quote_subscriptions.pop(security_id, None)
+                        changed = True
+        for security_id, subscription in desired.items():
+            if security_id in current:
+                continue
+            adapter.subscribe_symbols([subscription])
+            with self.lock:
+                if self.live_feed_adapter is adapter:
+                    self._stock_quote_subscriptions[security_id] = subscription
+                    changed = True
+        if changed:
+            with self.lock:
+                self._mark_state_dirty_locked()
+
+    def _build_watchlist_subscription_plan(self) -> tuple[DhanMarketFeedAdapter, dict[str, tuple], dict[str, tuple]] | None:
         with self.lock:
             if self.live_feed_adapter is None or self.instrument_mode != InstrumentMode.stock:
-                return
+                return None
+            adapter = self.live_feed_adapter
             desired = {
                 spec.security_id: resolve_quote_subscription(spec.security_id, spec.exchange_segment)
                 for spec in self.stock_watchlist.values()
                 if spec.security_id
             }
             current = dict(self._stock_quote_subscriptions)
-        for security_id, subscription in current.items():
-            if security_id not in desired:
-                self.live_feed_adapter.unsubscribe_symbols([subscription])
-                with self.lock:
-                    self._stock_quote_subscriptions.pop(security_id, None)
-                    self._mark_state_dirty_locked()
-        for security_id, subscription in desired.items():
-            if security_id in current:
-                continue
-            self.live_feed_adapter.subscribe_symbols([subscription])
-            with self.lock:
-                self._stock_quote_subscriptions[security_id] = subscription
-                self._mark_state_dirty_locked()
+        return adapter, current, desired
+
+    def _schedule_watchlist_subscription_refresh(self) -> None:
+        self._watchlist_subscription_refresh_event.set()
+
+    def _run_watchlist_subscription_worker(self) -> None:
+        while True:
+            self._watchlist_subscription_refresh_event.wait()
+            self._watchlist_subscription_refresh_event.clear()
+            while True:
+                try:
+                    self._sync_watchlist_subscriptions()
+                except Exception as exc:
+                    with self.lock:
+                        self.rulebook_service.learning_log.insert(
+                            0,
+                            f"Watchlist subscription refresh failed: {exc}",
+                        )
+                        self._mark_state_dirty_locked()
+                if not self._watchlist_subscription_refresh_event.is_set():
+                    break
+                self._watchlist_subscription_refresh_event.clear()
 
     def set_instrument_mode(self, mode: InstrumentMode | str) -> DashboardState:
         normalized_mode = InstrumentMode(mode)
@@ -1186,25 +1425,51 @@ class SimulationEngine:
         if not client or not token:
             raise ValueError("Dhan client ID and access token are required to start the live feed")
         self._remember_dhan_credentials(client, token)
+        stock_symbols_to_prepare: list[str] = []
 
+        stale_adapter = None
         with self.lock:
-            if self.live_feed.connected and self.live_feed_adapter is not None:
-                self._sync_watchlist_subscriptions()
+            if self.live_feed_adapter is not None and self._live_feed_adapter_running_locked():
+                self._schedule_watchlist_subscription_refresh()
+                if self.instrument_mode == InstrumentMode.stock:
+                    stock_symbols_to_prepare = list(self.stock_watchlist.keys())
+                self.live_feed.status_message = self.live_feed.status_message or "Live feed connection already in progress."
                 self._mark_state_dirty_locked()
-                return self.get_state()
+                state = self.get_state()
+            elif self.live_feed_adapter is not None:
+                stale_adapter = self.live_feed_adapter
+                self.live_feed_adapter = None
+                state = None
+            else:
+                state = None
+        if state is not None:
+            self._auto_prepare_watchlist_symbols_async(stock_symbols_to_prepare)
+            return state
 
-        self.sync_dhan_context(client_id=client, access_token=token)
+        if stale_adapter is not None:
+            stale_adapter.stop()
+
+        if self.instrument_mode != InstrumentMode.stock:
+            self.sync_dhan_context(client_id=client, access_token=token)
+        else:
+            with self.lock:
+                stock_symbols_to_prepare = list(self.stock_watchlist.keys())
         with self.lock:
             self.live_feed = self._build_live_feed_state(
                 connected=False,
                 status="connecting",
                 source="dhan-websocket",
+                status_message="Connecting to Dhan market feed.",
             )
             if self.instrument_mode == InstrumentMode.stock:
-                instruments = [
-                    resolve_quote_subscription(spec.security_id, spec.exchange_segment)
+                resolved_specs = [
+                    spec
                     for spec in self.stock_watchlist.values()
                     if spec.security_id
+                ]
+                instruments = [
+                    resolve_quote_subscription(spec.security_id, spec.exchange_segment)
+                    for spec in resolved_specs
                 ]
                 if not instruments:
                     raise ValueError("No stock in the watchlist has a resolved Dhan security id yet. Search once or wait a moment, then retry.")
@@ -1220,7 +1485,7 @@ class SimulationEngine:
             self.live_feed_adapter = DhanMarketFeedAdapter(client, token, instruments)
             self._stock_quote_subscriptions = {}
             if self.instrument_mode == InstrumentMode.stock:
-                for spec, subscription in zip(self.stock_watchlist.values(), instruments):
+                for spec, subscription in zip(resolved_specs, instruments):
                     self._stock_quote_subscriptions[spec.security_id] = subscription
             self.live_feed_adapter.start(self.handle_live_packet, self.handle_live_status)
             self._sync_active_trade_subscription_locked()
@@ -1232,7 +1497,10 @@ class SimulationEngine:
                 ),
             )
             self._mark_state_dirty_locked()
-            return self.get_state()
+            state = self.get_state()
+        if stock_symbols_to_prepare:
+            self._auto_prepare_watchlist_symbols_async(stock_symbols_to_prepare)
+        return state
 
     def start_live_trading(self) -> DashboardState:
         if self.operating_mode != OperatingMode.heuristic:
@@ -1988,6 +2256,9 @@ class SimulationEngine:
         nifty_order_lots: int | None = None,
         stock_trade_capital: float | None = None,
         nifty_expiry_preference: str | None = None,
+        stock_partial_profit_enabled: bool | None = None,
+        stock_trailing_stop_enabled: bool | None = None,
+        stock_heuristic_early_exit_enabled: bool | None = None,
     ) -> DashboardState:
         with self.lock:
             self.credential_store.save(
@@ -2002,6 +2273,9 @@ class SimulationEngine:
                 nifty_order_lots=nifty_order_lots,
                 stock_trade_capital=stock_trade_capital,
                 nifty_expiry_preference=nifty_expiry_preference,
+                stock_partial_profit_enabled=stock_partial_profit_enabled,
+                stock_trailing_stop_enabled=stock_trailing_stop_enabled,
+                stock_heuristic_early_exit_enabled=stock_heuristic_early_exit_enabled,
             )
             self._credential_summary_cache = self.credential_store.summary(self.settings)
             self._configure_ai_service()
@@ -2089,7 +2363,10 @@ class SimulationEngine:
             self.live_trading_enabled = False
             self.live_feed.connected = False
             self.live_feed.status = "disconnected"
+            self.live_feed.status_message = None
             self.live_feed.error = None
+            self.live_feed.retry_attempt = 0
+            self.live_feed.next_retry_at = None
             self.live_feed.current_candle = self.live_current_candle
             self._active_option_subscription = None
             self._stock_quote_subscriptions = {}
@@ -2157,6 +2434,9 @@ class SimulationEngine:
             active_trade=self.active_trade,
             recent_closed_trades=recent_closed_trades,
             rulebook_markdown=self.rulebook_service.get_rulebook(),
+            stock_partial_profit_enabled=self.credential_store.get_stock_partial_profit_enabled(self.settings),
+            stock_trailing_stop_enabled=self.credential_store.get_stock_trailing_stop_enabled(self.settings),
+            stock_heuristic_early_exit_enabled=self.credential_store.get_stock_heuristic_early_exit_enabled(self.settings),
         )
 
     def get_state(self) -> DashboardState:
@@ -2188,6 +2468,14 @@ class SimulationEngine:
             realized_pnl = self.realized_pnl
             ai_enabled = self.ai_service.enabled
             instrument = self.instrument_state()
+            reference_time = (
+                self.live_current_candle.timestamp
+                if self.live_current_candle is not None
+                else self.candles[self.current_index].timestamp
+                if self.candles and 0 <= self.current_index < len(self.candles)
+                else None
+            )
+            integrated_pnl = self._build_integrated_pnl_state_locked(reference_time=reference_time)
 
         latest_closed = candles[current_index] if candles and current_index >= 0 else None
         latest_candle = live_current_candle or latest_closed
@@ -2219,7 +2507,14 @@ class SimulationEngine:
             decision.reason = "No active paper trade is open."
         if pending_setup is not None and pending_setup.status in {"consumed", "invalidated"}:
             pending_setup = None
-        if active_trade and latest_candle and active_trade.current_quote_source == "simulated":
+        if active_trade and latest_candle and active_trade.price_mode == "cash":
+            simulated_current = self.current_trade_market_price(latest_candle.close, active_trade)
+            active_trade.current_price = simulated_current
+            active_trade.current_option_price = simulated_current
+            active_trade.current_quote_time = latest_candle.timestamp
+            active_trade.pnl = self.calculate_trade_pnl(active_trade, simulated_current)
+            unrealized_pnl = active_trade.pnl
+        elif active_trade and latest_candle and active_trade.current_quote_source == "simulated":
             simulated_current = self.current_trade_market_price(latest_candle.close, active_trade)
             active_trade.current_price = simulated_current
             active_trade.current_option_price = simulated_current
@@ -2252,6 +2547,7 @@ class SimulationEngine:
             balance=balance,
             realized_pnl=realized_pnl,
             unrealized_pnl=unrealized_pnl,
+            integrated_pnl=integrated_pnl,
             ai_enabled=ai_enabled,
             live_feed=live_feed,
             execution=execution,
@@ -2268,15 +2564,25 @@ class SimulationEngine:
                     self._cached_state_revision = state_revision
         return state
 
-    def handle_live_status(self, status: str, message: str | None) -> None:
+    def handle_live_status(
+        self,
+        status: str,
+        message: str | None,
+        retry_attempt: int = 0,
+        next_retry_at: datetime | None = None,
+    ) -> None:
         with self.lock:
             self.live_feed.status = status
             self.live_feed.connected = status == "connected"
             self.live_feed.source = "dhan-websocket"
             self.live_feed.instrument_label = self.instrument_spec.label
             self.live_feed.security_id = self.instrument_spec.security_id
-            self.live_feed.error = message if status == "error" else None
+            self.live_feed.status_message = message
+            self.live_feed.error = message if status in {"error", "reconnecting"} else None
+            self.live_feed.retry_attempt = retry_attempt
+            self.live_feed.next_retry_at = next_retry_at
             if status == "connected":
+                self.live_feed.error = None
                 self._sync_active_trade_subscription_locked()
             self._mark_state_dirty_locked()
 
@@ -2306,8 +2612,31 @@ class SimulationEngine:
             except Exception as exc:
                 self.handle_live_status("error", str(exc))
 
+    def _run_live_evaluation_worker(self) -> None:
+        while True:
+            task = self._live_evaluation_queue.get()
+            if task is None:
+                return
+            symbol, evaluation_index = task
+            try:
+                if symbol is None:
+                    self._evaluate_index(evaluation_index, source="live")
+                    continue
+
+                def operation():
+                    self._evaluate_index(evaluation_index, source="live")
+                    return None
+
+                self._run_in_stock_session(symbol, operation)
+            except Exception as exc:
+                self.handle_live_status("error", str(exc))
+
+    def _queue_live_evaluation(self, symbol: str | None, evaluation_index: int) -> None:
+        self._live_evaluation_queue.put((symbol, evaluation_index))
+
     def _handle_live_packet_now(self, packet: dict) -> None:
         evaluation_index = None
+        evaluation_symbol: str | None = None
         with self.lock:
             security_id = str(packet.get("security_id", ""))
             ltp = self._as_float(packet.get("LTP"))
@@ -2341,6 +2670,7 @@ class SimulationEngine:
                     volume = self._as_float(packet.get("volume")) or 0.0
                     self._update_nonselected_stock_tick(matched_symbol, tick_time, ltp, volume)
                     return
+                evaluation_symbol = matched_symbol
             elif self._use_banknifty_companion() and security_id == self.companion_instrument_spec.security_id:
                 self._update_companion_live_candle_locked(tick_time, ltp, self._as_float(packet.get("volume")) or 0.0)
                 self._mark_state_dirty_locked()
@@ -2358,7 +2688,7 @@ class SimulationEngine:
             evaluation_index = self._update_live_candle_locked(tick_time, ltp, self._as_float(packet.get("volume")) or 0.0)
             self._mark_state_dirty_locked()
         if evaluation_index is not None:
-            self._evaluate_index(evaluation_index, source="live")
+            self._queue_live_evaluation(evaluation_symbol, evaluation_index)
 
     def _update_companion_live_candle_locked(self, tick_time: datetime, ltp: float, volume: float) -> None:
         bucket = tick_time.replace(second=0, microsecond=0)
@@ -2401,12 +2731,7 @@ class SimulationEngine:
             self._mark_state_dirty_locked()
         if evaluation_index is None:
             return
-
-        def operation():
-            self._evaluate_index(evaluation_index, source="live")
-            return None
-
-        self._run_in_stock_session(symbol, operation)
+        self._queue_live_evaluation(symbol, evaluation_index)
 
     def _update_live_candle_for_session_locked(
         self,

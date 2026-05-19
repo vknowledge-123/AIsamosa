@@ -1,5 +1,5 @@
 {
-  "updated_at": "2026-05-16T14:08:33.383809",
+  "updated_at": "2026-05-19T09:15:43.947126",
   "entries": [
     {
       "symbol": "GODREJCP",
@@ -272,6 +272,11 @@
       "security_id": "13147"
     },
     {
+      "symbol": "KEC",
+      "label": "KEC INTL. LIMITED",
+      "security_id": "13260"
+    },
+    {
       "symbol": "M&MFIN",
       "label": "M&M FIN. SERVICES LTD",
       "security_id": "13285"
@@ -295,6 +300,11 @@
       "symbol": "SOLARINDS",
       "label": "SOLAR INDUSTRIES (I) LTD",
       "security_id": "13332"
+    },
+    {
+      "symbol": "GALLANTT",
+      "label": "GALLANTT ISPAT LIMITED",
+      "security_id": "13337"
     },
     {
       "symbol": "KFINTECH",
@@ -355,6 +365,11 @@
       "symbol": "GESHIP",
       "label": "THE GE SHPG.LTD",
       "security_id": "13776"
+    },
+    {
+      "symbol": "TORNTPOWER",
+      "label": "TORRENT POWER LTD",
+      "security_id": "13786"
     },
     {
       "symbol": "HINDUNILVR",
@@ -617,11 +632,6 @@
       "security_id": "18096"
     },
     {
-      "symbol": "DBREALTY",
-      "label": "VALOR ESTATE LIMITED",
-      "security_id": "18124"
-    },
-    {
       "symbol": "HATHWAY",
       "label": "HATHWAY CABLE & DATACOM",
       "security_id": "18154"
@@ -817,6 +827,11 @@
       "security_id": "2303"
     },
     {
+      "symbol": "NCC",
+      "label": "NCC LIMITED",
+      "security_id": "2319"
+    },
+    {
       "symbol": "BHARTIHEXA",
       "label": "BHARTI HEXACOM LIMITED",
       "security_id": "23489"
@@ -917,6 +932,11 @@
       "security_id": "275"
     },
     {
+      "symbol": "SAILIFE",
+      "label": "SAI LIFE SCIENCES LIMITED",
+      "security_id": "27839"
+    },
+    {
       "symbol": "RELIANCE",
       "label": "RELIANCE INDUSTRIES LTD",
       "security_id": "2885"
@@ -950,6 +970,11 @@
       "symbol": "SBIN",
       "label": "STATE BANK OF INDIA",
       "security_id": "3045"
+    },
+    {
+      "symbol": "SCI",
+      "label": "SHIPPING CORP OF INDIA LT",
+      "security_id": "3048"
     },
     {
       "symbol": "VEDL",
@@ -1355,6 +1380,11 @@
       "symbol": "ANANDRATHI",
       "label": "ANAND RATHI WEALTH LTD",
       "security_id": "7145"
+    },
+    {
+      "symbol": "MAPMYINDIA",
+      "label": "C.E. INFO SYSTEMS LIMITED",
+      "security_id": "7227"
     },
     {
       "symbol": "HCLTECH",

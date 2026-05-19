@@ -10,6 +10,12 @@ const elements = {
   balanceValue: document.getElementById("balanceValue"),
   realizedValue: document.getElementById("realizedValue"),
   unrealizedValue: document.getElementById("unrealizedValue"),
+  integratedPnlValue: document.getElementById("integratedPnlValue"),
+  integratedPnlDetail: document.getElementById("integratedPnlDetail"),
+  integratedPnlMaxValue: document.getElementById("integratedPnlMaxValue"),
+  integratedPnlMaxTime: document.getElementById("integratedPnlMaxTime"),
+  integratedPnlMinValue: document.getElementById("integratedPnlMinValue"),
+  integratedPnlMinTime: document.getElementById("integratedPnlMinTime"),
   latestCandleStamp: document.getElementById("latestCandleStamp"),
   spotCloseValue: document.getElementById("spotCloseValue"),
   pdhValue: document.getElementById("pdhValue"),
@@ -34,6 +40,7 @@ const elements = {
   syncOpenValue: document.getElementById("syncOpenValue"),
   syncUpdatedValue: document.getElementById("syncUpdatedValue"),
   savedClientIdValue: document.getElementById("savedClientIdValue"),
+  savedDhanCredentialMessage: document.getElementById("savedDhanCredentialMessage"),
   savedDhanTokenValue: document.getElementById("savedDhanTokenValue"),
   savedOpenAIApiKeyValue: document.getElementById("savedOpenAIApiKeyValue"),
   savedOpenAIModelValue: document.getElementById("savedOpenAIModelValue"),
@@ -44,6 +51,9 @@ const elements = {
   savedNiftyLotsValue: document.getElementById("savedNiftyLotsValue"),
   savedStockCapitalValue: document.getElementById("savedStockCapitalValue"),
   savedExpiryPreferenceValue: document.getElementById("savedExpiryPreferenceValue"),
+  savedStockPartialProfitValue: document.getElementById("savedStockPartialProfitValue"),
+  savedStockTrailingStopValue: document.getElementById("savedStockTrailingStopValue"),
+  savedStockHeuristicExitValue: document.getElementById("savedStockHeuristicExitValue"),
   savedPathValue: document.getElementById("savedPathValue"),
   savedUpdatedValue: document.getElementById("savedUpdatedValue"),
   credentialSaveStatus: document.getElementById("credentialSaveStatus"),
@@ -150,6 +160,24 @@ async function fetchJson(url, options = {}) {
 
 function money(value) {
   return typeof value === "number" ? value.toFixed(2) : "-";
+}
+
+function formatCandleSummary(candleRef) {
+  if (!candleRef || !candleRef.candle) {
+    return "";
+  }
+  const candle = candleRef.candle;
+  const barLabel = typeof candleRef.index === "number" ? `Bar ${candleRef.index + 1}` : "Bar -";
+  return `${candleRef.label} | ${formatSignalTime(candle.timestamp)} | ${barLabel} | O ${money(candle.open)} H ${money(candle.high)} L ${money(candle.low)} C ${money(candle.close)} V ${money(candle.volume)}`;
+}
+
+function renderHeuristicCandleRefs(candleRefs) {
+  if (!Array.isArray(candleRefs) || candleRefs.length === 0) {
+    return "<p>Candle Match -</p>";
+  }
+  return candleRefs
+    .map((candleRef) => `<p>${formatCandleSummary(candleRef)}</p>`)
+    .join("");
 }
 
 function instrumentSideLabel(state, optionType) {
@@ -278,6 +306,10 @@ function syncCredentialField(form, fieldName, value) {
   if (settingsUiState.dirtyFields.has(fieldName) || document.activeElement === field) {
     return;
   }
+  if (field.type === "checkbox") {
+    field.checked = Boolean(value);
+    return;
+  }
   if (value == null || value === "") {
     return;
   }
@@ -291,10 +323,14 @@ function setFormFieldValue(form, fieldName, value) {
     return;
   }
   const field = form.elements[fieldName];
-  const normalizedValue = value == null ? "" : String(value);
   if (document.activeElement === field) {
     return;
   }
+  if (field.type === "checkbox") {
+    field.checked = value === true || value === "true" || value === "1" || value === "on";
+    return;
+  }
+  const normalizedValue = value == null ? "" : String(value);
   if (field.value !== normalizedValue) {
     field.value = normalizedValue;
   }
@@ -316,6 +352,9 @@ function buildCredentialPayload(form) {
     nifty_order_lots: (form.elements.nifty_order_lots?.value || "1").trim(),
     stock_trade_capital: (form.elements.stock_trade_capital?.value || "25000").trim(),
     nifty_expiry_preference: (form.elements.nifty_expiry_preference?.value || "current-weekly").trim(),
+    stock_partial_profit_enabled: form.elements.stock_partial_profit_enabled?.checked ? "true" : "false",
+    stock_trailing_stop_enabled: form.elements.stock_trailing_stop_enabled?.checked ? "true" : "false",
+    stock_heuristic_early_exit_enabled: form.elements.stock_heuristic_early_exit_enabled?.checked ? "true" : "false",
   };
   return Object.values(payload).some((value) => value) ? payload : null;
 }
@@ -336,6 +375,9 @@ function serializeCredentialPayload(payload) {
     openai_model: payload.openai_model,
     operating_mode: payload.operating_mode,
     stock_trade_capital: payload.stock_trade_capital,
+    stock_partial_profit_enabled: payload.stock_partial_profit_enabled,
+    stock_trailing_stop_enabled: payload.stock_trailing_stop_enabled,
+    stock_heuristic_early_exit_enabled: payload.stock_heuristic_early_exit_enabled,
   });
 }
 
@@ -731,11 +773,17 @@ function renderState(state) {
   elements.balanceValue.textContent = money(state.balance);
   elements.realizedValue.textContent = money(state.realized_pnl);
   elements.unrealizedValue.textContent = money(state.unrealized_pnl);
+  elements.integratedPnlValue.textContent = money(state.integrated_pnl?.total_pnl);
+  elements.integratedPnlDetail.textContent = `Realized ${money(state.integrated_pnl?.realized_pnl)} | Open ${money(state.integrated_pnl?.unrealized_pnl)}`;
+  elements.integratedPnlMaxValue.textContent = money(state.integrated_pnl?.max_total_pnl);
+  elements.integratedPnlMaxTime.textContent = formatIstDateTime(state.integrated_pnl?.max_total_pnl_at);
+  elements.integratedPnlMinValue.textContent = money(state.integrated_pnl?.min_total_pnl);
+  elements.integratedPnlMinTime.textContent = formatIstDateTime(state.integrated_pnl?.min_total_pnl_at);
   elements.liveStatusValue.textContent = state.live_feed.status;
   elements.liveSecurityValue.textContent = state.live_feed.security_id;
   elements.liveLtpValue.textContent = money(state.live_feed.last_ltp);
   elements.liveTicksValue.textContent = state.live_feed.ticks_received;
-  elements.liveErrorValue.textContent = state.live_feed.error || "None";
+  elements.liveErrorValue.textContent = state.live_feed.status_message || state.live_feed.error || "None";
   elements.executionEnabledValue.textContent = state.execution?.live_trading_enabled ? "armed" : "disabled";
   elements.executionStatusValue.innerHTML = state.execution
     ? `${state.execution.order_updates_status || "disconnected"} | Update ${formatIstDateTime(state.execution.last_order_update_at)}${state.execution.last_order_message ? `<br>${state.execution.last_order_message}` : ""}${state.execution.order_updates_message ? `<br>${state.execution.order_updates_message}` : ""}`
@@ -744,7 +792,20 @@ function renderState(state) {
     ? `The stock watchlist currently targets ${state.stock_watchlist.length || 0} NSE cash symbol(s). ${state.instrument.label} is the active heuristic chart on security ID ${state.instrument.security_id}. Real orders trigger only when live trading is armed.`
     : `The live feed subscribes to Dhan security ID ${state.instrument.security_id} for ${state.instrument.label}. Real orders trigger only when live trading is armed.`;
   elements.decisionOptionLabel.textContent = state.instrument.supports_options ? "Option" : "Bias";
-  document.getElementById("connectLiveBtn").textContent = `Connect Live ${state.instrument.label}`;
+  const connectLiveBtn = document.getElementById("connectLiveBtn");
+  const disconnectLiveBtn = document.getElementById("disconnectLiveBtn");
+  const liveFeedBusy = ["connecting", "connected", "reconnecting"].includes(state.live_feed.status);
+  connectLiveBtn.disabled = liveFeedBusy;
+  disconnectLiveBtn.disabled = state.live_feed.status === "disconnected";
+  if (state.live_feed.status === "connected") {
+    connectLiveBtn.textContent = `Live Connected ${state.instrument.label}`;
+  } else if (state.live_feed.status === "reconnecting") {
+    connectLiveBtn.textContent = `Reconnecting ${state.instrument.label}`;
+  } else if (state.live_feed.status === "connecting") {
+    connectLiveBtn.textContent = `Connecting ${state.instrument.label}`;
+  } else {
+    connectLiveBtn.textContent = `Connect Live ${state.instrument.label}`;
+  }
   document.getElementById("simulateTodayBtn").textContent = `Start ${state.instrument.label} Today Simulation`;
   document.getElementById("startTradingBtn").textContent = state.execution?.live_trading_enabled ? "Trading Armed" : "Start Trading";
   elements.syncStatusValue.textContent = `${state.data_sync.status} (${state.data_sync.source})`;
@@ -760,7 +821,9 @@ function renderState(state) {
   elements.syncUpdatedValue.textContent = state.data_sync.last_synced_at
     ? new Date(state.data_sync.last_synced_at).toLocaleString()
     : "-";
-  elements.savedClientIdValue.textContent = state.credentials.client_id || "Not saved";
+  const resolvedClientId = state.credentials.resolved_client_id || state.credentials.client_id || "";
+  elements.savedClientIdValue.textContent = resolvedClientId || "Not saved";
+  elements.savedDhanCredentialMessage.textContent = state.credentials.dhan_credential_message || "No credential warnings.";
   elements.savedDhanTokenValue.textContent = state.credentials.dhan_access_token_saved ? "Saved locally" : "Not saved";
   elements.savedOpenAIApiKeyValue.textContent = state.credentials.openai_api_key_saved ? "Saved locally" : "Not saved";
   elements.savedOpenAIModelValue.textContent = state.credentials.openai_model || "gpt-5.4-mini";
@@ -771,6 +834,9 @@ function renderState(state) {
   elements.savedNiftyLotsValue.textContent = state.credentials.nifty_order_lots || 1;
   elements.savedStockCapitalValue.textContent = money(state.credentials.stock_trade_capital);
   elements.savedExpiryPreferenceValue.textContent = state.credentials.nifty_expiry_preference || "current-weekly";
+  elements.savedStockPartialProfitValue.textContent = state.credentials.stock_partial_profit_enabled ? "Enabled" : "Disabled";
+  elements.savedStockTrailingStopValue.textContent = state.credentials.stock_trailing_stop_enabled ? "Enabled" : "Disabled";
+  elements.savedStockHeuristicExitValue.textContent = state.credentials.stock_heuristic_early_exit_enabled ? "Enabled" : "Disabled";
   elements.savedPathValue.textContent = state.credentials.storage_path || "-";
   elements.savedUpdatedValue.textContent = state.credentials.last_updated
     ? new Date(state.credentials.last_updated).toLocaleString()
@@ -879,7 +945,9 @@ function renderState(state) {
       <strong>${event.title}</strong>
       <span class="pill">${event.status || event.event_type}</span>
       <p>${formatSignalTime(event.timestamp)} | ${event.direction || "-"}</p>
+      <p>Matched ${event.matched_level_label || "-"} | Level ${event.matched_level_price != null ? money(event.matched_level_price) : "-"}</p>
       <p>Price ${money(event.price)} | ${event.detail || "No detail."}</p>
+      ${renderHeuristicCandleRefs(event.candle_refs)}
     </div>
   `);
 
@@ -890,8 +958,10 @@ function renderState(state) {
       <p>${formatSignalTime(entry.timestamp)} | Action ${entry.action || "-"} | Score ${entry.setup_score != null ? entry.setup_score.toFixed(1) : "-"}</p>
       <p>${entry.setup_type || "No setup"} | ${entry.option_type || "-"} | Confidence ${entry.confidence != null ? Math.round(entry.confidence * 100) : "-"}%</p>
       <p>Trigger ${entry.trigger_price != null ? money(entry.trigger_price) : "-"} | Invalidation ${entry.invalidation_level != null ? money(entry.invalidation_level) : "-"}</p>
+      <p>Matched ${entry.matched_level_label || "-"} | Level ${entry.matched_level_price != null ? money(entry.matched_level_price) : "-"}</p>
       <p>${entry.block_reason || entry.market_state || "-"}</p>
       <p>${entry.detail || "No detail."}</p>
+      ${renderHeuristicCandleRefs(entry.candle_refs)}
     </div>
   `);
 
@@ -919,6 +989,9 @@ function renderState(state) {
     syncCredentialField(credentialSaveForm, "nifty_order_lots", String(state.credentials.nifty_order_lots || 1));
     syncCredentialField(credentialSaveForm, "stock_trade_capital", String(state.credentials.stock_trade_capital || 25000));
     syncCredentialField(credentialSaveForm, "nifty_expiry_preference", state.credentials.nifty_expiry_preference || "current-weekly");
+    syncCredentialField(credentialSaveForm, "stock_partial_profit_enabled", state.credentials.stock_partial_profit_enabled !== false);
+    syncCredentialField(credentialSaveForm, "stock_trailing_stop_enabled", state.credentials.stock_trailing_stop_enabled !== false);
+    syncCredentialField(credentialSaveForm, "stock_heuristic_early_exit_enabled", state.credentials.stock_heuristic_early_exit_enabled !== false);
     if (!settingsUiState.dirtyFields.size && !settingsUiState.saveInFlight) {
       setCredentialSaveStatus("Saved locally. Autosave is active.", "saved");
     }
@@ -972,6 +1045,12 @@ async function addStock(symbol) {
   const formData = new FormData();
   formData.append("symbol", symbol);
   await postForm("/api/stocks/watchlist/add", formData);
+}
+
+async function addBulkStocks(bulkText) {
+  const formData = new FormData();
+  formData.append("bulk_text", bulkText);
+  await postForm("/api/stocks/watchlist/bulk-add", formData);
 }
 
 async function selectStock(symbol) {
@@ -1202,6 +1281,16 @@ document.getElementById("stockSearchForm").addEventListener("submit", (event) =>
   const form = event.currentTarget;
   runAction(async () => {
     await searchStocks(form.elements.query.value || "");
+  });
+});
+
+document.getElementById("stockBulkImportForm").addEventListener("submit", (event) => {
+  event.preventDefault();
+  const form = event.currentTarget;
+  runAction(async () => {
+    const bulkText = (form.elements.bulk_text?.value || "").trim();
+    await addBulkStocks(bulkText);
+    form.reset();
   });
 });
 
