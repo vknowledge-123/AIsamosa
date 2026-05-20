@@ -1548,12 +1548,28 @@ class SimulationEngine:
         with self.lock:
             if self.live_feed_adapter is None:
                 raise ValueError("Connect the Dhan live feed before starting live trading.")
+            cleared_symbols: list[str] = []
+            if self.instrument_mode == InstrumentMode.stock:
+                selected_symbol = self.selected_stock_symbol
+                if selected_symbol:
+                    self._capture_stock_session_locked(selected_symbol)
+                for symbol, session in self.stock_sessions.items():
+                    if self._clear_simulated_active_trade_from_session(session):
+                        cleared_symbols.append(symbol)
+                if selected_symbol and selected_symbol in self.stock_sessions:
+                    self._load_stock_session_locked(selected_symbol)
             self.live_trading_enabled = True
             self.execution_state.live_trading_enabled = True
             self.execution_state.last_order_message = "Live heuristic execution is armed."
             self._mark_state_dirty_locked()
         self._start_order_updates(client_id, access_token)
         with self.lock:
+            if cleared_symbols:
+                cleared_list = ", ".join(sorted(cleared_symbols))
+                self.rulebook_service.learning_log.insert(
+                    0,
+                    f"Cleared simulated open stock trades before arming live execution: {cleared_list}.",
+                )
             self.rulebook_service.learning_log.insert(
                 0,
                 (
@@ -2914,7 +2930,9 @@ class SimulationEngine:
                     source=source,
                     replay_decision_duration_minutes=replay_decision_duration_minutes,
                 )
-                trigger_decision = self.evaluate_pending_setup_trigger(snapshot.current_candle)
+                trigger_decision = None
+                if not self._stock_pre_arm_paper_execution_disabled(source):
+                    trigger_decision = self.evaluate_pending_setup_trigger(snapshot.current_candle)
                 if trigger_decision is not None:
                     self.decision = trigger_decision
                     self._record_signal_events_locked(snapshot.signal_events)
@@ -3677,6 +3695,27 @@ class SimulationEngine:
     def _use_spot_pricing_for_source(self, source: str) -> bool:
         return source == "replay" and self.instrument_spec.supports_options
 
+    def _stock_pre_arm_paper_execution_disabled(self, source: str) -> bool:
+        return (
+            self.instrument_mode == InstrumentMode.stock
+            and not self.instrument_spec.supports_options
+            and source in {"sync", "live"}
+            and not self.live_trading_enabled
+        )
+
+    def _trade_is_broker_backed(self, trade: SimulatedTrade | None) -> bool:
+        if trade is None:
+            return False
+        return bool(trade.broker_order_id or trade.broker_entry_correlation_id)
+
+    def _clear_simulated_active_trade_from_session(self, session: StockRuntimeSession) -> bool:
+        trade = session.active_trade
+        if trade is None or self._trade_is_broker_backed(trade):
+            return False
+        session.trade_history = [item for item in session.trade_history if item.trade_id != trade.trade_id]
+        session.active_trade = None
+        return True
+
     def _build_entry_trade(
         self,
         current_candle: Candle,
@@ -3902,6 +3941,9 @@ class SimulationEngine:
         )
 
     def apply_trade_logic(self, current_candle: Candle, decision: TradeDecision, *, source: str = "manual") -> None:
+        if self._stock_pre_arm_paper_execution_disabled(source):
+            return
+
         if self.active_trade:
             if self.active_trade.current_quote_source == "simulated":
                 self.active_trade.current_price = self.current_trade_market_price(current_candle.close, self.active_trade)

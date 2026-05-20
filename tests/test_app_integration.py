@@ -605,6 +605,87 @@ class AppIntegrationTests(unittest.TestCase):
         state = response.json()["state"]
         self.assertTrue(state["execution"]["live_trading_enabled"])
 
+    def test_start_live_trading_clears_simulated_open_stock_trade(self) -> None:
+        self.test_engine.set_instrument_mode("stock")
+        self.client.post(
+            "/api/settings/credentials",
+            data={"operating_mode": "heuristic", "client_id": "cid-123", "access_token": "tok-456"},
+        )
+        spec = build_stock_instrument("SBIN", "3045", label="STATE BANK OF INDIA")
+        self.test_engine.stock_watchlist = {"SBIN": spec}
+        self.test_engine.selected_stock_symbol = "SBIN"
+        self.test_engine.instrument_spec = spec
+        self.test_engine.live_feed_adapter = Mock()
+        open_trade = SimulatedTrade(
+            trade_id="paper-stock-1",
+            status="OPEN",
+            direction="LONG_STOCK",
+            instrument_mode="stock",
+            instrument_label="SBIN",
+            price_mode="cash",
+            trade_security_id="3045",
+            quote_exchange_segment="NSE_EQ",
+            option_type="CE",
+            strike=0,
+            symbol="SBIN EQ",
+            quantity=1,
+            open_quantity=1,
+            entry_time=datetime.fromisoformat("2026-05-20T09:30:00"),
+            entry_price=800.0,
+            entry_spot_price=800.0,
+            entry_option_price=800.0,
+            current_price=804.0,
+            current_option_price=804.0,
+            stop_price=790.0,
+            stop_option_price=790.0,
+            target_price=820.0,
+            target_option_price=820.0,
+            invalidation_level=790.0,
+            pnl=4.0,
+        )
+        session = self.test_engine._build_stock_runtime_session(spec)
+        session.active_trade = open_trade.model_copy(deep=True)
+        session.trade_history = [open_trade.model_copy(deep=True)]
+        self.test_engine.stock_sessions["SBIN"] = session
+        self.test_engine.active_trade = open_trade.model_copy(deep=True)
+        self.test_engine.trade_history = [open_trade.model_copy(deep=True)]
+
+        with patch.object(self.test_engine, "_start_order_updates", return_value=None):
+            state = self.test_engine.start_live_trading()
+
+        self.assertTrue(state.execution.live_trading_enabled)
+        self.assertIsNone(self.test_engine.active_trade)
+        self.assertFalse(self.test_engine.trade_history)
+        self.assertIsNone(self.test_engine.stock_sessions["SBIN"].active_trade)
+        self.assertFalse(self.test_engine.stock_sessions["SBIN"].trade_history)
+
+    def test_stock_sync_or_live_does_not_open_paper_trade_before_trading_is_armed(self) -> None:
+        self.test_engine.set_instrument_mode("stock")
+        spec = build_stock_instrument("SBIN", "3045", label="STATE BANK OF INDIA")
+        self.test_engine.stock_watchlist = {"SBIN": spec}
+        self.test_engine.selected_stock_symbol = "SBIN"
+        self.test_engine.instrument_spec = spec
+        decision = TradeDecision(
+            action=TradeAction.enter_call,
+            confidence=0.8,
+            reason="Entry is allowed now.",
+            option_type="CE",
+            invalidation_level=790.0,
+            target_spot_price=820.0,
+            first_target_price=810.0,
+            setup_type="stock_first_pullback_trend_long",
+            setup_score=82.0,
+        )
+
+        self.test_engine.apply_trade_logic(
+            self._make_candle(0, 800.0, 804.0, 799.0, 803.0),
+            decision,
+            source="sync",
+        )
+
+        self.assertIsNone(self.test_engine.active_trade)
+        self.assertFalse(self.test_engine.trade_history)
+
     def test_live_connect_uses_saved_credentials_when_form_is_blank(self) -> None:
         self.client.post(
             "/api/settings/credentials",
