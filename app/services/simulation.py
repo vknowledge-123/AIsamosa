@@ -93,6 +93,7 @@ class SimulationEngine:
         self.order_update_adapter: DhanOrderUpdateAdapter | None = None
         self.live_feed = self._build_live_feed_state()
         self.execution_state = ExecutionState()
+        self._stock_execution_feedback: dict[str, dict] = {}
         self.live_current_candle: Candle | None = None
         self.companion_candles: list[Candle] = []
         self.companion_live_current_candle: Candle | None = None
@@ -517,6 +518,7 @@ class SimulationEngine:
             pending_setup=self.pending_setup,
             active_trade=self.active_trade,
             recent_closed_trades=recent_closed_trades,
+            portfolio_order_count_estimate=self._portfolio_order_count_estimate_locked(),
             rulebook_markdown=self.rulebook_service.get_rulebook(),
             stock_partial_profit_enabled=self.credential_store.get_stock_partial_profit_enabled(self.settings),
             stock_trailing_stop_enabled=self.credential_store.get_stock_trailing_stop_enabled(self.settings),
@@ -624,6 +626,33 @@ class SimulationEngine:
             if mark_price is not None:
                 return self.calculate_trade_pnl(trade, mark_price)
         return trade.pnl
+
+    def _estimated_order_count_for_trade(self, trade: SimulatedTrade) -> int:
+        count = 1 + max(int(trade.partial_exit_count or 0), 0)
+        if (
+            trade.status == "CLOSED"
+            or trade.exit_time is not None
+            or trade.closed_quantity >= trade.quantity
+            or ((trade.open_quantity or 0) <= 0 and trade.quantity > 0)
+        ):
+            count += 1
+        return count
+
+    def _portfolio_order_count_estimate_locked(self) -> int:
+        selected_runtime_view = self._selected_runtime_session_view_locked()
+        total = 0
+        if self.stock_watchlist:
+            for symbol in self.stock_watchlist:
+                session = (
+                    selected_runtime_view
+                    if symbol == self.selected_stock_symbol and selected_runtime_view is not None
+                    else self.stock_sessions.get(symbol)
+                )
+                if session is None:
+                    continue
+                total += sum(self._estimated_order_count_for_trade(trade) for trade in session.trade_history)
+            return total
+        return sum(self._estimated_order_count_for_trade(trade) for trade in self.trade_history)
 
     def _build_integrated_pnl_state_locked(self, reference_time: datetime | None = None) -> IntegratedPnlState:
         realized_component = 0.0
@@ -750,6 +779,9 @@ class SimulationEngine:
             if not candidate or candidate in seen:
                 continue
             seen.add(candidate)
+            if self.stock_universe.is_derivative_symbol(candidate):
+                skipped.append(candidate)
+                continue
             try:
                 self.stock_universe.preview(candidate)
             except ValueError:
@@ -816,6 +848,7 @@ class SimulationEngine:
             if removed_spec.security_id:
                 self._stock_symbol_by_security_id.pop(removed_spec.security_id, None)
             self.stock_watch_meta.pop(normalized, None)
+            self._stock_execution_feedback.pop(normalized, None)
             self.stock_sessions.pop(normalized, None)
             if self.selected_stock_symbol == normalized:
                 self.selected_stock_symbol = next(iter(self.stock_watchlist), None)
@@ -1146,6 +1179,7 @@ class SimulationEngine:
         selected_runtime_view = self._selected_runtime_session_view_locked()
         for symbol, spec in self.stock_watchlist.items():
             meta = self.stock_watch_meta.get(symbol, {})
+            feedback = self._stock_execution_feedback.get(symbol, {})
             session = selected_runtime_view if symbol == self.selected_stock_symbol and selected_runtime_view is not None else self.stock_sessions.get(symbol)
             active_trade_pnl = self._trade_pnl_for_session_locked(session) if session is not None else None
             items.append(
@@ -1169,6 +1203,9 @@ class SimulationEngine:
                     active_trade_direction=session.active_trade.direction if session and session.active_trade is not None else None,
                     active_trade_pnl=active_trade_pnl,
                     realized_pnl=session.realized_pnl if session else 0.0,
+                    live_order_message=feedback.get("message"),
+                    live_order_error=feedback.get("error"),
+                    live_order_updated_at=feedback.get("updated_at"),
                 )
             )
         items.sort(key=lambda item: (not item.selected, item.symbol))
@@ -1588,6 +1625,9 @@ class SimulationEngine:
             self.execution_state.order_updates_status = status
             self.execution_state.order_updates_connected = status == "connected"
             self.execution_state.order_updates_message = message
+            if status == "error" and message:
+                self.execution_state.last_order_error = message
+                self.execution_state.last_order_error_at = datetime.now()
             self._mark_state_dirty_locked()
 
     def handle_order_update_packet(self, packet: dict) -> None:
@@ -1597,6 +1637,28 @@ class SimulationEngine:
             self.execution_state.last_order_message = self._format_order_update_message(payload)
             self._apply_order_update_to_all_trades_locked(payload)
             self._mark_state_dirty_locked()
+
+    def _record_execution_feedback_locked(
+        self,
+        *,
+        symbol: str | None,
+        message: str,
+        error: str | None = None,
+    ) -> None:
+        now = datetime.now()
+        self.execution_state.last_order_message = message
+        self.execution_state.last_order_symbol = symbol
+        self.execution_state.last_order_update_at = now
+        self.execution_state.last_order_error = error
+        self.execution_state.last_order_error_at = now if error else None
+        normalized_symbol = ((symbol or "").strip().upper().split()[0] if symbol else "")
+        if normalized_symbol and normalized_symbol in self.stock_watchlist:
+            self._stock_execution_feedback[normalized_symbol] = {
+                "message": message,
+                "error": error,
+                "updated_at": now,
+            }
+        self._mark_state_dirty_locked()
 
     def _format_order_update_message(self, payload: dict) -> str:
         order_id = payload.get("OrderNo") or payload.get("orderNo") or payload.get("orderId") or "-"
@@ -2433,6 +2495,7 @@ class SimulationEngine:
             pending_setup=self.pending_setup,
             active_trade=self.active_trade,
             recent_closed_trades=recent_closed_trades,
+            portfolio_order_count_estimate=self._portfolio_order_count_estimate_locked(),
             rulebook_markdown=self.rulebook_service.get_rulebook(),
             stock_partial_profit_enabled=self.credential_store.get_stock_partial_profit_enabled(self.settings),
             stock_trailing_stop_enabled=self.credential_store.get_stock_trailing_stop_enabled(self.settings),
@@ -3707,14 +3770,16 @@ class SimulationEngine:
     def _enter_live_trade(self, current_candle: Candle, decision: TradeDecision, trade: SimulatedTrade) -> None:
         client_id, access_token = self._available_dhan_credentials()
         if not client_id or not access_token:
-            self.execution_state.last_order_message = "Live order skipped because Dhan credentials are unavailable."
-            self.rulebook_service.learning_log.insert(0, self.execution_state.last_order_message)
+            message = "Live order skipped because Dhan credentials are unavailable."
+            self._record_execution_feedback_locked(symbol=trade.symbol, message=message, error=message)
+            self.rulebook_service.learning_log.insert(0, message)
             return
         security_id = trade.option_security_id if trade.price_mode == "option" else trade.trade_security_id
         exchange_segment = trade.quote_exchange_segment or self.instrument_spec.exchange_segment
         if not security_id or not exchange_segment:
-            self.execution_state.last_order_message = "Live order skipped because the execution contract could not be resolved."
-            self.rulebook_service.learning_log.insert(0, self.execution_state.last_order_message)
+            message = "Live order skipped because the execution contract could not be resolved."
+            self._record_execution_feedback_locked(symbol=trade.symbol, message=message, error=message)
+            self.rulebook_service.learning_log.insert(0, message)
             return
         transaction_type = "BUY" if trade.direction in {"LONG_CALL", "LONG_PUT", "LONG_STOCK"} else "SELL"
         correlation_id = f"entry-{trade.trade_id}"
@@ -3730,11 +3795,20 @@ class SimulationEngine:
                 correlation_id=correlation_id,
             )
         except DhanExecutionError as exc:
-            self.execution_state.last_order_message = str(exc)
-            self.rulebook_service.learning_log.insert(0, f"Live entry failed for {trade.symbol}: {exc}")
+            error_message = str(exc)
+            self._record_execution_feedback_locked(
+                symbol=trade.symbol,
+                message=f"Live entry failed for {trade.symbol}: {error_message}",
+                error=error_message,
+            )
+            self.rulebook_service.learning_log.insert(0, f"Live entry failed for {trade.symbol}: {error_message}")
             return
         if not result.ok:
-            self.execution_state.last_order_message = result.message
+            self._record_execution_feedback_locked(
+                symbol=trade.symbol,
+                message=f"Live entry rejected for {trade.symbol}: {result.message}",
+                error=result.message,
+            )
             self.rulebook_service.learning_log.insert(0, f"Live entry rejected for {trade.symbol}: {result.message}")
             return
         trade.broker_order_id = result.order_id
@@ -3743,26 +3817,29 @@ class SimulationEngine:
         trade.broker_status_message = result.message
         trade.entry_quote_source = "dhan-market-order"
         trade.current_quote_source = "dhan-market-order"
-        self.execution_state.last_order_message = f"Live entry order sent for {trade.symbol} with qty {trade.quantity}."
-        self.rulebook_service.learning_log.insert(0, self.execution_state.last_order_message)
+        success_message = f"Live entry order sent for {trade.symbol} with qty {trade.quantity}."
+        self._record_execution_feedback_locked(symbol=trade.symbol, message=success_message)
+        self.rulebook_service.learning_log.insert(0, success_message)
         self._finalize_open_trade(current_candle, trade, decision.reason)
 
     def _exit_live_trade(self, current_candle: Candle, note: str, quantity: int | None = None) -> bool:
         if not self.active_trade:
             return False
+        trade = self.active_trade
         client_id, access_token = self._available_dhan_credentials()
         if not client_id or not access_token:
-            self.execution_state.last_order_message = "Square off or exit skipped because Dhan credentials are unavailable."
-            self.rulebook_service.learning_log.insert(0, self.execution_state.last_order_message)
+            message = "Square off or exit skipped because Dhan credentials are unavailable."
+            self._record_execution_feedback_locked(symbol=trade.symbol, message=message, error=message)
+            self.rulebook_service.learning_log.insert(0, message)
             return False
-        trade = self.active_trade
         open_quantity = trade.open_quantity if trade.open_quantity is not None else trade.quantity
         exit_quantity = open_quantity if quantity is None else max(1, min(quantity, open_quantity))
         security_id = trade.option_security_id if trade.price_mode == "option" else trade.trade_security_id
         exchange_segment = trade.quote_exchange_segment or self.instrument_spec.exchange_segment
         if not security_id or not exchange_segment:
-            self.execution_state.last_order_message = "Exit skipped because the execution contract could not be resolved."
-            self.rulebook_service.learning_log.insert(0, self.execution_state.last_order_message)
+            message = "Exit skipped because the execution contract could not be resolved."
+            self._record_execution_feedback_locked(symbol=trade.symbol, message=message, error=message)
+            self.rulebook_service.learning_log.insert(0, message)
             return False
         transaction_type = "SELL" if trade.direction in {"LONG_CALL", "LONG_PUT", "LONG_STOCK"} else "BUY"
         correlation_id = f"exit-{trade.trade_id}-{trade.partial_exit_count + 1}"
@@ -3778,19 +3855,29 @@ class SimulationEngine:
                 correlation_id=correlation_id,
             )
         except DhanExecutionError as exc:
-            self.execution_state.last_order_message = str(exc)
-            self.rulebook_service.learning_log.insert(0, f"Live exit failed for {trade.symbol}: {exc}")
+            error_message = str(exc)
+            self._record_execution_feedback_locked(
+                symbol=trade.symbol,
+                message=f"Live exit failed for {trade.symbol}: {error_message}",
+                error=error_message,
+            )
+            self.rulebook_service.learning_log.insert(0, f"Live exit failed for {trade.symbol}: {error_message}")
             return False
         if not result.ok:
-            self.execution_state.last_order_message = result.message
+            self._record_execution_feedback_locked(
+                symbol=trade.symbol,
+                message=f"Live exit rejected for {trade.symbol}: {result.message}",
+                error=result.message,
+            )
             self.rulebook_service.learning_log.insert(0, f"Live exit rejected for {trade.symbol}: {result.message}")
             return False
         trade.broker_exit_order_id = result.order_id
         trade.broker_exit_correlation_id = correlation_id
         trade.broker_status = result.order_status or "PENDING"
         trade.broker_status_message = result.message
-        self.execution_state.last_order_message = f"Live exit order sent for {trade.symbol} with qty {exit_quantity}."
-        self.rulebook_service.learning_log.insert(0, self.execution_state.last_order_message)
+        success_message = f"Live exit order sent for {trade.symbol} with qty {exit_quantity}."
+        self._record_execution_feedback_locked(symbol=trade.symbol, message=success_message)
+        self.rulebook_service.learning_log.insert(0, success_message)
         self._mark_state_dirty_locked()
         if exit_quantity >= open_quantity:
             self.close_active_trade(current_candle, note)

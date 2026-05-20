@@ -89,6 +89,45 @@ STOCK_UNIVERSE =[
     "TRAVELFOOD", "DCMSHRIRAM", "JSWDULUX", "AAVAS", "SPLPETRO"
 ]
 
+DERIVATIVE_SYMBOLS = frozenset(
+    {
+        "360ONE", "ABB", "APLAPOLLO", "AUBANK", "ADANIENSOL", "ADANIENT", "ADANIGREEN",
+        "ADANIPORTS", "ADANIPOWER", "ABCAPITAL", "ALKEM", "AMBER", "AMBUJACEM",
+        "ANGELONE", "APOLLOHOSP", "ASHOKLEY", "ASIANPAINT", "ASTRAL", "AUROPHARMA",
+        "DMART", "AXISBANK", "BSE", "BAJAJ-AUTO", "BAJFINANCE", "BAJAJFINSV",
+        "BAJAJHLDNG", "BANDHANBNK", "BANKBARODA", "BANKINDIA", "BDL", "BEL",
+        "BHARATFORG", "BHEL", "BPCL", "BHARTIARTL", "BIOCON", "BLUESTARCO",
+        "BOSCHLTD", "BRITANNIA", "CGPOWER", "CANBK", "CDSL", "CHOLAFIN", "CIPLA",
+        "COALINDIA", "COCHINSHIP", "COFORGE", "COLPAL", "CAMS", "CONCOR",
+        "CROMPTON", "CUMMINSIND", "DLF", "DABUR", "DALBHARAT", "DELHIVERY",
+        "DIVISLAB", "DIXON", "DRREDDY", "ETERNAL", "EICHERMOT", "EXIDEIND",
+        "FORCEMOT", "NYKAA", "FORTIS", "GAIL", "GMRAIRPORT", "GLENMARK",
+        "GODFRYPHLP", "GODREJCP", "GODREJPROP", "GRASIM", "HCLTECH", "HDFCAMC",
+        "HDFCBANK", "HDFCLIFE", "HAVELLS", "HEROMOTOCO", "HINDALCO", "HAL",
+        "HINDPETRO", "HINDUNILVR", "HINDZINC", "POWERINDIA", "HYUNDAI",
+        "ICICIBANK", "ICICIGI", "ICICIPRULI", "IDFCFIRSTB", "ITC", "INDIANB",
+        "IEX", "IOC", "IRFC", "IREDA", "INDUSTOWER", "INDUSINDBK", "NAUKRI",
+        "INFY", "INOXWIND", "INDIGO", "JINDALSTEL", "JSWENERGY", "JSWSTEEL",
+        "JIOFIN", "JUBLFOOD", "KEI", "KPITTECH", "KALYANKJIL", "KAYNES",
+        "KFINTECH", "KOTAKBANK", "LTF", "LICHSGFIN", "LTM", "LT", "LAURUSLABS",
+        "LICI", "LODHA", "LUPIN", "M&M", "MANAPPURAM", "MANKIND", "MARICO",
+        "MARUTI", "MFSL", "MAXHEALTH", "MAZDOCK", "MOTILALOFS", "MPHASIS", "MCX",
+        "MUTHOOTFIN", "NBCC", "NHPC", "NMDC", "NTPC", "NATIONALUM", "NESTLEIND",
+        "NAM-INDIA", "NUVAMA", "OBEROIRLTY", "ONGC", "OIL", "PAYTM", "OFSS",
+        "POLICYBZR", "PGEL", "PIIND", "PNBHOUSING", "PAGEIND", "PATANJALI",
+        "PERSISTENT", "PETRONET", "PIDILITIND", "POLYCAB", "PFC", "POWERGRID",
+        "PREMIERENE", "PRESTIGE", "PNB", "RBLBANK", "RECLTD", "RVNL", "RELIANCE",
+        "SBICARD", "SBILIFE", "SHREECEM", "SRF", "SAMMAANCAP", "MOTHERSON",
+        "SHRIRAMFIN", "SIEMENS", "SOLARINDS", "SONACOMS", "SBIN", "SAIL",
+        "SUNPHARMA", "SUPREMEIND", "SUZLON", "SWIGGY", "TATACONSUM", "TVSMOTOR",
+        "TCS", "TATAELXSI", "TMPV", "TATAPOWER", "TATASTEEL", "TECHM",
+        "FEDERALBNK", "INDHOTEL", "PHOENIXLTD", "TITAN", "TORNTPHARM", "TRENT",
+        "TIINDIA", "UNOMINDA", "UPL", "ULTRACEMCO", "UNIONBANK", "UNITDSPR",
+        "VBL", "VEDL", "VMM", "IDEA", "VOLTAS", "WAAREEENER", "WIPRO", "YESBANK",
+        "ZYDUSLIFE",
+    }
+)
+
 
 @dataclass(frozen=True)
 class StockUniverseEntry:
@@ -126,6 +165,10 @@ class StockUniverseService:
         if normalized not in self.allowed_symbols:
             raise ValueError(f"{symbol or 'Stock'} is not in the configured stock universe.")
         return self._preview_entry(normalized)
+
+    def is_derivative_symbol(self, symbol: str) -> bool:
+        normalized = (symbol or "").strip().upper()
+        return normalized in DERIVATIVE_SYMBOLS
 
     def resolve(self, symbol: str) -> StockUniverseEntry:
         normalized = (symbol or "").strip().upper()

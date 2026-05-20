@@ -13,8 +13,9 @@ from fastapi.testclient import TestClient
 
 import app.main as main_module
 from app.config import get_settings
-from app.schemas import Candle, InstrumentMode, InstrumentState, LiveFeedState, OperatingMode, PreviousDayLevels, SimulatedTrade, StrategyContext, TradeAction, TradeDecision
+from app.schemas import Candle, InstrumentMode, InstrumentState, LiveFeedState, OperatingMode, PendingSetup, PreviousDayLevels, SimulatedTrade, StrategyContext, TradeAction, TradeDecision
 from app.services.credential_store import CredentialStore
+from app.services.dhan_execution import BrokerOrderResult
 from app.services.dhan_history import DhanChartEmptyDataError, DhanChartError, DhanChartRateLimitError, DhanChartService, DhanSessionBundle
 from app.services.dhan_options import OptionContract, OptionQuote
 from app.services.heuristic_engine import HeuristicDecisionEngine, Observation, SetupCandidate, SweepEvent
@@ -277,8 +278,8 @@ class AppIntegrationTests(unittest.TestCase):
 
         added, skipped = self.test_engine.extract_bulk_stock_symbols(raw_text)
 
-        self.assertEqual(added, ["AMBER", "GLAND", "SJVN"])
-        self.assertEqual(skipped, ["NIFTY 500"])
+        self.assertEqual(added, ["GLAND", "SJVN"])
+        self.assertEqual(skipped, ["NIFTY 500", "AMBER"])
 
     def test_bulk_add_stock_watchlist_api_extracts_and_adds_symbols(self) -> None:
         with patch.object(self.test_engine, "_auto_prepare_watchlist_symbols_async", return_value=None):
@@ -297,12 +298,12 @@ class AppIntegrationTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         payload = response.json()
-        self.assertEqual(payload["added_symbols"], ["AMBER", "GLAND", "SJVN"])
-        self.assertEqual(payload["skipped_symbols"], ["NIFTY 500"])
+        self.assertEqual(payload["added_symbols"], ["GLAND", "SJVN"])
+        self.assertEqual(payload["skipped_symbols"], ["NIFTY 500", "AMBER"])
         watch_symbols = [item["symbol"] for item in payload["state"]["stock_watchlist"]]
-        self.assertIn("AMBER", watch_symbols)
         self.assertIn("GLAND", watch_symbols)
         self.assertIn("SJVN", watch_symbols)
+        self.assertNotIn("AMBER", watch_symbols)
 
     def test_dashboard_state_tracks_integrated_stock_pnl_and_extrema(self) -> None:
         selected_spec = build_stock_instrument("SBIN", "3045", label="SBIN")
@@ -797,6 +798,58 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         state = response.json()["state"]
         self.assertFalse(state["execution"]["live_trading_enabled"])
+
+    def test_live_entry_rejection_is_visible_in_execution_state_and_stock_watchlist(self) -> None:
+        self.test_engine.set_instrument_mode("stock")
+        self.temp_store.save(client_id="cid-123", access_token="tok-456")
+        spec = build_stock_instrument("SBIN", "3045", label="STATE BANK OF INDIA")
+        self.test_engine.stock_watchlist = {"SBIN": spec}
+        self.test_engine.selected_stock_symbol = "SBIN"
+        self.test_engine.stock_sessions["SBIN"] = self.test_engine._build_stock_runtime_session(spec)
+        trade = SimulatedTrade(
+            trade_id="trade-live-reject",
+            status="OPEN",
+            direction="LONG_STOCK",
+            instrument_mode="stock",
+            instrument_label="SBIN",
+            price_mode="cash",
+            trade_security_id="3045",
+            quote_exchange_segment="NSE_EQ",
+            option_type="CE",
+            strike=0,
+            symbol="SBIN EQ",
+            quantity=10,
+            open_quantity=10,
+            entry_time=datetime.fromisoformat("2026-05-14T09:15:00"),
+            entry_price=800.0,
+            entry_spot_price=800.0,
+            entry_option_price=800.0,
+            current_price=800.0,
+            current_option_price=800.0,
+            stop_price=790.0,
+            stop_option_price=790.0,
+            target_price=820.0,
+            target_option_price=820.0,
+        )
+        decision = TradeDecision(action=TradeAction.enter_call, reason="Entry is allowed now.")
+        self.test_engine.execution_service.place_market_order = Mock(
+            return_value=BrokerOrderResult(
+                ok=False,
+                order_id=None,
+                order_status=None,
+                message="Invalid IP",
+                raw={},
+            )
+        )
+
+        self.test_engine._enter_live_trade(self._make_candle(0, 800, 801, 799, 800.5), decision, trade)
+
+        state = self.test_engine.get_state()
+        self.assertEqual(state.execution.last_order_error, "Invalid IP")
+        self.assertEqual(state.execution.last_order_symbol, "SBIN EQ")
+        stock_item = next(item for item in state.stock_watchlist if item.symbol == "SBIN")
+        self.assertEqual(stock_item.live_order_error, "Invalid IP")
+        self.assertIn("Live entry rejected", stock_item.live_order_message or "")
 
     def test_heuristic_mode_uses_deterministic_decision_source(self) -> None:
         save_response = self.client.post(
@@ -1633,6 +1686,254 @@ class AppIntegrationTests(unittest.TestCase):
 
         self.assertGreater(reentry_candidate.score, base_candidate.score)
         self.assertTrue(any("same-trend re-entry" in note.lower() for note in reentry_candidate.notes))
+
+    def test_stock_reentry_requires_fresh_primary_sweep(self) -> None:
+        engine = HeuristicDecisionEngine()
+        session = [
+            self._make_candle(0, 100.0, 100.2, 99.8, 100.1),
+            self._make_candle(1, 100.1, 100.3, 98.9, 99.2),
+            self._make_candle(2, 99.2, 100.8, 99.1, 100.7),
+            self._make_candle(3, 100.7, 101.2, 100.5, 101.0),
+        ]
+        recent_long = SimulatedTrade(
+            trade_id="stock-reentry-1",
+            status="CLOSED",
+            direction="LONG_STOCK",
+            instrument_mode="stock",
+            instrument_label="SAIL",
+            price_mode="cash",
+            trade_security_id="2963",
+            quote_exchange_segment="NSE_EQ",
+            option_type="CE",
+            strike=0,
+            symbol="SAIL EQ",
+            quantity=1,
+            open_quantity=0,
+            closed_quantity=1,
+            entry_time=session[1].timestamp,
+            entry_price=99.4,
+            entry_spot_price=99.4,
+            entry_option_price=99.4,
+            current_price=100.6,
+            current_option_price=100.6,
+            stop_price=98.8,
+            stop_option_price=98.8,
+            target_price=101.2,
+            target_option_price=101.2,
+            invalidation_level=98.8,
+            exit_time=session[-1].timestamp,
+            exit_price=100.6,
+            exit_option_price=100.6,
+            booked_pnl=1.2,
+            pnl=1.2,
+        )
+        context = self._build_context(
+            session,
+            previous_close=100.2,
+            recent_closed_trades=[recent_long],
+        ).model_copy(
+            update={
+                "instrument": InstrumentState(
+                    mode="stock",
+                    label="SAIL",
+                    symbol="SAIL",
+                    security_id="2963",
+                    exchange_segment="NSE_EQ",
+                    instrument_type="EQUITY",
+                    supports_options=False,
+                    lot_size=1,
+                )
+            }
+        )
+        event = SweepEvent(
+            side="sell",
+            level_label="Previous Day Low",
+            level_price=99.0,
+            sweep_index=1,
+            reclaim_index=2,
+            trigger_index=2,
+            sweep_price=98.9,
+            defended_level=99.0,
+            trigger_price=100.4,
+            invalidation_level=98.7,
+            primary=True,
+            quality="tradable",
+            notes=["Previous day low was swept and reclaimed quickly."],
+        )
+        observation = self._build_observation(
+            value_state="discount",
+            vwap=100.1,
+            atr=0.9,
+            strong_intent=False,
+            session_high=101.2,
+            session_low=98.9,
+            stock_dow_bias="bullish",
+            stock_dow_state="early-uptrend",
+            sell_sweeps=[event],
+        )
+
+        candidates = engine.build_candidates(context, observation)
+        candidate = next((item for item in candidates if item.setup_type == "bullish_reclaim_watch"), None)
+
+        self.assertIsNotNone(candidate)
+        assert candidate is not None
+        self.assertFalse(candidate.ready_to_enter)
+        self.assertLess(candidate.score, engine.arm_threshold)
+        self.assertTrue(any("brand-new primary liquidity sweep" in note.lower() for note in candidate.notes))
+
+    def test_midday_stock_continuation_is_blocked_inside_balanced_churn(self) -> None:
+        engine = HeuristicDecisionEngine()
+        session = [
+            self._make_candle(150, 100.0, 101.2, 99.9, 101.0),
+            self._make_candle(151, 101.0, 102.4, 100.9, 102.2),
+            self._make_candle(152, 102.2, 103.6, 102.1, 103.4),
+            self._make_candle(153, 103.4, 104.8, 103.3, 104.6),
+            self._make_candle(154, 104.6, 105.1, 104.5, 104.9),
+            self._make_candle(155, 104.95, 105.15, 104.8, 105.0),
+            self._make_candle(156, 104.98, 105.4, 104.88, 105.3),
+            self._make_candle(157, 105.3, 105.95, 105.15, 105.85),
+            self._make_candle(158, 105.72, 106.05, 105.7, 105.95),
+        ]
+        context = self._build_context(session, previous_close=99.8).model_copy(
+            update={
+                "instrument": InstrumentState(
+                    mode="stock",
+                    label="SAIL",
+                    symbol="SAIL",
+                    security_id="2963",
+                    exchange_segment="NSE_EQ",
+                    instrument_type="EQUITY",
+                    supports_options=False,
+                    lot_size=1,
+                )
+            }
+        )
+        observation = self._build_observation(
+            session_phase="midday",
+            day_type="gap-and-go",
+            participation_state="fair_value_churn",
+            range_state="balanced",
+            overlap_ratio=0.67,
+            value_state="fair",
+            atr=1.0,
+            strong_intent=False,
+            weak_intent=False,
+            session_high=106.05,
+            session_low=99.9,
+            stock_dow_bias="bullish",
+            stock_dow_state="higher-high-higher-low",
+        )
+
+        candidates = engine.build_candidates(context, observation)
+        candidate = next((item for item in candidates if item.setup_type == "stock_breakout_pullback_long"), None)
+
+        self.assertIsNotNone(candidate)
+        assert candidate is not None
+        self.assertFalse(candidate.ready_to_enter)
+        self.assertLess(candidate.score, engine.arm_threshold)
+        self.assertTrue(any("midday balanced churn" in note.lower() for note in candidate.notes))
+
+    def test_stock_pending_setup_expires_after_three_candles(self) -> None:
+        engine = HeuristicDecisionEngine()
+        session = [
+            self._make_candle(150, 100.0, 100.8, 99.8, 100.6),
+            self._make_candle(151, 100.6, 100.9, 100.2, 100.7),
+            self._make_candle(152, 100.7, 101.0, 100.4, 100.8),
+            self._make_candle(153, 100.8, 101.1, 100.6, 100.9),
+            self._make_candle(154, 100.9, 101.2, 100.7, 101.0),
+        ]
+        pending_setup = PendingSetup(
+            setup_id="pending-stock-1",
+            setup_type="bullish_reclaim_watch",
+            direction="LONG_CALL",
+            option_type="CE",
+            trigger_price=100.95,
+            invalidation_level=99.9,
+            created_at=session[0].timestamp,
+            updated_at=session[0].timestamp,
+        )
+        context = self._build_context(session, previous_close=99.8).model_copy(
+            update={
+                "instrument": InstrumentState(
+                    mode="stock",
+                    label="SAIL",
+                    symbol="SAIL",
+                    security_id="2963",
+                    exchange_segment="NSE_EQ",
+                    instrument_type="EQUITY",
+                    supports_options=False,
+                    lot_size=1,
+                ),
+                "pending_setup": pending_setup,
+            }
+        )
+        observation = self._build_observation(
+            session_phase="midday",
+            day_type="gap-and-go",
+            atr=0.8,
+            strong_intent=False,
+            weak_intent=False,
+            session_high=101.2,
+            session_low=99.8,
+            stock_dow_bias="bullish",
+            stock_dow_state="higher-high-higher-low",
+        )
+
+        decision = engine.evaluate_pending_setup(context, observation, [])
+
+        self.assertIsNotNone(decision)
+        assert decision is not None
+        self.assertEqual(decision.pending_setup_action, "INVALIDATE")
+        self.assertIn("expired after 5 candles", decision.reason)
+
+    def test_stock_trade_frequency_guard_raises_thresholds(self) -> None:
+        engine = HeuristicDecisionEngine()
+        session = [
+            self._make_candle(150, 100.0, 101.2, 99.9, 101.0),
+            self._make_candle(151, 101.0, 102.4, 100.9, 102.2),
+            self._make_candle(152, 102.2, 103.6, 102.1, 103.4),
+            self._make_candle(153, 103.4, 104.8, 103.3, 104.6),
+            self._make_candle(154, 104.6, 105.1, 104.5, 104.9),
+            self._make_candle(155, 104.95, 105.15, 104.8, 105.0),
+            self._make_candle(156, 104.98, 105.4, 104.88, 105.3),
+            self._make_candle(157, 105.3, 105.95, 105.15, 105.85),
+            self._make_candle(158, 105.85, 106.4, 105.7, 106.25),
+        ]
+        base_context = self._build_context(session, previous_close=99.8).model_copy(
+            update={
+                "instrument": InstrumentState(
+                    mode="stock",
+                    label="SAIL",
+                    symbol="SAIL",
+                    security_id="2963",
+                    exchange_segment="NSE_EQ",
+                    instrument_type="EQUITY",
+                    supports_options=False,
+                    lot_size=1,
+                )
+            }
+        )
+        pressured_context = base_context.model_copy(update={"portfolio_order_count_estimate": 72})
+        observation = self._build_observation(
+            day_type="gap-and-go",
+            value_state="fair",
+            atr=1.0,
+            strong_intent=True,
+            weak_intent=False,
+            session_high=106.4,
+            session_low=99.9,
+            stock_dow_bias="bullish",
+            stock_dow_state="higher-high-higher-low",
+        )
+        candidate = next(
+            item for item in engine.build_stock_continuation_candidates(base_context, observation) if item.setup_type == "stock_breakout_pullback_long"
+        )
+
+        base_enter, base_arm, _ = engine._effective_entry_thresholds(base_context, observation, candidate)
+        pressured_enter, pressured_arm, _ = engine._effective_entry_thresholds(pressured_context, observation, candidate)
+
+        self.assertGreater(pressured_enter, base_enter)
+        self.assertGreater(pressured_arm, base_arm)
 
     def test_observe_sets_bullish_stock_dow_bias_from_early_uptrend(self) -> None:
         engine = HeuristicDecisionEngine()
@@ -2875,7 +3176,7 @@ class AppIntegrationTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         refresh_mock.assert_called_once()
-        prepare_mock.assert_called_once_with(["AMBER", "GLAND"])
+        prepare_mock.assert_called_once_with(["GLAND"])
 
     def test_stock_mode_sync_history_updates_all_watchlist_sessions(self) -> None:
         with patch.object(
@@ -3619,6 +3920,58 @@ class AppIntegrationTests(unittest.TestCase):
             first_target_price=812,
             partial_exit_count=1,
             last_partial_exit_time=datetime.fromisoformat("2026-05-14T09:16:00"),
+            exit_time=None,
+            exit_price=None,
+            exit_option_price=None,
+            pnl=0.0,
+        )
+        self.test_engine.current_index = len(candles) - 1
+
+        decision = self.test_engine.heuristic_decision(self.test_engine.build_context())
+
+        self.assertNotEqual(decision.action, TradeAction.update_stop)
+
+    def test_heuristic_v2_skips_stock_one_r_trailing_when_setting_disabled(self) -> None:
+        self.test_engine.set_instrument_mode("stock")
+        self.temp_store.save(stock_trailing_stop_enabled=False)
+        candles = [
+            Candle(timestamp="2026-05-13T09:15:00", open=805, high=810, low=803, close=808, volume=1000),
+            Candle(timestamp="2026-05-14T09:15:00", open=808, high=814.5, low=807.8, close=813.2, volume=1200),
+            Candle(timestamp="2026-05-14T09:16:00", open=813.2, high=814.2, low=812.4, close=813.6, volume=1300),
+        ]
+        self.test_engine.reset_with_candles(candles)
+        self.test_engine.active_trade = SimulatedTrade(
+            trade_id="trade1d_1r",
+            status="OPEN",
+            direction="LONG_STOCK",
+            instrument_mode="stock",
+            instrument_label="SBIN",
+            price_mode="cash",
+            trade_security_id="3045",
+            quote_exchange_segment="NSE_EQ",
+            option_type="CE",
+            strike=0,
+            symbol="SBIN EQ",
+            option_security_id=None,
+            quantity=65,
+            open_quantity=65,
+            entry_time=datetime.fromisoformat("2026-05-14T09:15:00"),
+            entry_price=808,
+            entry_spot_price=808,
+            entry_option_price=808,
+            entry_quote_source="simulated",
+            entry_quote_time=datetime.fromisoformat("2026-05-14T09:15:00"),
+            current_price=813.6,
+            current_option_price=813.6,
+            current_quote_source="simulated",
+            current_quote_time=datetime.fromisoformat("2026-05-14T09:16:00"),
+            stop_price=804,
+            stop_option_price=804,
+            target_price=818,
+            target_option_price=818,
+            invalidation_level=804,
+            target_spot_price=818,
+            first_target_price=812,
             exit_time=None,
             exit_price=None,
             exit_option_price=None,

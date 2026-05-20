@@ -28,6 +28,7 @@ const elements = {
   liveErrorValue: document.getElementById("liveErrorValue"),
   executionEnabledValue: document.getElementById("executionEnabledValue"),
   executionStatusValue: document.getElementById("executionStatusValue"),
+  executionErrorValue: document.getElementById("executionErrorValue"),
   syncStatusValue: document.getElementById("syncStatusValue"),
   operationJobValue: document.getElementById("operationJobValue"),
   operationJobMessage: document.getElementById("operationJobMessage"),
@@ -708,6 +709,7 @@ function renderStockWatchlist(state) {
       <p>Heuristic ${item.decision_action || "NO_DATA"} | Confidence ${item.decision_confidence != null ? `${Math.round(item.decision_confidence * 100)}%` : "-"}</p>
       <p>${item.decision_reason || "No heuristic analysis yet for this stock session."}</p>
       <p>Trade ${item.has_active_trade ? `${item.active_trade_direction || "-"} | P&L ${money(item.active_trade_pnl)}` : "No active trade"} | Realized ${money(item.realized_pnl)}</p>
+      <p>Broker ${item.live_order_error ? `Error: ${item.live_order_error}` : (item.live_order_message || "No live order activity")} | Update ${formatIstDateTime(item.live_order_updated_at)}</p>
       <div class="button-row">
         <button type="button" class="${item.selected ? "" : "secondary-btn"} stock-select-btn" data-symbol="${item.symbol}">${item.selected ? "Active Stock" : "Open Chart"}</button>
         <button type="button" class="secondary-btn stock-remove-btn" data-symbol="${item.symbol}">Remove</button>
@@ -788,6 +790,9 @@ function renderState(state) {
   elements.executionStatusValue.innerHTML = state.execution
     ? `${state.execution.order_updates_status || "disconnected"} | Update ${formatIstDateTime(state.execution.last_order_update_at)}${state.execution.last_order_message ? `<br>${state.execution.last_order_message}` : ""}${state.execution.order_updates_message ? `<br>${state.execution.order_updates_message}` : ""}`
     : "Order updates disconnected.";
+  elements.executionErrorValue.textContent = state.execution?.last_order_error
+    ? `Last order error${state.execution.last_order_symbol ? ` (${state.execution.last_order_symbol})` : ""}: ${state.execution.last_order_error} | ${formatIstDateTime(state.execution.last_order_error_at)}`
+    : "No live order error.";
   elements.instrumentNote.textContent = state.instrument.mode === "stock"
     ? `The stock watchlist currently targets ${state.stock_watchlist.length || 0} NSE cash symbol(s). ${state.instrument.label} is the active heuristic chart on security ID ${state.instrument.security_id}. Real orders trigger only when live trading is armed.`
     : `The live feed subscribes to Dhan security ID ${state.instrument.security_id} for ${state.instrument.label}. Real orders trigger only when live trading is armed.`;

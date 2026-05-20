@@ -1065,6 +1065,263 @@ class HeuristicDecisionEngine:
             "stock_first_pullback_trend_short",
         }
 
+    def _stock_trap_setup_names(self) -> set[str]:
+        return {
+            "bullish_reclaim_watch",
+            "bearish_rejection_watch",
+            "bullish_pullback_continuation",
+            "bearish_pullback_continuation",
+            "previous_close_reclaim_long",
+            "previous_close_rejection_short",
+        }
+
+    def _recent_same_direction_stock_trade(
+        self,
+        context: StrategyContext,
+        *,
+        option_type: str,
+    ) -> SimulatedTrade | None:
+        if context.instrument.supports_options:
+            return None
+        allowed_directions = {"LONG_STOCK", "LONG_CALL"} if option_type == "CE" else {"SHORT_STOCK", "LONG_PUT"}
+        for trade in context.recent_closed_trades:
+            if trade.direction in allowed_directions:
+                return trade
+        return None
+
+    def _has_fresh_primary_stock_sweep_since(
+        self,
+        context: StrategyContext,
+        observation: Observation,
+        *,
+        option_type: str,
+        since_time,
+    ) -> bool:
+        sweeps = observation.sell_sweeps if option_type == "CE" else observation.buy_sweeps
+        session = context.session_candles
+        if since_time is None:
+            return True
+        for event in sweeps:
+            if not event.primary or event.reclaim_index is None:
+                continue
+            if not 0 <= event.reclaim_index < len(session):
+                continue
+            if session[event.reclaim_index].timestamp > since_time:
+                return True
+        return False
+
+    def _stock_midday_churn_active(self, context: StrategyContext, observation: Observation) -> bool:
+        if context.instrument.supports_options:
+            return False
+        current_time = context.current_candle.timestamp.time()
+        if current_time < dt_time(11, 45) or current_time > dt_time(13, 30):
+            return False
+        return (
+            observation.participation_state in {"fair_value_churn", "post_trend_balance"}
+            or observation.range_state in {"balanced", "compressing"}
+            or observation.overlap_ratio >= 0.58
+        )
+
+    def _stock_flat_box(self, context: StrategyContext, observation: Observation) -> bool:
+        if context.instrument.supports_options:
+            return False
+        recent = context.session_candles[-6:]
+        if len(recent) < 4:
+            return False
+        span = max(candle.high for candle in recent) - min(candle.low for candle in recent)
+        median_body = median(abs(candle.close - candle.open) for candle in recent)
+        return (
+            observation.range_state == "compressing"
+            or observation.overlap_ratio >= 0.62
+            or span <= observation.atr * 1.15
+            or median_body <= observation.atr * 0.2
+        )
+
+    def _stock_continuation_breakout_override(
+        self,
+        context: StrategyContext,
+        observation: Observation,
+        *,
+        option_type: str,
+    ) -> bool:
+        if context.instrument.supports_options:
+            return False
+        session = context.session_candles
+        if len(session) < 6:
+            return False
+        current = context.current_candle
+        prior = session[-6:-1]
+        if len(prior) < 4:
+            return False
+        prior_high = max(candle.high for candle in prior)
+        prior_low = min(candle.low for candle in prior)
+        current_range = max(current.high - current.low, 0.01)
+        prior_volumes = [max(candle.volume, 1.0) for candle in prior]
+        volume_expansion = max(current.volume, 1.0) >= median(prior_volumes) * 1.25
+        strong_body = self.candle_strength(current) >= 0.68 and current_range >= observation.atr * 0.72
+        if option_type == "CE":
+            return (
+                observation.strong_intent
+                and volume_expansion
+                and strong_body
+                and current.close >= prior_high
+                and current.close > current.open
+            )
+        return (
+            observation.strong_intent
+            and volume_expansion
+            and strong_body
+            and current.close <= prior_low
+            and current.close < current.open
+        )
+
+    def _demote_stock_candidate(
+        self,
+        candidate: SetupCandidate,
+        *,
+        cap_score: float,
+        note: str,
+        rule_ids: list[str],
+    ) -> SetupCandidate:
+        candidate.score = min(candidate.score, cap_score)
+        candidate.ready_to_enter = False
+        if note not in candidate.notes:
+            candidate.notes.append(note)
+        if note not in candidate.event.notes:
+            candidate.event.notes.append(note)
+        for rule_id in rule_ids:
+            if rule_id not in candidate.rule_ids:
+                candidate.rule_ids.append(rule_id)
+        return candidate
+
+    def _refine_stock_candidate(
+        self,
+        context: StrategyContext,
+        observation: Observation,
+        candidate: SetupCandidate,
+    ) -> SetupCandidate:
+        if context.instrument.supports_options:
+            return candidate
+
+        current = context.current_candle
+        session = context.session_candles
+        body_quality = self.candle_strength(current)
+        recent_reclaim = candidate.event.reclaim_index is not None and candidate.event.reclaim_index >= max(0, len(session) - 2)
+        same_candle_reclaim = candidate.event.reclaim_index is not None and candidate.event.reclaim_index == candidate.event.sweep_index
+        major_level = self._is_obvious_stop_pool_label(candidate.event.level_label)
+        midday_churn = self._stock_midday_churn_active(context, observation)
+        flat_box = self._stock_flat_box(context, observation)
+        breakout_override = self._stock_continuation_breakout_override(
+            context,
+            observation,
+            option_type=candidate.option_type,
+        )
+        is_continuation = candidate.setup_type in self._stock_continuation_setup_names()
+        is_trap_setup = candidate.setup_type in self._stock_trap_setup_names()
+
+        recent_same_side_trade = self._recent_same_direction_stock_trade(context, option_type=candidate.option_type)
+        if recent_same_side_trade is not None:
+            anchor_time = (
+                recent_same_side_trade.exit_time
+                or recent_same_side_trade.last_partial_exit_time
+                or recent_same_side_trade.entry_time
+            )
+            if not self._has_fresh_primary_stock_sweep_since(
+                context,
+                observation,
+                option_type=candidate.option_type,
+                since_time=anchor_time,
+            ):
+                self._demote_stock_candidate(
+                    candidate,
+                    cap_score=45.0,
+                    note="A same-side stock trade already consumed this structure, so wait for a brand-new primary liquidity sweep before re-entering.",
+                    rule_ids=["R113", "R114"],
+                )
+
+        if is_trap_setup:
+            if not candidate.event.primary:
+                self._demote_stock_candidate(
+                    candidate,
+                    cap_score=44.0,
+                    note="Trap or reclaim entries now demand a primary liquidity sweep instead of recycling minor retests.",
+                    rule_ids=["R115", "R116"],
+                )
+            if not recent_reclaim:
+                self._demote_stock_candidate(
+                    candidate,
+                    cap_score=46.0,
+                    note="The reclaim is already stale, so stock mode will not keep weak trap ideas armed for long.",
+                    rule_ids=["R117"],
+                )
+            if body_quality < 0.52:
+                self._demote_stock_candidate(
+                    candidate,
+                    cap_score=45.0,
+                    note="The reclaim candle body is too weak for stock-mode execution, so the setup stays sidelined.",
+                    rule_ids=["R118"],
+                )
+            if same_candle_reclaim and not major_level:
+                self._demote_stock_candidate(
+                    candidate,
+                    cap_score=44.0,
+                    note="A same-candle micro reclaim is ignored unless it comes from a major liquidity shelf.",
+                    rule_ids=["R119"],
+                )
+
+        if is_continuation:
+            risk = max(abs(current.close - candidate.invalidation_level), observation.atr * 0.65, 0.01)
+            room = abs(candidate.target_spot_price - current.close)
+            if room < risk * 1.35:
+                self._demote_stock_candidate(
+                    candidate,
+                    cap_score=45.0,
+                    note="Continuation room is too tight relative to the required invalidation risk.",
+                    rule_ids=["R120"],
+                )
+            if observation.day_type not in {"gap-and-go", "trend-day", "trap-day"} and not observation.strong_intent:
+                self._demote_stock_candidate(
+                    candidate,
+                    cap_score=46.0,
+                    note="Continuation setups now demand stronger session context instead of firing inside average stock drift.",
+                    rule_ids=["R121"],
+                )
+            if flat_box and not breakout_override:
+                self._demote_stock_candidate(
+                    candidate,
+                    cap_score=45.0,
+                    note="Continuation is blocked inside a flat overlapping box unless price breaks out with strong body and volume.",
+                    rule_ids=["R122", "R123"],
+                )
+
+        if midday_churn:
+            if is_continuation and not breakout_override:
+                self._demote_stock_candidate(
+                    candidate,
+                    cap_score=45.0,
+                    note="Midday balanced churn now blocks stock continuation unless the breakout is unusually clean and forceful.",
+                    rule_ids=["R124", "R125"],
+                )
+            elif is_trap_setup and not (
+                candidate.event.primary
+                and recent_reclaim
+                and body_quality >= 0.58
+                and (not same_candle_reclaim or major_level)
+            ):
+                self._demote_stock_candidate(
+                    candidate,
+                    cap_score=46.0,
+                    note="Midday stock trading now waits for only the cleanest primary sweep-and-reclaim structures.",
+                    rule_ids=["R126", "R127"],
+                )
+
+        return candidate
+
+    def _pending_setup_max_bars_for_context(self, context: StrategyContext) -> int:
+        if not context.instrument.supports_options:
+            return 3
+        return self.pending_setup_max_bars
+
     def _effective_entry_thresholds(
         self,
         context: StrategyContext,
@@ -1087,6 +1344,13 @@ class HeuristicDecisionEngine:
             if observation.strong_intent:
                 enter_threshold -= 2.0
                 arm_threshold -= 1.0
+        if not context.instrument.supports_options:
+            if context.portfolio_order_count_estimate >= 70:
+                enter_threshold += 10.0
+                arm_threshold += 8.0
+            elif context.portfolio_order_count_estimate >= 45:
+                enter_threshold += 5.0
+                arm_threshold += 4.0
         return max(0.0, enter_threshold), max(0.0, arm_threshold), allow_only_exceptional
 
     def _build_stock_first_pullback_candidate(
@@ -1950,6 +2214,8 @@ class HeuristicDecisionEngine:
         candidates.extend(self.build_stock_continuation_candidates(context, observation))
         companion_candidates = self.build_companion_index_candidates(context, observation)
         candidates.extend(companion_candidates)
+        if not context.instrument.supports_options:
+            candidates = [self._refine_stock_candidate(context, observation, candidate) for candidate in candidates]
         return candidates
 
     def build_companion_index_candidates(self, context: StrategyContext, observation: Observation) -> list[SetupCandidate]:
@@ -2849,7 +3115,8 @@ class HeuristicDecisionEngine:
         if setup.option_type == "PE":
             moving_away_against_setup = current.close > (setup.trigger_price + max(observation.atr * 0.6, 0.5))
 
-        if bars_open > self.pending_setup_max_bars:
+        pending_setup_max_bars = self._pending_setup_max_bars_for_context(context)
+        if bars_open > pending_setup_max_bars:
             return TradeDecision(
                 action=TradeAction.no_trade,
                 confidence=0.72,
@@ -2961,7 +3228,7 @@ class HeuristicDecisionEngine:
             if bullish_trade
             else (trade.entry_spot_price - current_spot) / max(risk, 0.01)
         )
-        trailing_stop_enabled = not context.instrument.supports_options
+        trailing_stop_enabled = (not context.instrument.supports_options) and context.stock_trailing_stop_enabled
         bars_since_entry = sum(1 for candle in context.session_candles if candle.timestamp >= trade.entry_time)
         setup_is_previous_close = trade.setup_type in {"previous_close_reclaim_long", "previous_close_rejection_short"}
         regime_deteriorated = observation.participation_state in {"fair_value_churn", "post_trend_balance"} and (

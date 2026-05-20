@@ -135,6 +135,9 @@ class StockWatchItem(BaseModel):
     active_trade_direction: str | None = None
     active_trade_pnl: float | None = None
     realized_pnl: float = 0.0
+    live_order_message: str | None = None
+    live_order_error: str | None = None
+    live_order_updated_at: datetime | None = None
 
 
 class StrategyContext(BaseModel):
@@ -158,6 +161,7 @@ class StrategyContext(BaseModel):
     pending_setup: "PendingSetup | None" = None
     active_trade: "SimulatedTrade | None" = None
     recent_closed_trades: list["SimulatedTrade"] = Field(default_factory=list)
+    portfolio_order_count_estimate: int = 0
     rulebook_markdown: str
     stock_partial_profit_enabled: bool = True
     stock_trailing_stop_enabled: bool = True
@@ -327,6 +331,9 @@ class ExecutionState(BaseModel):
     order_updates_message: str | None = None
     last_order_update_at: datetime | None = None
     last_order_message: str | None = None
+    last_order_symbol: str | None = None
+    last_order_error: str | None = None
+    last_order_error_at: datetime | None = None
 
 
 class DataSyncState(BaseModel):
