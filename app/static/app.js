@@ -709,10 +709,11 @@ function renderStockWatchlist(state) {
       <p>5m Turnover ${item.last_5m_turnover != null ? `${(item.last_5m_turnover / 10000000).toFixed(2)} Cr` : "-"} | ${item.last_5m_turnover_passed == null ? "waiting" : (item.last_5m_turnover_passed ? "pass" : "below 3 Cr")} | ${formatSignalTime(item.last_5m_turnover_start)}-${formatSignalTime(item.last_5m_turnover_end)}</p>
       <p>Heuristic ${item.decision_action || "NO_DATA"} | Confidence ${item.decision_confidence != null ? `${Math.round(item.decision_confidence * 100)}%` : "-"}</p>
       <p>${item.decision_reason || "No heuristic analysis yet for this stock session."}</p>
-      <p>Trade ${item.has_active_trade ? `${item.active_trade_direction || "-"} | P&L ${money(item.active_trade_pnl)}` : "No active trade"} | Realized ${money(item.realized_pnl)}</p>
+      <p>Trades ${item.trade_count || 0} (${item.closed_trade_count || 0} closed) | Last ${item.last_trade_status || "-"} | Realized ${money(item.realized_pnl)}</p>
+      <p>Trade ${item.has_active_trade ? `${item.active_trade_direction || "-"} | P&L ${money(item.active_trade_pnl)}` : "No active trade"}</p>
       <p>Broker ${item.live_order_error ? `Error: ${item.live_order_error}` : (item.live_order_message || "No live order activity")} | Update ${formatIstDateTime(item.live_order_updated_at)}</p>
       <div class="button-row">
-        <button type="button" class="${item.selected ? "" : "secondary-btn"} stock-select-btn" data-symbol="${item.symbol}">${item.selected ? "Active Stock" : "Open Chart"}</button>
+        <button type="button" class="${item.selected ? "" : "secondary-btn"} stock-select-btn" data-symbol="${item.symbol}">${item.selected ? "Active Stock" : "View Details"}</button>
         <button type="button" class="secondary-btn stock-remove-btn" data-symbol="${item.symbol}">Remove</button>
       </div>
     </div>
@@ -942,7 +943,10 @@ function renderState(state) {
       <p>Broker ${trade.broker_status || "-"} | Entry Order ${trade.broker_order_id || "-"} | Exit Order ${trade.broker_exit_order_id || "-"} | Product ${trade.broker_product_type || "-"}</p>
       <p>Entry Time ${formatIstDateTime(trade.entry_time)} | Exit Time ${formatIstDateTime(trade.exit_time)} | Latest Quote ${formatIstDateTime(trade.current_quote_time)}</p>
       <p>Entry Source ${trade.entry_quote_source || "-"} | Current Source ${trade.current_quote_source || "-"} | Exit Source ${trade.exit_quote_source || "-"}</p>
-      <p>P&amp;L ${money(trade.pnl)} | ${trade.broker_status_message || trade.notes || "No notes"}</p>
+      <p>Entry Spot ${money(trade.entry_spot_price)} | Target Spot ${money(trade.target_spot_price)} | Trade Security ${trade.trade_security_id || trade.option_security_id || "-"}</p>
+      <p>Entry Logic ${trade.entry_notes || trade.notes || "No entry notes"}</p>
+      <p>Exit Logic ${trade.exit_notes || (trade.status === "OPEN" ? "Trade is still open." : trade.notes || "No exit notes")}</p>
+      <p>P&amp;L ${money(trade.pnl)} | ${trade.broker_status_message || "No broker message"}</p>
     </div>
   `);
 
@@ -1128,6 +1132,7 @@ document.getElementById("simulateTodayBtn").addEventListener("click", () => runA
   formData.append("client_id", credentials.client_id);
   formData.append("access_token", credentials.access_token);
   formData.append("decision_duration_minutes", replayForm.elements.decision_duration_minutes.value || "5");
+  formData.append("stock_replay_scope", replayForm.elements.stock_replay_scope?.value || "active");
   await postForm("/api/simulation/today/start", formData);
 }));
 
@@ -1142,6 +1147,7 @@ document.getElementById("historicalReplayForm").addEventListener("submit", (even
     formData.append("replay_date", form.elements.replay_date.value || "");
     formData.append("previous_context_date", form.elements.previous_context_date.value || "");
     formData.append("decision_duration_minutes", form.elements.decision_duration_minutes.value || "5");
+    formData.append("stock_replay_scope", form.elements.stock_replay_scope?.value || "active");
     await postForm("/api/simulation/historical/start", formData);
   });
 });

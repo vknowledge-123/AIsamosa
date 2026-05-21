@@ -138,6 +138,9 @@ class StockWatchItem(BaseModel):
     has_active_trade: bool = False
     active_trade_direction: str | None = None
     active_trade_pnl: float | None = None
+    trade_count: int = 0
+    closed_trade_count: int = 0
+    last_trade_status: str | None = None
     realized_pnl: float = 0.0
     live_order_message: str | None = None
     live_order_error: str | None = None
@@ -273,6 +276,8 @@ class SimulatedTrade(BaseModel):
     partial_exit_count: int = 0
     last_partial_exit_time: datetime | None = None
     pnl: float = 0.0
+    entry_notes: str = ""
+    exit_notes: str | None = None
     notes: str = ""
     broker_product_type: str | None = None
     broker_order_id: str | None = None

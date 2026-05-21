@@ -801,7 +801,15 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertEqual(final_state.operation_job.status, "success")
 
     def test_background_historical_replay_route_starts_job_and_rejects_overlap(self) -> None:
-        def fake_replay(*, client_id=None, access_token=None, replay_date=None, previous_context_date=None, replay_decision_duration_minutes=1):
+        def fake_replay(
+            *,
+            client_id=None,
+            access_token=None,
+            replay_date=None,
+            previous_context_date=None,
+            replay_decision_duration_minutes=1,
+            stock_replay_scope="all",
+        ):
             time.sleep(0.15)
             with self.test_engine.lock:
                 self.test_engine.data_sync = self.test_engine.data_sync.model_copy(
@@ -3551,6 +3559,70 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertEqual(by_symbol["TCS"]["intraday_candles"], 2)
         self.assertEqual(state["instrument"]["symbol"], "TCS")
         self.assertTrue(self.test_engine.companion_candles)
+
+    def test_stock_mode_simulate_today_can_replay_only_active_stock(self) -> None:
+        with patch.object(
+            self.test_engine.stock_universe,
+            "preview",
+            return_value=StockUniverseEntry(symbol="TCS", label="TATA CONSULTANCY SERV LT", security_id="11536"),
+        ):
+            self.test_engine.add_stock_to_watchlist("TCS")
+        self.client.post("/api/stocks/watchlist/select", data={"symbol": "SBIN"})
+
+        bundles = {
+            "13": DhanSessionBundle(
+                previous_day_candles=[
+                    Candle(timestamp="2026-05-13T09:15:00", open=22400, high=22440, low=22380, close=22420, volume=1000)
+                ],
+                intraday_candles=[
+                    Candle(timestamp="2026-05-14T09:15:00", open=22425, high=22455, low=22410, close=22448, volume=1000),
+                ],
+                live_open_candle=None,
+                previous_day_source="historical",
+            ),
+            "3045": DhanSessionBundle(
+                previous_day_candles=[
+                    Candle(timestamp="2026-05-13T09:15:00", open=790, high=792, low=788, close=791, volume=1000)
+                ],
+                intraday_candles=[
+                    Candle(timestamp="2026-05-14T09:15:00", open=792, high=794, low=791, close=793, volume=1000),
+                    Candle(timestamp="2026-05-14T09:16:00", open=793, high=795, low=792, close=794, volume=1000),
+                ],
+                live_open_candle=None,
+                previous_day_source="historical",
+            ),
+            "11536": DhanSessionBundle(
+                previous_day_candles=[
+                    Candle(timestamp="2026-05-13T09:15:00", open=3500, high=3510, low=3490, close=3505, volume=1000)
+                ],
+                intraday_candles=[
+                    Candle(timestamp="2026-05-14T09:15:00", open=3510, high=3520, low=3508, close=3518, volume=1000),
+                ],
+                live_open_candle=None,
+                previous_day_source="historical",
+            ),
+        }
+
+        requested_security_ids: list[str] = []
+
+        def fake_fetch_market_context(*, security_id, **kwargs):
+            requested_security_ids.append(str(security_id))
+            return bundles[str(security_id)]
+
+        with patch.object(self.test_engine.chart_service, "fetch_market_context", side_effect=fake_fetch_market_context):
+            response = self.client.post(
+                "/api/simulation/today",
+                data={"client_id": "cid", "access_token": "tok", "stock_replay_scope": "active"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        state = response.json()["state"]
+        by_symbol = {item["symbol"]: item for item in state["stock_watchlist"]}
+        self.assertEqual(by_symbol["SBIN"]["intraday_candles"], 2)
+        self.assertEqual(by_symbol["TCS"]["intraday_candles"], 0)
+        self.assertEqual(state["instrument"]["symbol"], "SBIN")
+        self.assertIn("3045", requested_security_ids)
+        self.assertNotIn("11536", requested_security_ids)
 
     def test_simulate_today_replays_intraday_candles_from_session_start(self) -> None:
         bundle = DhanSessionBundle(

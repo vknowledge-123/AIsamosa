@@ -164,6 +164,7 @@ async def simulate_today(
     client_id: str = Form(default=""),
     access_token: str = Form(default=""),
     decision_duration_minutes: int = Form(default=1),
+    stock_replay_scope: str = Form(default="all"),
 ):
     try:
         state = await run_in_threadpool(
@@ -171,6 +172,7 @@ async def simulate_today(
             client_id=client_id,
             access_token=access_token,
             replay_decision_duration_minutes=decision_duration_minutes,
+            stock_replay_scope=stock_replay_scope,
         )
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -188,13 +190,15 @@ async def start_simulate_today(
     client_id: str = Form(default=""),
     access_token: str = Form(default=""),
     decision_duration_minutes: int = Form(default=1),
+    stock_replay_scope: str = Form(default="all"),
 ):
     try:
         state = await run_in_threadpool(
             engine.start_simulate_today_session_async,
-            client_id,
-            access_token,
-            decision_duration_minutes,
+            client_id=client_id,
+            access_token=access_token,
+            replay_decision_duration_minutes=decision_duration_minutes,
+            stock_replay_scope=stock_replay_scope,
         )
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -214,6 +218,7 @@ async def simulate_historical(
     replay_date: str = Form(...),
     previous_context_date: str = Form(...),
     decision_duration_minutes: int = Form(default=1),
+    stock_replay_scope: str = Form(default="all"),
 ):
     try:
         state = await run_in_threadpool(
@@ -223,6 +228,7 @@ async def simulate_historical(
             replay_date=replay_date,
             previous_context_date=previous_context_date,
             replay_decision_duration_minutes=decision_duration_minutes,
+            stock_replay_scope=stock_replay_scope,
         )
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -242,6 +248,7 @@ async def start_simulate_historical(
     replay_date: str = Form(...),
     previous_context_date: str = Form(...),
     decision_duration_minutes: int = Form(default=1),
+    stock_replay_scope: str = Form(default="all"),
 ):
     try:
         state = await run_in_threadpool(
@@ -251,6 +258,7 @@ async def start_simulate_historical(
             replay_date=replay_date,
             previous_context_date=previous_context_date,
             replay_decision_duration_minutes=decision_duration_minutes,
+            stock_replay_scope=stock_replay_scope,
         )
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

@@ -159,6 +159,11 @@
           <button id="runFiveBtn">Run 5 Candles</button>
         </div>
         <form id="historicalReplayForm" class="stack-form">
+          <label>Stock Replay Scope</label>
+          <select name="stock_replay_scope">
+            <option value="active" selected>Active Stock Only</option>
+            <option value="all">Select All Watchlist Stocks</option>
+          </select>
           <label>Replay Decision Duration</label>
           <select name="decision_duration_minutes">
             <option value="1">1 Minute</option>

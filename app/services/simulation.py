@@ -1245,6 +1245,11 @@ class SimulationEngine:
             session = selected_runtime_view if symbol == self.selected_stock_symbol and selected_runtime_view is not None else self.stock_sessions.get(symbol)
             active_trade_pnl = self._trade_pnl_for_session_locked(session) if session is not None else None
             turnover_snapshot = self._stock_turnover_snapshot_for_session_locked(session)
+            trade_count = len(session.trade_history) if session is not None else 0
+            closed_trade_count = (
+                sum(1 for trade in session.trade_history if trade.status == "CLOSED") if session is not None else 0
+            )
+            last_trade_status = session.trade_history[-1].status if session is not None and session.trade_history else None
             items.append(
                 StockWatchItem(
                     symbol=symbol,
@@ -1269,6 +1274,9 @@ class SimulationEngine:
                     has_active_trade=session.active_trade is not None if session else False,
                     active_trade_direction=session.active_trade.direction if session and session.active_trade is not None else None,
                     active_trade_pnl=active_trade_pnl,
+                    trade_count=trade_count,
+                    closed_trade_count=closed_trade_count,
+                    last_trade_status=last_trade_status,
                     realized_pnl=session.realized_pnl if session else 0.0,
                     live_order_message=feedback.get("message"),
                     live_order_error=feedback.get("error"),
@@ -1333,6 +1341,30 @@ class SimulationEngine:
     def _format_crore(self, value: float) -> str:
         return f"{value / 10000000:.2f} crore"
 
+    def _normalize_stock_replay_scope(self, stock_replay_scope: str | None) -> str:
+        scope = (stock_replay_scope or "all").strip().lower().replace("-", "_")
+        if scope in {"active", "selected", "current", "single"}:
+            return "active"
+        if scope in {"all", "watchlist", "all_watchlist", "select_all"}:
+            return "all"
+        raise ValueError("Stock replay scope must be active or all.")
+
+    def _stock_replay_symbols_for_scope_locked(self, stock_replay_scope: str | None) -> tuple[list[str], str | None, str]:
+        if not self.stock_watchlist:
+            raise ValueError("No stocks are in the watchlist. Add a stock before starting stock replay.")
+        scope = self._normalize_stock_replay_scope(stock_replay_scope)
+        if scope == "all":
+            symbols = list(self.stock_watchlist.keys())
+            selected = self.selected_stock_symbol if self.selected_stock_symbol in self.stock_watchlist else symbols[0]
+            return symbols, selected, scope
+        selected = self.selected_stock_symbol
+        if not selected or selected not in self.stock_watchlist:
+            raise ValueError("Select a stock from the watchlist before starting active-stock replay.")
+        return [selected], selected, scope
+
+    def _stock_replay_scope_label(self, scope: str) -> str:
+        return "all watchlist stocks" if scope == "all" else "the active stock"
+
     def _apply_stock_turnover_filter_locked(
         self,
         current_candle: Candle,
@@ -1350,7 +1382,15 @@ class SimulationEngine:
         snapshot = self._stock_turnover_snapshot_for_current_context_locked(current_candle)
         side = "long" if decision.action == TradeAction.enter_call else "short"
         if snapshot is not None and snapshot.passed:
-            return decision
+            passed = decision.model_copy(deep=True)
+            turnover_note = (
+                f"5-minute turnover gate passed: {snapshot.window_start.strftime('%H:%M')}-"
+                f"{snapshot.window_end.strftime('%H:%M')} turnover was {self._format_crore(snapshot.turnover)} "
+                f"(close {snapshot.close:.2f} x volume {snapshot.volume:.0f}), above required "
+                f"{self._format_crore(threshold)}."
+            )
+            passed.reason = f"{passed.reason} {turnover_note}".strip()
+            return passed
 
         blocked = decision.model_copy(deep=True)
         blocked.action = TradeAction.no_trade
@@ -2017,6 +2057,7 @@ class SimulationEngine:
         client_id: str | None = None,
         access_token: str | None = None,
         replay_decision_duration_minutes: int = 1,
+        stock_replay_scope: str | None = "all",
     ) -> DashboardState:
         client, token = self._available_dhan_credentials(client_id, access_token)
         if not client or not token:
@@ -2025,19 +2066,23 @@ class SimulationEngine:
         started_at = datetime.now()
         job_id = uuid.uuid4().hex
         with self.lock:
+            scope_label = self.instrument_spec.label
+            if self.instrument_mode == InstrumentMode.stock:
+                _, _, normalized_scope = self._stock_replay_symbols_for_scope_locked(stock_replay_scope)
+                scope_label = self._stock_replay_scope_label(normalized_scope)
             self._ensure_no_running_operation_locked()
             self._operation_job_token = job_id
             self._set_operation_job_locked(
                 job_id=job_id,
                 job_type="simulate-today",
                 status="running",
-                message=f"Replaying today's {self.instrument_spec.label} session in the background.",
+                message=f"Replaying today's session for {scope_label} in the background.",
                 started_at=started_at,
             )
             self.data_sync = DataSyncState(
                 status="syncing",
                 source="dhan-rest",
-                message=f"Background today replay started for {self.instrument_spec.label}.",
+                message=f"Background today replay started for {scope_label}.",
                 last_synced_at=self.data_sync.last_synced_at,
                 replay_session_day=self.data_sync.replay_session_day,
                 previous_context_day=self.data_sync.previous_context_day,
@@ -2056,8 +2101,9 @@ class SimulationEngine:
                     client_id=client,
                     access_token=token,
                     replay_decision_duration_minutes=replay_decision_duration_minutes,
+                    stock_replay_scope=stock_replay_scope,
                 ),
-                "success_message": f"Background today replay completed for {self.instrument_spec.label}.",
+                "success_message": f"Background today replay completed for {scope_label}.",
                 "error_prefix": "Background today replay failed",
             },
             name="simulate-today-job",
@@ -2074,6 +2120,7 @@ class SimulationEngine:
         replay_date: str,
         previous_context_date: str,
         replay_decision_duration_minutes: int = 1,
+        stock_replay_scope: str | None = "all",
     ) -> DashboardState:
         client, token = self._available_dhan_credentials(client_id, access_token)
         if not client or not token:
@@ -2086,6 +2133,10 @@ class SimulationEngine:
         started_at = datetime.now()
         job_id = uuid.uuid4().hex
         with self.lock:
+            scope_label = self.instrument_spec.label
+            if self.instrument_mode == InstrumentMode.stock:
+                _, _, normalized_scope = self._stock_replay_symbols_for_scope_locked(stock_replay_scope)
+                scope_label = self._stock_replay_scope_label(normalized_scope)
             self._ensure_no_running_operation_locked()
             self._operation_job_token = job_id
             self._set_operation_job_locked(
@@ -2093,7 +2144,7 @@ class SimulationEngine:
                 job_type="simulate-historical",
                 status="running",
                 message=(
-                    f"Replaying {self.instrument_spec.label} for {replay_session_day.isoformat()} "
+                    f"Replaying {scope_label} for {replay_session_day.isoformat()} "
                     f"with previous context {previous_day.isoformat()} in the background."
                 ),
                 started_at=started_at,
@@ -2102,7 +2153,7 @@ class SimulationEngine:
                 status="syncing",
                 source="dhan-rest",
                 message=(
-                    f"Background historical replay started for {self.instrument_spec.label}: "
+                    f"Background historical replay started for {scope_label}: "
                     f"{replay_session_day.isoformat()} with previous context {previous_day.isoformat()}."
                 ),
                 last_synced_at=self.data_sync.last_synced_at,
@@ -2125,9 +2176,10 @@ class SimulationEngine:
                     replay_date=replay_date,
                     previous_context_date=previous_context_date,
                     replay_decision_duration_minutes=replay_decision_duration_minutes,
+                    stock_replay_scope=stock_replay_scope,
                 ),
                 "success_message": (
-                    f"Background historical replay completed for {self.instrument_spec.label}: "
+                    f"Background historical replay completed for {scope_label}: "
                     f"{replay_session_day.isoformat()}."
                 ),
                 "error_prefix": "Background historical replay failed",
@@ -2248,6 +2300,7 @@ class SimulationEngine:
         client_id: str | None = None,
         access_token: str | None = None,
         replay_decision_duration_minutes: int = 1,
+        stock_replay_scope: str | None = "all",
     ) -> DashboardState:
         client, token = self._available_dhan_credentials(client_id, access_token)
         if not client or not token:
@@ -2258,8 +2311,8 @@ class SimulationEngine:
         )
 
         if self.instrument_mode == InstrumentMode.stock:
-            watched_symbols = list(self.stock_watchlist.keys())
-            selected = self.selected_stock_symbol or (watched_symbols[0] if watched_symbols else None)
+            with self.lock:
+                watched_symbols, selected, normalized_scope = self._stock_replay_symbols_for_scope_locked(stock_replay_scope)
             bundles = self._fetch_stock_market_context_bundles(
                 watched_symbols,
                 client_id=client,
@@ -2269,11 +2322,13 @@ class SimulationEngine:
                 client_id=client,
                 access_token=token,
             )
+            replayed_symbols: list[str] = []
             for symbol in watched_symbols:
                 spec, bundle = bundles[symbol]
                 intraday_count = len(bundle.intraday_candles)
                 if intraday_count == 0:
                     continue
+                replayed_symbols.append(symbol)
                 self._apply_bundle_to_stock_session(
                     symbol,
                     bundle,
@@ -2293,9 +2348,12 @@ class SimulationEngine:
                         0,
                         (
                             f"Simulated today session for {spec.label}: "
-                            f"{intraday_count} intraday candles replayed with quantity {self.settings.simulation_lot_size}."
+                            f"{intraday_count} intraday candles replayed with quantity {self.settings.simulation_lot_size} "
+                            f"under {self._stock_replay_scope_label(normalized_scope)} scope."
                         ),
                     )
+            if not replayed_symbols:
+                raise ValueError(f"No closed intraday candles were returned for {self._stock_replay_scope_label(normalized_scope)}.")
             if selected:
                 with self.lock:
                     if companion_bundle is not None:
@@ -2377,6 +2435,7 @@ class SimulationEngine:
         replay_date: str,
         previous_context_date: str,
         replay_decision_duration_minutes: int = 1,
+        stock_replay_scope: str | None = "all",
     ) -> DashboardState:
         client, token = self._available_dhan_credentials(client_id, access_token)
         if not client or not token:
@@ -2391,8 +2450,8 @@ class SimulationEngine:
         )
 
         if self.instrument_mode == InstrumentMode.stock:
-            watched_symbols = list(self.stock_watchlist.keys())
-            selected = self.selected_stock_symbol or (watched_symbols[0] if watched_symbols else None)
+            with self.lock:
+                watched_symbols, selected, normalized_scope = self._stock_replay_symbols_for_scope_locked(stock_replay_scope)
             bundles = self._fetch_stock_historical_bundles(
                 watched_symbols,
                 client_id=client,
@@ -2406,10 +2465,12 @@ class SimulationEngine:
                 replay_session_day=replay_session_day,
                 previous_day=previous_day,
             )
+            replayed_symbols: list[str] = []
             for symbol in watched_symbols:
                 spec, bundle = bundles[symbol]
                 if not bundle.intraday_candles:
                     continue
+                replayed_symbols.append(symbol)
                 self._apply_bundle_to_stock_session(
                     symbol,
                     bundle,
@@ -2429,9 +2490,15 @@ class SimulationEngine:
                         0,
                         (
                             f"Simulated historical session for {spec.label}: replayed {replay_session_day.isoformat()} "
-                            f"with previous-day context from {previous_day.isoformat()}."
+                            f"with previous-day context from {previous_day.isoformat()} "
+                            f"under {self._stock_replay_scope_label(normalized_scope)} scope."
                         ),
                     )
+            if not replayed_symbols:
+                raise ValueError(
+                    f"No candles were returned for {self._stock_replay_scope_label(normalized_scope)} "
+                    f"on the selected historical replay day."
+                )
             if selected:
                 with self.lock:
                     if companion_bundle is not None:
@@ -4000,6 +4067,7 @@ class SimulationEngine:
             setup_type=decision.setup_type,
             setup_score=decision.setup_score,
             market_state=decision.market_state,
+            entry_notes=decision.reason,
             notes=decision.reason,
             broker_product_type="INTRADAY",
         )
@@ -4262,6 +4330,7 @@ class SimulationEngine:
         self.active_trade.open_quantity = 0
         self.active_trade.pnl = round(self.active_trade.booked_pnl, 2)
         self.active_trade.status = "CLOSED"
+        self.active_trade.exit_notes = note
         self.active_trade.notes = note
         self.realized_pnl = round(self.realized_pnl + self.active_trade.pnl, 2)
         self.balance = round(self.settings.simulation_starting_balance + self.realized_pnl, 2)
@@ -4290,6 +4359,7 @@ class SimulationEngine:
         self.active_trade.current_option_price = exit_price
         self.active_trade.current_quote_time = candle.timestamp
         self.active_trade.pnl = self.calculate_trade_pnl(self.active_trade, exit_price)
+        self.active_trade.exit_notes = note
         self.active_trade.notes = note
         self._mark_state_dirty_locked()
 
