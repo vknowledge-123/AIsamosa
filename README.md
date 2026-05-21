@@ -70,6 +70,7 @@ OPERATING_MODE=full-ai
 DHAN_CLIENT_ID=your_client_id
 DHAN_ACCESS_TOKEN=your_access_token
 DHAN_LIVE_SECURITY_ID=13
+STOCK_MIN_5M_TURNOVER=30000000
 ```
 
 3. Start the app:
@@ -86,6 +87,7 @@ uvicorn app.main:app --reload
 
 - Dhan order placement is intentionally not enabled in this build.
 - The live feed aggregates incoming ticks into 1-minute candles before strategy evaluation.
+- In heuristic stock mode, fresh long/short entries require the last completed 5-minute candle turnover to be at least `3 crore` by default.
 - Dashboard-saved Dhan, OpenAI, and DeepSeek secrets are stored locally in plain text in the project folder.
 - For production deployment, run a single process only. This app keeps live feed and session state in memory, so do not use multiple workers.
 

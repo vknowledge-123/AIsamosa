@@ -706,6 +706,7 @@ function renderStockWatchlist(state) {
       <p>${item.label || item.symbol} | Security ${item.security_id}</p>
       <p>LTP ${money(item.last_ltp)} | Ticks ${item.ticks_received || 0} | Last Tick ${formatSignalTime(item.last_tick_at)}</p>
       <p>History ${item.history_status || "idle"} | ${item.previous_day_candles || 0} previous day | ${item.intraday_candles || 0} intraday</p>
+      <p>5m Turnover ${item.last_5m_turnover != null ? `${(item.last_5m_turnover / 10000000).toFixed(2)} Cr` : "-"} | ${item.last_5m_turnover_passed == null ? "waiting" : (item.last_5m_turnover_passed ? "pass" : "below 3 Cr")} | ${formatSignalTime(item.last_5m_turnover_start)}-${formatSignalTime(item.last_5m_turnover_end)}</p>
       <p>Heuristic ${item.decision_action || "NO_DATA"} | Confidence ${item.decision_confidence != null ? `${Math.round(item.decision_confidence * 100)}%` : "-"}</p>
       <p>${item.decision_reason || "No heuristic analysis yet for this stock session."}</p>
       <p>Trade ${item.has_active_trade ? `${item.active_trade_direction || "-"} | P&L ${money(item.active_trade_pnl)}` : "No active trade"} | Realized ${money(item.realized_pnl)}</p>

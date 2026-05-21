@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     simulation_max_open_trades: int = 1
     session_candle_limit: int = 90
     stock_sync_max_workers: int = 4
+    stock_min_5m_turnover: float = 30000000.0
 
     model_config = SettingsConfigDict(
         env_file=".env",

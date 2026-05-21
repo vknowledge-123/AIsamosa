@@ -38,7 +38,7 @@ from app.services.dhan_adapter import DhanMarketFeedAdapter, resolve_quote_subsc
 from app.services.dhan_execution import DhanExecutionError, DhanExecutionService
 from app.services.dhan_history import DhanChartService
 from app.services.dhan_order_updates import DhanOrderUpdateAdapter
-from app.services.instruments import BANKNIFTY_INSTRUMENT, InstrumentSpec, build_stock_instrument, get_instrument_spec
+from app.services.instruments import BANKNIFTY_INSTRUMENT, NIFTY_INSTRUMENT, InstrumentSpec, build_stock_instrument, get_instrument_spec
 from app.services.dhan_options import DhanOptionQuoteError, DhanOptionQuoteService, OptionContract, OptionQuote
 from app.services.heuristic_engine import HeuristicDecisionEngine
 from app.services.market_data import (
@@ -69,6 +69,16 @@ class StockRuntimeSession:
     balance: float = 0.0
     data_sync: DataSyncState = field(default_factory=DataSyncState)
     heuristic_engine: HeuristicDecisionEngine = field(default_factory=HeuristicDecisionEngine)
+
+
+@dataclass(frozen=True)
+class StockTurnoverSnapshot:
+    window_start: datetime
+    window_end: datetime
+    close: float
+    volume: float
+    turnover: float
+    passed: bool
 
 
 class SimulationEngine:
@@ -286,11 +296,24 @@ class SimulationEngine:
     def _stock_trade_capital(self) -> float:
         return self.credential_store.get_stock_trade_capital(self.settings)
 
+    def _stock_min_5m_turnover(self) -> float:
+        return max(float(getattr(self.settings, "stock_min_5m_turnover", 30000000.0)), 0.0)
+
     def _nifty_expiry_preference(self) -> str:
         return self.credential_store.get_nifty_expiry_preference(self.settings)
 
     def _use_banknifty_companion(self) -> bool:
         return self.instrument_mode == InstrumentMode.nifty and self.instrument_spec.symbol == "NIFTY"
+
+    def _use_stock_nifty_companion(self) -> bool:
+        return self.instrument_mode == InstrumentMode.stock
+
+    def _active_companion_instrument_spec(self) -> InstrumentSpec | None:
+        if self._use_banknifty_companion():
+            return self.companion_instrument_spec
+        if self._use_stock_nifty_companion():
+            return NIFTY_INSTRUMENT
+        return None
 
     def _clear_companion_context_locked(self) -> None:
         self.companion_candles = []
@@ -307,7 +330,7 @@ class SimulationEngine:
         replay_decision_duration_minutes: int = 1,
         source: str = "manual",
     ) -> tuple[list[Candle], list[Candle], list[Candle], Candle | None, PreviousDayLevels]:
-        if not self._use_banknifty_companion() or not self.companion_candles:
+        if self._active_companion_instrument_spec() is None or not self.companion_candles:
             return [], [], [], None, PreviousDayLevels()
         companion_index = len(self.companion_candles) - 1 if evaluation_index is None else min(evaluation_index, len(self.companion_candles) - 1)
         if companion_index < 0:
@@ -362,6 +385,24 @@ class SimulationEngine:
             banknifty_future = executor.submit(fetch, self.companion_instrument_spec)
             return nifty_future.result(), banknifty_future.result()
 
+    def _fetch_companion_market_context_bundle(
+        self,
+        *,
+        client_id: str,
+        access_token: str,
+    ):
+        companion_spec = self._active_companion_instrument_spec()
+        if companion_spec is None:
+            return None
+        return self.chart_service.fetch_market_context(
+            client_id=client_id,
+            access_token=access_token,
+            security_id=companion_spec.security_id,
+            exchange_segment=companion_spec.exchange_segment,
+            instrument_type=companion_spec.instrument_type,
+            prefer_last_closed_session_before_open=True,
+        )
+
     def _fetch_nifty_and_banknifty_historical_bundles(
         self,
         *,
@@ -385,6 +426,27 @@ class SimulationEngine:
             nifty_future = executor.submit(fetch, self.instrument_spec)
             banknifty_future = executor.submit(fetch, self.companion_instrument_spec)
             return nifty_future.result(), banknifty_future.result()
+
+    def _fetch_companion_historical_bundle(
+        self,
+        *,
+        client_id: str,
+        access_token: str,
+        replay_session_day: date,
+        previous_day: date,
+    ):
+        companion_spec = self._active_companion_instrument_spec()
+        if companion_spec is None:
+            return None
+        return self.chart_service.fetch_market_context_for_days(
+            client_id=client_id,
+            access_token=access_token,
+            session_day=replay_session_day,
+            previous_context_day=previous_day,
+            security_id=companion_spec.security_id,
+            exchange_segment=companion_spec.exchange_segment,
+            instrument_type=companion_spec.instrument_type,
+        )
 
     def _remember_dhan_credentials(self, client_id: str, access_token: str) -> None:
         self._runtime_dhan_client_id = (client_id or "").strip()
@@ -1182,6 +1244,7 @@ class SimulationEngine:
             feedback = self._stock_execution_feedback.get(symbol, {})
             session = selected_runtime_view if symbol == self.selected_stock_symbol and selected_runtime_view is not None else self.stock_sessions.get(symbol)
             active_trade_pnl = self._trade_pnl_for_session_locked(session) if session is not None else None
+            turnover_snapshot = self._stock_turnover_snapshot_for_session_locked(session)
             items.append(
                 StockWatchItem(
                     symbol=symbol,
@@ -1196,6 +1259,10 @@ class SimulationEngine:
                     previous_day_candles=meta.get("previous_day_candles", 0),
                     intraday_candles=meta.get("intraday_candles", 0),
                     total_loaded=meta.get("total_loaded", 0),
+                    last_5m_turnover=turnover_snapshot.turnover if turnover_snapshot else None,
+                    last_5m_turnover_passed=turnover_snapshot.passed if turnover_snapshot else None,
+                    last_5m_turnover_start=turnover_snapshot.window_start if turnover_snapshot else None,
+                    last_5m_turnover_end=turnover_snapshot.window_end if turnover_snapshot else None,
                     decision_action=session.decision.action.value if session and session.decision is not None else None,
                     decision_confidence=session.decision.confidence if session and session.decision is not None else None,
                     decision_reason=session.decision.reason if session and session.decision is not None else None,
@@ -1210,6 +1277,108 @@ class SimulationEngine:
             )
         items.sort(key=lambda item: (not item.selected, item.symbol))
         return items
+
+    def _last_completed_5m_window(self, reference_time: datetime) -> tuple[datetime, datetime]:
+        minute_floor = reference_time.replace(second=0, microsecond=0)
+        completed_end_minute = (minute_floor.minute // 5) * 5
+        window_end = minute_floor.replace(minute=completed_end_minute)
+        window_start = window_end - timedelta(minutes=5)
+        return window_start, window_end
+
+    def _stock_turnover_snapshot_from_candles(
+        self,
+        candles: list[Candle],
+        reference_time: datetime,
+    ) -> StockTurnoverSnapshot | None:
+        window_start, window_end = self._last_completed_5m_window(reference_time)
+        window_candles = [
+            candle
+            for candle in candles
+            if candle.timestamp.date() == reference_time.date()
+            and window_start <= candle.timestamp < window_end
+        ]
+        if not window_candles:
+            return None
+        close = window_candles[-1].close
+        volume = sum(max(candle.volume, 0.0) for candle in window_candles)
+        turnover = round(close * volume, 2)
+        return StockTurnoverSnapshot(
+            window_start=window_start,
+            window_end=window_end,
+            close=close,
+            volume=volume,
+            turnover=turnover,
+            passed=turnover >= self._stock_min_5m_turnover(),
+        )
+
+    def _stock_turnover_snapshot_for_session_locked(
+        self,
+        session: StockRuntimeSession | None,
+    ) -> StockTurnoverSnapshot | None:
+        if session is None:
+            return None
+        reference_candle = session.live_current_candle
+        if reference_candle is None and 0 <= session.current_index < len(session.candles):
+            reference_candle = session.candles[session.current_index]
+        if reference_candle is None:
+            return None
+        return self._stock_turnover_snapshot_from_candles(session.candles, reference_candle.timestamp)
+
+    def _stock_turnover_snapshot_for_current_context_locked(
+        self,
+        current_candle: Candle,
+    ) -> StockTurnoverSnapshot | None:
+        return self._stock_turnover_snapshot_from_candles(self.candles, current_candle.timestamp)
+
+    def _format_crore(self, value: float) -> str:
+        return f"{value / 10000000:.2f} crore"
+
+    def _apply_stock_turnover_filter_locked(
+        self,
+        current_candle: Candle,
+        decision: TradeDecision,
+    ) -> TradeDecision:
+        if (
+            self.operating_mode != OperatingMode.heuristic
+            or self.instrument_mode != InstrumentMode.stock
+            or self.instrument_spec.supports_options
+            or decision.action not in {TradeAction.enter_call, TradeAction.enter_put}
+        ):
+            return decision
+
+        threshold = self._stock_min_5m_turnover()
+        snapshot = self._stock_turnover_snapshot_for_current_context_locked(current_candle)
+        side = "long" if decision.action == TradeAction.enter_call else "short"
+        if snapshot is not None and snapshot.passed:
+            return decision
+
+        blocked = decision.model_copy(deep=True)
+        blocked.action = TradeAction.no_trade
+        blocked.confidence = min(blocked.confidence, 0.49)
+        blocked.decision_source = f"{decision.decision_source}-turnover-filter"
+        if decision.decision_source == "pending-setup-trigger":
+            blocked.pending_setup_action = "INVALIDATE"
+            blocked.pending_setup_notes = "Pending setup trigger failed the stock 5-minute turnover gate."
+        else:
+            blocked.pending_setup_action = "NONE"
+
+        if snapshot is None:
+            window_start, window_end = self._last_completed_5m_window(current_candle.timestamp)
+            blocked.reason = (
+                f"Stock turnover gate blocked {side} entry because no completed 5-minute candle was available "
+                f"for {window_start.strftime('%H:%M')}-{window_end.strftime('%H:%M')}. "
+                f"Required turnover is at least {self._format_crore(threshold)}."
+            )
+            return blocked
+
+        blocked.reason = (
+            f"Stock turnover gate blocked {side} entry: last completed 5-minute candle "
+            f"{snapshot.window_start.strftime('%H:%M')}-{snapshot.window_end.strftime('%H:%M')} "
+            f"turnover was {self._format_crore(snapshot.turnover)} "
+            f"(close {snapshot.close:.2f} x volume {snapshot.volume:.0f}), below required "
+            f"{self._format_crore(threshold)}."
+        )
+        return blocked
 
     def _live_feed_adapter_running_locked(self) -> bool:
         if self.live_feed_adapter is None:
@@ -1508,6 +1677,11 @@ class SimulationEngine:
                     resolve_quote_subscription(spec.security_id, spec.exchange_segment)
                     for spec in resolved_specs
                 ]
+                companion_spec = self._active_companion_instrument_spec()
+                if companion_spec is not None and companion_spec.security_id:
+                    instruments.append(
+                        resolve_quote_subscription(companion_spec.security_id, companion_spec.exchange_segment)
+                    )
                 if not instruments:
                     raise ValueError("No stock in the watchlist has a resolved Dhan security id yet. Search once or wait a moment, then retry.")
             else:
@@ -1975,6 +2149,10 @@ class SimulationEngine:
                 client_id=client,
                 access_token=token,
             )
+            companion_bundle = self._fetch_companion_market_context_bundle(
+                client_id=client,
+                access_token=token,
+            )
             for symbol in watched_symbols:
                 spec, bundle = bundles[symbol]
                 self._apply_bundle_to_stock_session(symbol, bundle, replay_from_session_start=False)
@@ -1999,6 +2177,8 @@ class SimulationEngine:
                     self._mark_state_dirty_locked()
             if selected:
                 with self.lock:
+                    if companion_bundle is not None:
+                        self._load_companion_bundle_locked(companion_bundle)
                     self.selected_stock_symbol = selected
                     self._load_stock_session_locked(selected)
                     self._mark_state_dirty_locked()
@@ -2082,6 +2262,10 @@ class SimulationEngine:
                 client_id=client,
                 access_token=token,
             )
+            companion_bundle = self._fetch_companion_market_context_bundle(
+                client_id=client,
+                access_token=token,
+            )
             for symbol in watched_symbols:
                 spec, bundle = bundles[symbol]
                 intraday_count = len(bundle.intraday_candles)
@@ -2111,6 +2295,8 @@ class SimulationEngine:
                     )
             if selected:
                 with self.lock:
+                    if companion_bundle is not None:
+                        self._load_companion_bundle_locked(companion_bundle, replay_from_session_start=True)
                     self.selected_stock_symbol = selected
                     self._load_stock_session_locked(selected)
                     self._mark_state_dirty_locked()
@@ -2211,6 +2397,12 @@ class SimulationEngine:
                 replay_session_day=replay_session_day,
                 previous_day=previous_day,
             )
+            companion_bundle = self._fetch_companion_historical_bundle(
+                client_id=client,
+                access_token=token,
+                replay_session_day=replay_session_day,
+                previous_day=previous_day,
+            )
             for symbol in watched_symbols:
                 spec, bundle = bundles[symbol]
                 if not bundle.intraday_candles:
@@ -2239,6 +2431,8 @@ class SimulationEngine:
                     )
             if selected:
                 with self.lock:
+                    if companion_bundle is not None:
+                        self._load_companion_bundle_locked(companion_bundle, replay_from_session_start=True)
                     self.selected_stock_symbol = selected
                     self._load_stock_session_locked(selected)
                     self._mark_state_dirty_locked()
@@ -2739,6 +2933,11 @@ class SimulationEngine:
                 return
             if self.instrument_mode == InstrumentMode.stock:
                 matched_symbol = self._stock_symbol_by_security_id.get(security_id)
+                companion_spec = self._active_companion_instrument_spec()
+                if companion_spec is not None and security_id == companion_spec.security_id:
+                    self._update_companion_live_candle_locked(tick_time, ltp, self._as_float(packet.get("volume")) or 0.0)
+                    self._mark_state_dirty_locked()
+                    return
                 if matched_symbol is not None:
                     meta = self.stock_watch_meta.setdefault(matched_symbol, {})
                     meta["last_ltp"] = ltp
@@ -2934,9 +3133,12 @@ class SimulationEngine:
                 if not self._stock_pre_arm_paper_execution_disabled(source):
                     trigger_decision = self.evaluate_pending_setup_trigger(snapshot.current_candle)
                 if trigger_decision is not None:
+                    trigger_decision = self._apply_stock_turnover_filter_locked(snapshot.current_candle, trigger_decision)
                     self.decision = trigger_decision
                     self._record_signal_events_locked(snapshot.signal_events)
-                    self.apply_trade_logic(snapshot.current_candle, trigger_decision, source=source)
+                    self.apply_pending_setup_decision(snapshot.current_candle, trigger_decision)
+                    if trigger_decision.action in {TradeAction.enter_call, TradeAction.enter_put}:
+                        self.apply_trade_logic(snapshot.current_candle, trigger_decision, source=source)
                     self._mark_state_dirty_locked()
                     return
             heuristic_decision = self.heuristic_decision(snapshot)
@@ -2946,6 +3148,7 @@ class SimulationEngine:
                 if evaluation_index >= len(self.candles):
                     return
                 self.current_index = evaluation_index
+                decision = self._apply_stock_turnover_filter_locked(snapshot.current_candle, decision)
                 self.decision = decision
                 self.apply_pending_setup_decision(snapshot.current_candle, decision)
                 self._record_signal_events_locked(snapshot.signal_events)

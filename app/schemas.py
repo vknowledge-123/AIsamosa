@@ -128,6 +128,10 @@ class StockWatchItem(BaseModel):
     previous_day_candles: int = 0
     intraday_candles: int = 0
     total_loaded: int = 0
+    last_5m_turnover: float | None = None
+    last_5m_turnover_passed: bool | None = None
+    last_5m_turnover_start: datetime | None = None
+    last_5m_turnover_end: datetime | None = None
     decision_action: str | None = None
     decision_confidence: float | None = None
     decision_reason: str | None = None

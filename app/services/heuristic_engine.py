@@ -88,6 +88,8 @@ class Observation:
     nifty_mid_noise: bool = False
     stock_dow_bias: str = "neutral"
     stock_dow_state: str = "mixed"
+    stock_nifty_bias: str = "neutral"
+    stock_nifty_state: str = "unavailable"
 
 
 class HeuristicDecisionEngine:
@@ -220,6 +222,7 @@ class HeuristicDecisionEngine:
         higher_timeframe_context = self.higher_timeframe_context(context, atr)
         nifty_mid_noise = self.is_nifty_mid_noise(context, atr, overlap_ratio, mapped_buy_liquidity, mapped_sell_liquidity)
         stock_dow_bias, stock_dow_state = self._classify_stock_dow_structure(session, atr)
+        stock_nifty_bias, stock_nifty_state = self._classify_stock_nifty_context(context, atr)
 
         return Observation(
             session_phase=session_phase,
@@ -265,6 +268,8 @@ class HeuristicDecisionEngine:
             nifty_mid_noise=nifty_mid_noise,
             stock_dow_bias=stock_dow_bias,
             stock_dow_state=stock_dow_state,
+            stock_nifty_bias=stock_nifty_bias,
+            stock_nifty_state=stock_nifty_state,
         )
 
     def classify_session_phase(self, candle_count: int) -> str:
@@ -1011,6 +1016,110 @@ class HeuristicDecisionEngine:
             return False
         return True
 
+    def _classify_stock_nifty_context(self, context: StrategyContext, atr: float) -> tuple[str, str]:
+        if context.instrument.supports_options:
+            return "neutral", "unavailable"
+        companion_session = context.companion_session_candles
+        companion_current = context.companion_current_candle
+        if not companion_session or companion_current is None:
+            return "neutral", "unavailable"
+
+        companion_ranges = [max(candle.high - candle.low, 0.01) for candle in companion_session[-20:]] or [max(atr, 1.0)]
+        companion_atr = median(companion_ranges)
+        companion_vwap_denominator = sum(max(candle.volume, 1.0) for candle in companion_session)
+        companion_vwap = (
+            sum(candle.close * max(candle.volume, 1.0) for candle in companion_session) / companion_vwap_denominator
+            if companion_vwap_denominator
+            else companion_current.close
+        )
+        fifteen = self._aggregate_session_candles(companion_session, 15)
+        thirty = self._aggregate_session_candles(companion_session, 30)
+        bias_15 = self._classify_higher_timeframe_bias(fifteen, companion_atr)
+        bias_30 = self._classify_higher_timeframe_bias(thirty, companion_atr)
+        higher_bias = bias_30 if bias_30.endswith("trend") and bias_30 == bias_15 else bias_15 if bias_15 != "neutral" else bias_30
+
+        current = companion_current
+        previous = context.companion_previous_day
+        first_five = companion_session[: min(5, len(companion_session))]
+        first_fifteen = companion_session[: min(15, len(companion_session))]
+        prior_hour = companion_session[-60:] if len(companion_session) > 60 else companion_session
+        mapped_buy_liquidity, mapped_sell_liquidity = self.build_liquidity_maps(
+            companion_session,
+            context.companion_previous_day_candles,
+            previous,
+            current.close,
+            companion_atr,
+        )
+        buy_sweeps = self.detect_sweeps(
+            companion_session,
+            side="buy",
+            previous_day_level=previous.high,
+            opening_level=max(candle.high for candle in first_five) if first_five else current.high,
+            first_fifteen_level=max(candle.high for candle in first_fifteen) if first_fifteen else current.high,
+            prior_hour_level=max(candle.high for candle in prior_hour) if prior_hour else current.high,
+            session_reference=max(candle.high for candle in companion_session[:-1]) if len(companion_session) > 1 else current.high,
+            atr=companion_atr,
+            extra_levels=mapped_buy_liquidity,
+            allowed_families=None,
+        )
+        sell_sweeps = self.detect_sweeps(
+            companion_session,
+            side="sell",
+            previous_day_level=previous.low,
+            opening_level=min(candle.low for candle in first_five) if first_five else current.low,
+            first_fifteen_level=min(candle.low for candle in first_fifteen) if first_fifteen else current.low,
+            prior_hour_level=min(candle.low for candle in prior_hour) if prior_hour else current.low,
+            session_reference=min(candle.low for candle in companion_session[:-1]) if len(companion_session) > 1 else current.low,
+            atr=companion_atr,
+            extra_levels=mapped_sell_liquidity,
+            allowed_families=None,
+        )
+        recent_sell_sweep = next(
+            (
+                event
+                for event in sell_sweeps
+                if event.primary and event.reclaim_index is not None and event.reclaim_index >= max(0, len(companion_session) - 3)
+            ),
+            None,
+        )
+        recent_buy_sweep = next(
+            (
+                event
+                for event in buy_sweeps
+                if event.primary and event.reclaim_index is not None and event.reclaim_index >= max(0, len(companion_session) - 3)
+            ),
+            None,
+        )
+
+        if (
+            recent_sell_sweep is not None
+            and current.close > recent_sell_sweep.defended_level
+            and current.close > companion_vwap
+            and current.close >= current.open
+        ):
+            return "bullish", "sl_hunt_bullish_reversal"
+        if (
+            recent_buy_sweep is not None
+            and current.close < recent_buy_sweep.defended_level
+            and current.close < companion_vwap
+            and current.close <= current.open
+        ):
+            return "bearish", "sl_hunt_bearish_reversal"
+        if higher_bias in {"bullish_trend", "bullish_reversal"} and current.close >= companion_vwap:
+            return "bullish", higher_bias
+        if higher_bias in {"bearish_trend", "bearish_reversal"} and current.close <= companion_vwap:
+            return "bearish", higher_bias
+        if abs(current.close - companion_vwap) <= max(companion_atr * 0.18, 4.0):
+            return "neutral", "nifty_value_churn"
+        return "neutral", higher_bias or "neutral"
+
+    def _stock_nifty_alignment(self, observation: Observation, *, option_type: str) -> str:
+        if observation.stock_nifty_bias == "neutral":
+            return "neutral"
+        if option_type == "CE":
+            return "aligned" if observation.stock_nifty_bias == "bullish" else "opposed"
+        return "aligned" if observation.stock_nifty_bias == "bearish" else "opposed"
+
     def _stock_retracement_reclaim_confirmed(
         self,
         context: StrategyContext,
@@ -1216,6 +1325,7 @@ class HeuristicDecisionEngine:
             observation,
             option_type=candidate.option_type,
         )
+        nifty_alignment = self._stock_nifty_alignment(observation, option_type=candidate.option_type)
         is_continuation = candidate.setup_type in self._stock_continuation_setup_names()
         is_trap_setup = candidate.setup_type in self._stock_trap_setup_names()
 
@@ -1293,6 +1403,24 @@ class HeuristicDecisionEngine:
                     note="Continuation is blocked inside a flat overlapping box unless price breaks out with strong body and volume.",
                     rule_ids=["R122", "R123"],
                 )
+            if nifty_alignment == "opposed":
+                self._demote_stock_candidate(
+                    candidate,
+                    cap_score=45.0,
+                    note=f"Nifty direction is opposing this stock continuation ({observation.stock_nifty_state}), so continuation must stand aside instead of fighting the index.",
+                    rule_ids=["R128", "R129"],
+                )
+            elif nifty_alignment == "aligned":
+                candidate.score = min(candidate.score + 5.0, 100.0)
+                candidate.notes.append(
+                    f"Nifty direction is aligned ({observation.stock_nifty_state}), which supports this stock continuation setup."
+                )
+                candidate.event.notes.append(
+                    f"Nifty direction is aligned ({observation.stock_nifty_state}), which supports this stock continuation setup."
+                )
+                for rule_id in ["R130"]:
+                    if rule_id not in candidate.rule_ids:
+                        candidate.rule_ids.append(rule_id)
 
         if midday_churn:
             if is_continuation and not breakout_override:
@@ -1314,6 +1442,31 @@ class HeuristicDecisionEngine:
                     note="Midday stock trading now waits for only the cleanest primary sweep-and-reclaim structures.",
                     rule_ids=["R126", "R127"],
                 )
+
+        if is_trap_setup and nifty_alignment == "opposed":
+            if not (
+                candidate.event.primary
+                and recent_reclaim
+                and body_quality >= 0.62
+                and candidate.event.quality in {"tradable", "explosive"}
+            ):
+                self._demote_stock_candidate(
+                    candidate,
+                    cap_score=47.0,
+                    note=f"Nifty is moving the other way ({observation.stock_nifty_state}), so opposite-direction stock traps now need exceptional reclaim quality.",
+                    rule_ids=["R131", "R132"],
+                )
+        elif is_trap_setup and nifty_alignment == "aligned" and candidate.event.primary:
+            candidate.score = min(candidate.score + 3.0, 100.0)
+            candidate.notes.append(
+                f"Nifty direction is aligned ({observation.stock_nifty_state}), which adds confidence to this stock trap."
+            )
+            candidate.event.notes.append(
+                f"Nifty direction is aligned ({observation.stock_nifty_state}), which adds confidence to this stock trap."
+            )
+            for rule_id in ["R133"]:
+                if rule_id not in candidate.rule_ids:
+                    candidate.rule_ids.append(rule_id)
 
         return candidate
 

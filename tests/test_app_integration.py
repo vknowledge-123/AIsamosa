@@ -437,6 +437,78 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertEqual(state.integrated_pnl.min_total_pnl, -70.0)
         self.assertIsNotNone(state.integrated_pnl.min_total_pnl_at)
 
+    def test_stock_turnover_filter_blocks_low_5m_turnover_entry(self) -> None:
+        self.test_engine.set_instrument_mode("stock")
+        self.test_engine.operating_mode = OperatingMode.heuristic
+        previous_day = [
+            Candle(timestamp=datetime(2026, 5, 20, 15, 29), open=350, high=352, low=349, close=351, volume=10000),
+        ]
+        intraday = [
+            Candle(
+                timestamp=datetime(2026, 5, 21, 9, 15) + timedelta(minutes=minute),
+                open=370 + minute * 0.2,
+                high=371 + minute * 0.2,
+                low=369 + minute * 0.2,
+                close=370.5 + minute * 0.2,
+                volume=2000,
+            )
+            for minute in range(13)
+        ]
+        self.test_engine.reset_with_candles(previous_day + intraday)
+        self.test_engine.current_index = len(previous_day + intraday) - 1
+
+        decision = TradeDecision(
+            action=TradeAction.enter_call,
+            confidence=0.82,
+            reason="Heuristic long entry confirmed.",
+            decision_source="heuristic",
+            option_type="CE",
+        )
+
+        blocked = self.test_engine._apply_stock_turnover_filter_locked(intraday[-1], decision)
+
+        self.assertEqual(blocked.action, TradeAction.no_trade)
+        self.assertIn("turnover gate blocked long entry", blocked.reason)
+        self.assertIn("below required 3.00 crore", blocked.reason)
+
+    def test_stock_turnover_filter_allows_high_5m_turnover_entry(self) -> None:
+        self.test_engine.set_instrument_mode("stock")
+        self.test_engine.operating_mode = OperatingMode.heuristic
+        previous_day = [
+            Candle(timestamp=datetime(2026, 5, 20, 15, 29), open=350, high=352, low=349, close=351, volume=10000),
+        ]
+        intraday = [
+            Candle(
+                timestamp=datetime(2026, 5, 21, 9, 15) + timedelta(minutes=minute),
+                open=370 + minute * 0.2,
+                high=371 + minute * 0.2,
+                low=369 + minute * 0.2,
+                close=370.5 + minute * 0.2,
+                volume=25000 if 5 <= minute <= 9 else 2000,
+            )
+            for minute in range(13)
+        ]
+        self.test_engine.reset_with_candles(previous_day + intraday)
+        self.test_engine.current_index = len(previous_day + intraday) - 1
+
+        decision = TradeDecision(
+            action=TradeAction.enter_call,
+            confidence=0.82,
+            reason="Heuristic long entry confirmed.",
+            decision_source="heuristic",
+            option_type="CE",
+        )
+
+        allowed = self.test_engine._apply_stock_turnover_filter_locked(intraday[-1], decision)
+        snapshot = self.test_engine._stock_turnover_snapshot_from_candles(self.test_engine.candles, intraday[-1].timestamp)
+
+        self.assertEqual(allowed.action, TradeAction.enter_call)
+        self.assertIsNotNone(snapshot)
+        assert snapshot is not None
+        self.assertEqual(snapshot.window_start, datetime(2026, 5, 21, 9, 20))
+        self.assertEqual(snapshot.window_end, datetime(2026, 5, 21, 9, 25))
+        self.assertGreaterEqual(snapshot.turnover, 30000000.0)
+
     def test_stock_watchlist_and_integrated_pnl_ignore_stale_cash_trade_snapshot_values(self) -> None:
         selected_spec = build_stock_instrument("SBIN", "3045", label="SBIN")
         other_spec = build_stock_instrument("TCS", "11536", label="TCS")
@@ -2045,6 +2117,101 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertEqual(observation.stock_dow_bias, "bullish")
         self.assertEqual(observation.stock_dow_state, "early-uptrend")
 
+    def test_observe_sets_bullish_stock_nifty_bias_from_companion_context(self) -> None:
+        engine = HeuristicDecisionEngine()
+        session = [
+            self._make_candle(0, 100.0, 100.8, 99.8, 100.7),
+            self._make_candle(1, 100.7, 101.4, 100.6, 101.3),
+            self._make_candle(2, 101.3, 101.9, 101.0, 101.8),
+            self._make_candle(3, 101.8, 102.4, 101.5, 102.2),
+            self._make_candle(4, 102.2, 103.0, 102.0, 102.8),
+        ]
+        companion_session = [
+            Candle(timestamp=datetime(2026, 2, 18, 9, 15), open=22400.0, high=22435.0, low=22385.0, close=22418.0, volume=1000.0),
+            Candle(timestamp=datetime(2026, 2, 18, 9, 16), open=22418.0, high=22455.0, low=22402.0, close=22442.0, volume=1100.0),
+            Candle(timestamp=datetime(2026, 2, 18, 9, 17), open=22442.0, high=22448.0, low=22318.0, close=22336.0, volume=1250.0),
+            Candle(timestamp=datetime(2026, 2, 18, 9, 18), open=22338.0, high=22482.0, low=22332.0, close=22470.0, volume=1400.0),
+            Candle(timestamp=datetime(2026, 2, 18, 9, 19), open=22470.0, high=22510.0, low=22462.0, close=22498.0, volume=1450.0),
+        ]
+        context = self._build_context(session, previous_close=99.6).model_copy(
+            update={
+                "instrument": InstrumentState(
+                    mode="stock",
+                    label="SAIL",
+                    symbol="SAIL",
+                    security_id="2963",
+                    exchange_segment="NSE_EQ",
+                    instrument_type="EQUITY",
+                    supports_options=False,
+                    lot_size=1,
+                ),
+                "companion_symbol": "NIFTY",
+                "companion_session_candles": companion_session,
+                "companion_recent_candles": companion_session[-5:],
+                "companion_current_candle": companion_session[-1],
+                "companion_previous_day": PreviousDayLevels(high=22480.0, low=22340.0, close=22390.0),
+                "companion_previous_day_candles": [
+                    Candle(timestamp=datetime(2026, 2, 17, 15, 28), open=22370.0, high=22420.0, low=22340.0, close=22360.0, volume=1000.0),
+                    Candle(timestamp=datetime(2026, 2, 17, 15, 29), open=22360.0, high=22480.0, low=22355.0, close=22390.0, volume=1000.0),
+                ],
+            }
+        )
+
+        observation = engine.observe(context)
+
+        self.assertEqual(observation.stock_nifty_bias, "bullish")
+        self.assertIn("bullish", observation.stock_nifty_state)
+
+    def test_stock_continuation_is_blocked_when_nifty_bias_opposes(self) -> None:
+        engine = HeuristicDecisionEngine()
+        session = [
+            self._make_candle(0, 100.0, 101.2, 99.9, 101.0),
+            self._make_candle(1, 101.0, 102.4, 100.9, 102.2),
+            self._make_candle(2, 102.2, 103.6, 102.1, 103.4),
+            self._make_candle(3, 103.4, 104.8, 103.3, 104.6),
+            self._make_candle(4, 104.6, 105.1, 104.5, 104.9),
+            self._make_candle(5, 104.95, 105.15, 104.8, 105.0),
+            self._make_candle(6, 104.98, 105.4, 104.88, 105.3),
+            self._make_candle(7, 105.3, 105.95, 105.15, 105.85),
+            self._make_candle(8, 105.85, 106.4, 105.7, 106.25),
+        ]
+        context = self._build_context(session, previous_close=99.8).model_copy(
+            update={
+                "instrument": InstrumentState(
+                    mode="stock",
+                    label="SAIL",
+                    symbol="SAIL",
+                    security_id="2963",
+                    exchange_segment="NSE_EQ",
+                    instrument_type="EQUITY",
+                    supports_options=False,
+                    lot_size=1,
+                )
+            }
+        )
+        observation = self._build_observation(
+            day_type="gap-and-go",
+            value_state="fair",
+            atr=1.0,
+            strong_intent=True,
+            weak_intent=False,
+            session_high=106.4,
+            session_low=99.9,
+            stock_dow_bias="bullish",
+            stock_dow_state="higher-high-higher-low",
+            stock_nifty_bias="bearish",
+            stock_nifty_state="bearish_trend",
+        )
+
+        candidates = engine.build_candidates(context, observation)
+        candidate = next((item for item in candidates if item.setup_type == "stock_breakout_pullback_long"), None)
+
+        self.assertIsNotNone(candidate)
+        assert candidate is not None
+        self.assertFalse(candidate.ready_to_enter)
+        self.assertLess(candidate.score, engine.arm_threshold)
+        self.assertTrue(any("nifty direction is opposing" in note.lower() for note in candidate.notes))
+
     def test_extreme_gap_reset_blocks_early_bullish_reclaim_chase(self) -> None:
         engine = HeuristicDecisionEngine()
         session = [
@@ -3194,7 +3361,7 @@ class AppIntegrationTests(unittest.TestCase):
         prepare_mock.assert_called_once()
         fake_adapter.start.assert_called_once()
         instruments = adapter_mock.call_args.args[2]
-        self.assertEqual({instrument[1] for instrument in instruments}, {"3045", "11536"})
+        self.assertEqual({instrument[1] for instrument in instruments}, {"13", "3045", "11536"})
 
     def test_connect_live_feed_in_stock_mode_maps_only_resolved_watchlist_subscriptions(self) -> None:
         fake_adapter = Mock()
@@ -3268,6 +3435,12 @@ class AppIntegrationTests(unittest.TestCase):
             self.test_engine.add_stock_to_watchlist("TCS")
 
         bundles = {
+            "13": DhanSessionBundle(
+                previous_day_candles=[Candle(timestamp="2026-05-13T09:15:00", open=22400, high=22440, low=22380, close=22420, volume=1000)],
+                intraday_candles=[Candle(timestamp="2026-05-14T09:15:00", open=22425, high=22455, low=22410, close=22448, volume=1000)],
+                live_open_candle=None,
+                previous_day_source="historical",
+            ),
             "3045": DhanSessionBundle(
                 previous_day_candles=[Candle(timestamp="2026-05-13T09:15:00", open=790, high=792, low=788, close=791, volume=1000)],
                 intraday_candles=[Candle(timestamp="2026-05-14T09:15:00", open=792, high=794, low=791, close=793, volume=1000)],
@@ -3294,6 +3467,7 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertEqual(by_symbol["SBIN"]["total_loaded"], 2)
         self.assertEqual(by_symbol["TCS"]["total_loaded"], 2)
         self.assertEqual(by_symbol["TCS"]["history_status"], "ready")
+        self.assertTrue(self.test_engine.companion_candles)
 
     def test_stock_mode_simulate_today_runs_for_all_watchlist_sessions(self) -> None:
         with patch.object(
@@ -3304,6 +3478,15 @@ class AppIntegrationTests(unittest.TestCase):
             self.test_engine.add_stock_to_watchlist("TCS")
 
         bundles = {
+            "13": DhanSessionBundle(
+                previous_day_candles=[Candle(timestamp="2026-05-13T09:15:00", open=22400, high=22440, low=22380, close=22420, volume=1000)],
+                intraday_candles=[
+                    Candle(timestamp="2026-05-14T09:15:00", open=22425, high=22455, low=22410, close=22448, volume=1000),
+                    Candle(timestamp="2026-05-14T09:16:00", open=22448, high=22470, low=22440, close=22465, volume=1000),
+                ],
+                live_open_candle=None,
+                previous_day_source="historical",
+            ),
             "3045": DhanSessionBundle(
                 previous_day_candles=[Candle(timestamp="2026-05-13T09:15:00", open=790, high=792, low=788, close=791, volume=1000)],
                 intraday_candles=[
@@ -3336,6 +3519,7 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertEqual(by_symbol["SBIN"]["intraday_candles"], 2)
         self.assertEqual(by_symbol["TCS"]["intraday_candles"], 2)
         self.assertEqual(state["instrument"]["symbol"], "TCS")
+        self.assertTrue(self.test_engine.companion_candles)
 
     def test_simulate_today_replays_intraday_candles_from_session_start(self) -> None:
         bundle = DhanSessionBundle(
