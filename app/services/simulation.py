@@ -1815,6 +1815,9 @@ class SimulationEngine:
             self.execution_state.order_updates_status = status
             self.execution_state.order_updates_connected = status == "connected"
             self.execution_state.order_updates_message = message
+            if status == "connected":
+                self.execution_state.last_order_error = None
+                self.execution_state.last_order_error_at = None
             if status == "error" and message:
                 self.execution_state.last_order_error = message
                 self.execution_state.last_order_error_at = datetime.now()

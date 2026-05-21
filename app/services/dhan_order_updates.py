@@ -2,19 +2,20 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import threading
-import time
 from collections.abc import Callable
 
 try:  # pragma: no cover - depends on installed SDK version
-    from dhanhq import DhanContext, OrderUpdate
+    import websockets
 except Exception:  # pragma: no cover - optional runtime dependency path
-    DhanContext = None
-    OrderUpdate = None
+    websockets = None
 
 
 class DhanOrderUpdateAdapter:
     """Background-thread wrapper around the official DhanHQ-py order update client."""
+
+    order_feed_wss = "wss://api-order-update.dhan.co"
 
     def __init__(self, client_id: str, access_token: str, reconnect_delay: float = 3.0) -> None:
         self.client_id = client_id
@@ -59,8 +60,8 @@ class DhanOrderUpdateAdapter:
             self._status_callback(status, message)
 
     def _run(self) -> None:
-        if DhanContext is None or OrderUpdate is None:
-            self._notify_status("error", "DhanHQ-py OrderUpdate client is not available in this environment.")
+        if websockets is None:
+            self._notify_status("error", "The websockets package is required for Dhan order updates.")
             return
         loop = asyncio.new_event_loop()
         self._loop = loop
@@ -83,13 +84,8 @@ class DhanOrderUpdateAdapter:
     async def _listen_forever(self) -> None:
         while not self._stop_event.is_set():
             try:
-                self._notify_status("connecting", "Connecting to Dhan order updates using DhanHQ-py.")
-                dhan_context = DhanContext(self.client_id, self.access_token)
-                order_client = OrderUpdate(dhan_context)
-                order_client.on_update = self._handle_sdk_update
-                self.connected = True
-                self._notify_status("connected", "DhanHQ-py order update websocket connected.")
-                self._listen_task = asyncio.create_task(order_client.connect_order_update())
+                self._notify_status("connecting", "Connecting to Dhan order updates.")
+                self._listen_task = asyncio.create_task(self._connect_and_listen())
                 await self._listen_task
             except asyncio.CancelledError:
                 break
@@ -103,6 +99,62 @@ class DhanOrderUpdateAdapter:
                 self.connected = False
                 self._listen_task = None
         self._notify_status("disconnected", None)
+
+    async def _connect_and_listen(self) -> None:
+        assert websockets is not None
+        async with websockets.connect(self.order_feed_wss) as websocket:
+            auth_message = {
+                "LoginReq": {
+                    "MsgCode": 42,
+                    "ClientId": str(self.client_id),
+                    "Token": str(self.access_token),
+                },
+                "UserType": "SELF",
+            }
+            await websocket.send(json.dumps(auth_message))
+            self.connected = True
+            self._notify_status("connected", "Dhan order update websocket connected.")
+            async for message in websocket:
+                if self._stop_event.is_set():
+                    break
+                packets = self._parse_order_update_message(message)
+                if not packets:
+                    self._notify_status("connected", "Skipped a malformed Dhan order update message.")
+                    continue
+                for packet in packets:
+                    self._handle_sdk_update(packet)
+
+    def _parse_order_update_message(self, message) -> list[dict]:
+        if isinstance(message, bytes):
+            message = message.decode("utf-8", errors="ignore")
+        if not isinstance(message, str):
+            return [message] if isinstance(message, dict) else []
+        text = message.strip()
+        if not text:
+            return []
+
+        decoder = json.JSONDecoder()
+        packets: list[dict] = []
+        index = 0
+        while index < len(text):
+            while index < len(text) and text[index].isspace():
+                index += 1
+            if index >= len(text):
+                break
+            try:
+                value, next_index = decoder.raw_decode(text, index)
+            except json.JSONDecodeError:
+                line_end = text.find("\n", index)
+                if line_end == -1:
+                    return packets
+                index = line_end + 1
+                continue
+            if isinstance(value, dict):
+                packets.append(value)
+            elif isinstance(value, list):
+                packets.extend(item for item in value if isinstance(item, dict))
+            index = next_index
+        return packets
 
     def _handle_sdk_update(self, packet: dict) -> None:
         self.connected = True

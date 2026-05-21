@@ -17,6 +17,7 @@ from app.schemas import Candle, InstrumentMode, InstrumentState, LiveFeedState, 
 from app.services.credential_store import CredentialStore
 from app.services.dhan_execution import BrokerOrderResult
 from app.services.dhan_history import DhanChartEmptyDataError, DhanChartError, DhanChartRateLimitError, DhanChartService, DhanSessionBundle
+from app.services.dhan_order_updates import DhanOrderUpdateAdapter
 from app.services.dhan_options import OptionContract, OptionQuote
 from app.services.heuristic_engine import HeuristicDecisionEngine, Observation, SetupCandidate, SweepEvent
 from app.services.instruments import build_stock_instrument
@@ -940,6 +941,36 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertEqual(trade.broker_status, "TRADED")
         self.assertEqual(trade.exit_price, 812.25)
         self.assertEqual(trade.exit_option_price, 812.25)
+
+    def test_order_update_adapter_parses_newline_separated_json_packets(self) -> None:
+        adapter = DhanOrderUpdateAdapter("cid", "tok")
+        raw_message = (
+            '{"Type":"order_alert","Data":{"OrderNo":"ORD123","Status":"PENDING"}}\n'
+            '{"Type":"order_alert","Data":{"OrderNo":"ORD123","Status":"TRADED"}}'
+        )
+
+        packets = adapter._parse_order_update_message(raw_message)
+
+        self.assertEqual(len(packets), 2)
+        self.assertEqual(packets[0]["Data"]["Status"], "PENDING")
+        self.assertEqual(packets[1]["Data"]["Status"], "TRADED")
+
+    def test_order_update_adapter_ignores_non_dict_prefix_before_json_packet(self) -> None:
+        adapter = DhanOrderUpdateAdapter("cid", "tok")
+
+        packets = adapter._parse_order_update_message('42\n{"Type":"order_alert","Data":{"OrderNo":"ORD123"}}')
+
+        self.assertEqual(len(packets), 1)
+        self.assertEqual(packets[0]["Data"]["OrderNo"], "ORD123")
+
+    def test_order_update_connected_status_clears_previous_error(self) -> None:
+        self.test_engine.handle_order_update_status("error", "Extra data: line 2 column 1 (char 2)")
+        self.assertEqual(self.test_engine.execution_state.last_order_error, "Extra data: line 2 column 1 (char 2)")
+
+        self.test_engine.handle_order_update_status("connected", "Dhan order update websocket connected.")
+
+        self.assertIsNone(self.test_engine.execution_state.last_order_error)
+        self.assertIsNone(self.test_engine.execution_state.last_order_error_at)
 
     def test_square_off_route_disables_live_execution(self) -> None:
         self.test_engine.live_feed_adapter = Mock()
