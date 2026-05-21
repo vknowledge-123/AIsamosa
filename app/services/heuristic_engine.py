@@ -913,14 +913,10 @@ class HeuristicDecisionEngine:
             return False
         if not self._stock_dow_trend_allows(observation, option_type=option_type, strict=True):
             return False
-        if not self._stock_retracement_reclaim_confirmed(
-            context,
-            observation,
-            event,
-            option_type=option_type,
-            reclaim_candle=reclaim_candle,
-            current=current,
-        ):
+        if event.reclaim_index is None or len(context.session_candles) <= event.reclaim_index + 1:
+            return False
+        bars_after_reclaim = len(context.session_candles) - event.reclaim_index - 1
+        if bars_after_reclaim > 2:
             return False
         if hold_count < 1 or continuation_count > 0 or observation.weak_intent:
             return False

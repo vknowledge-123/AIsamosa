@@ -1448,8 +1448,8 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertIsNotNone(candidate)
         assert candidate is not None
         self.assertEqual(candidate.setup_type, "bullish_reclaim_watch")
-        self.assertFalse(candidate.ready_to_enter)
-        self.assertTrue(any("waits for an actual retracement and reclaim" in note.lower() for note in candidate.notes))
+        self.assertTrue(candidate.ready_to_enter)
+        self.assertTrue(any("first shallow defended retest" in note.lower() for note in candidate.notes))
 
     def test_stock_mode_allows_early_bearish_retest_hold_before_mature_breakdown(self) -> None:
         engine = HeuristicDecisionEngine()
@@ -1505,8 +1505,8 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertIsNotNone(candidate)
         assert candidate is not None
         self.assertEqual(candidate.setup_type, "bearish_rejection_watch")
-        self.assertFalse(candidate.ready_to_enter)
-        self.assertTrue(any("waits for an actual retracement and reclaim" in note.lower() for note in candidate.notes))
+        self.assertTrue(candidate.ready_to_enter)
+        self.assertTrue(any("first shallow defended retest" in note.lower() for note in candidate.notes))
 
     def test_stock_mode_builds_breakout_pullback_long_without_fresh_sweep(self) -> None:
         engine = HeuristicDecisionEngine()
