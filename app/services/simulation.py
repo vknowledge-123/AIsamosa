@@ -146,6 +146,7 @@ class SimulationEngine:
         self._active_option_subscription: tuple | None = None
         self._stock_quote_subscriptions: dict[str, tuple] = {}
         self._stock_symbol_by_security_id: dict[str, str] = {}
+        self._live_cumulative_volume_by_security_id: dict[str, tuple[date, float]] = {}
         self.stock_watchlist: dict[str, InstrumentSpec] = {}
         self.stock_watch_meta: dict[str, dict] = {}
         self.stock_sessions: dict[str, StockRuntimeSession] = {}
@@ -1139,6 +1140,7 @@ class SimulationEngine:
         self._active_option_subscription = None
         self.pending_setup = None
         self.heuristic_engine.reset_session()
+        self._live_cumulative_volume_by_security_id.clear()
 
     def _capture_stock_session_locked(self, symbol: str) -> None:
         session = self.stock_sessions.setdefault(symbol, self._build_stock_runtime_session(self.stock_watchlist[symbol]))
@@ -1704,6 +1706,7 @@ class SimulationEngine:
                 source="dhan-websocket",
                 status_message="Connecting to Dhan market feed.",
             )
+            self._live_cumulative_volume_by_security_id.clear()
             if self.instrument_mode == InstrumentMode.stock:
                 resolved_specs = [
                     spec
@@ -2709,6 +2712,7 @@ class SimulationEngine:
             self.live_feed.current_candle = self.live_current_candle
             self._active_option_subscription = None
             self._stock_quote_subscriptions = {}
+            self._live_cumulative_volume_by_security_id.clear()
             self.execution_state.live_trading_enabled = False
             self._mark_state_dirty_locked()
             return self.get_state()
@@ -2983,6 +2987,8 @@ class SimulationEngine:
             if ltp is None:
                 return
             tick_time = self._packet_timestamp(packet)
+            raw_volume = self._as_float(packet.get("volume")) or 0.0
+            volume_delta = self._live_volume_delta_locked(security_id, tick_time, raw_volume)
             packet_type = str(packet.get("type", "Unknown"))
             if self.active_trade and self.active_trade.option_security_id and security_id == self.active_trade.option_security_id:
                 self._update_active_trade_quote_locked(
@@ -3002,7 +3008,7 @@ class SimulationEngine:
                 matched_symbol = self._stock_symbol_by_security_id.get(security_id)
                 companion_spec = self._active_companion_instrument_spec()
                 if companion_spec is not None and security_id == companion_spec.security_id:
-                    self._update_companion_live_candle_locked(tick_time, ltp, self._as_float(packet.get("volume")) or 0.0)
+                    self._update_companion_live_candle_locked(tick_time, ltp, volume_delta)
                     self._mark_state_dirty_locked()
                     return
                 if matched_symbol is not None:
@@ -3012,12 +3018,11 @@ class SimulationEngine:
                     meta["ticks_received"] = meta.get("ticks_received", 0) + 1
                     self._mark_state_dirty_locked()
                 if matched_symbol is not None and matched_symbol != self.selected_stock_symbol:
-                    volume = self._as_float(packet.get("volume")) or 0.0
-                    self._update_nonselected_stock_tick(matched_symbol, tick_time, ltp, volume)
+                    self._update_nonselected_stock_tick(matched_symbol, tick_time, ltp, volume_delta)
                     return
                 evaluation_symbol = matched_symbol
             elif self._use_banknifty_companion() and security_id == self.companion_instrument_spec.security_id:
-                self._update_companion_live_candle_locked(tick_time, ltp, self._as_float(packet.get("volume")) or 0.0)
+                self._update_companion_live_candle_locked(tick_time, ltp, volume_delta)
                 self._mark_state_dirty_locked()
                 return
             self.live_feed.connected = True
@@ -3030,10 +3035,23 @@ class SimulationEngine:
             self.live_feed.last_ltp = ltp
             self.live_feed.ticks_received += 1
             self.live_feed.error = None
-            evaluation_index = self._update_live_candle_locked(tick_time, ltp, self._as_float(packet.get("volume")) or 0.0)
+            evaluation_index = self._update_live_candle_locked(tick_time, ltp, volume_delta)
             self._mark_state_dirty_locked()
         if evaluation_index is not None:
             self._queue_live_evaluation(evaluation_symbol, evaluation_index)
+
+    def _live_volume_delta_locked(self, security_id: str, tick_time: datetime, cumulative_volume: float) -> float:
+        if not security_id or cumulative_volume <= 0:
+            return 0.0
+        session_day = tick_time.date()
+        previous = self._live_cumulative_volume_by_security_id.get(security_id)
+        self._live_cumulative_volume_by_security_id[security_id] = (session_day, cumulative_volume)
+        if previous is None:
+            return 0.0
+        previous_day, previous_volume = previous
+        if previous_day != session_day or cumulative_volume < previous_volume:
+            return 0.0
+        return max(cumulative_volume - previous_volume, 0.0)
 
     def _update_companion_live_candle_locked(self, tick_time: datetime, ltp: float, volume: float) -> None:
         bucket = tick_time.replace(second=0, microsecond=0)
@@ -3051,7 +3069,7 @@ class SimulationEngine:
             self.companion_live_current_candle.high = max(self.companion_live_current_candle.high, ltp)
             self.companion_live_current_candle.low = min(self.companion_live_current_candle.low, ltp)
             self.companion_live_current_candle.close = ltp
-            self.companion_live_current_candle.volume = max(self.companion_live_current_candle.volume, volume)
+            self.companion_live_current_candle.volume += max(volume, 0.0)
             return
         completed_candle = self.companion_live_current_candle
         if self.companion_candles and self.companion_candles[-1].timestamp == completed_candle.timestamp:
@@ -3101,7 +3119,7 @@ class SimulationEngine:
             session.live_current_candle.high = max(session.live_current_candle.high, ltp)
             session.live_current_candle.low = min(session.live_current_candle.low, ltp)
             session.live_current_candle.close = ltp
-            session.live_current_candle.volume = max(session.live_current_candle.volume, volume)
+            session.live_current_candle.volume += max(volume, 0.0)
             return None
 
         completed_candle = session.live_current_candle
@@ -3138,7 +3156,7 @@ class SimulationEngine:
             self.live_current_candle.high = max(self.live_current_candle.high, ltp)
             self.live_current_candle.low = min(self.live_current_candle.low, ltp)
             self.live_current_candle.close = ltp
-            self.live_current_candle.volume = max(self.live_current_candle.volume, volume)
+            self.live_current_candle.volume += max(volume, 0.0)
             return None
 
         completed_candle = self.live_current_candle

@@ -510,6 +510,39 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertEqual(snapshot.window_end, datetime(2026, 5, 21, 9, 25))
         self.assertGreaterEqual(snapshot.turnover, 30000000.0)
 
+    def test_live_stock_turnover_uses_incremental_volume_not_cumulative_day_volume(self) -> None:
+        self.test_engine.set_instrument_mode("stock")
+        self.test_engine.candles = []
+        self.test_engine.live_current_candle = None
+        self.test_engine._live_cumulative_volume_by_security_id.clear()
+        ticks = [
+            (datetime(2026, 5, 22, 13, 54, 30), 194.00, 9500),
+            (datetime(2026, 5, 22, 13, 55, 10), 194.10, 10000),
+            (datetime(2026, 5, 22, 13, 56, 10), 194.20, 10500),
+            (datetime(2026, 5, 22, 13, 57, 10), 194.35, 11000),
+            (datetime(2026, 5, 22, 13, 58, 10), 194.45, 11700),
+            (datetime(2026, 5, 22, 13, 59, 10), 194.55, 12000),
+            (datetime(2026, 5, 22, 14, 0, 5), 194.60, 12600),
+        ]
+
+        with self.test_engine.lock:
+            for tick_time, ltp, cumulative_volume in ticks:
+                volume_delta = self.test_engine._live_volume_delta_locked("2263", tick_time, cumulative_volume)
+                self.test_engine._update_live_candle_locked(tick_time, ltp, volume_delta)
+
+        snapshot = self.test_engine._stock_turnover_snapshot_from_candles(
+            self.test_engine.candles,
+            datetime(2026, 5, 22, 14, 0, 5),
+        )
+
+        self.assertIsNotNone(snapshot)
+        assert snapshot is not None
+        self.assertEqual(snapshot.window_start, datetime(2026, 5, 22, 13, 55))
+        self.assertEqual(snapshot.window_end, datetime(2026, 5, 22, 14, 0))
+        self.assertEqual(snapshot.volume, 2500)
+        self.assertEqual(snapshot.turnover, round(194.55 * 2500, 2))
+        self.assertLess(snapshot.turnover, 1000000.0)
+
     def test_stock_watchlist_and_integrated_pnl_ignore_stale_cash_trade_snapshot_values(self) -> None:
         selected_spec = build_stock_instrument("SBIN", "3045", label="SBIN")
         other_spec = build_stock_instrument("TCS", "11536", label="TCS")
