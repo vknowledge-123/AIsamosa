@@ -279,8 +279,8 @@ class AppIntegrationTests(unittest.TestCase):
 
         added, skipped = self.test_engine.extract_bulk_stock_symbols(raw_text)
 
-        self.assertEqual(added, ["GLAND", "SJVN"])
-        self.assertEqual(skipped, ["NIFTY 500", "AMBER"])
+        self.assertEqual(added, ["AMBER", "GLAND", "SJVN"])
+        self.assertEqual(skipped, ["NIFTY 500"])
 
     def test_bulk_add_stock_watchlist_api_extracts_and_adds_symbols(self) -> None:
         with patch.object(self.test_engine, "_auto_prepare_watchlist_symbols_async", return_value=None):
@@ -299,12 +299,12 @@ class AppIntegrationTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         payload = response.json()
-        self.assertEqual(payload["added_symbols"], ["GLAND", "SJVN"])
-        self.assertEqual(payload["skipped_symbols"], ["NIFTY 500", "AMBER"])
+        self.assertEqual(payload["added_symbols"], ["AMBER", "GLAND", "SJVN"])
+        self.assertEqual(payload["skipped_symbols"], ["NIFTY 500"])
         watch_symbols = [item["symbol"] for item in payload["state"]["stock_watchlist"]]
+        self.assertIn("AMBER", watch_symbols)
         self.assertIn("GLAND", watch_symbols)
         self.assertIn("SJVN", watch_symbols)
-        self.assertNotIn("AMBER", watch_symbols)
 
     def test_dashboard_state_tracks_integrated_stock_pnl_and_extrema(self) -> None:
         selected_spec = build_stock_instrument("SBIN", "3045", label="SBIN")
@@ -1658,6 +1658,106 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertEqual(candidate.option_type, "PE")
         self.assertGreaterEqual(candidate.score, 70.0)
         self.assertTrue(any("first defended retracement" in note.lower() for note in candidate.notes))
+
+    def test_stock_mode_builds_early_retracement_reclaim_long_before_expansion(self) -> None:
+        engine = HeuristicDecisionEngine()
+        session = [
+            self._make_candle(0, 100.0, 102.1, 99.9, 101.8),
+            self._make_candle(1, 101.8, 103.3, 101.7, 103.0),
+            self._make_candle(2, 103.0, 104.0, 102.9, 103.8),
+            self._make_candle(3, 103.8, 104.0, 102.7, 103.0),
+            self._make_candle(4, 103.0, 103.2, 102.4, 102.7),
+            self._make_candle(5, 102.7, 102.9, 102.35, 102.6),
+            self._make_candle(6, 102.75, 103.25, 102.55, 103.0),
+        ]
+        context = self._build_context(session, previous_close=99.4).model_copy(
+            update={
+                "instrument": InstrumentState(
+                    mode="stock",
+                    label="EMAMI",
+                    symbol="EMAMI",
+                    security_id="13517",
+                    exchange_segment="NSE_EQ",
+                    instrument_type="EQUITY",
+                    supports_options=False,
+                    lot_size=1,
+                )
+            }
+        )
+        observation = self._build_observation(
+            day_type="gap-and-go",
+            value_state="inflated",
+            atr=1.0,
+            strong_intent=True,
+            weak_intent=False,
+            session_high=104.0,
+            session_low=99.9,
+            vwap=102.4,
+            stock_dow_bias="bullish",
+            stock_dow_state="higher-high-higher-low",
+            stock_nifty_bias="neutral",
+            stock_nifty_state="nifty_value_churn",
+        )
+
+        candidates = engine.build_stock_continuation_candidates(context, observation)
+
+        candidate = next((item for item in candidates if item.setup_type == "stock_early_retracement_reclaim_long"), None)
+        self.assertIsNotNone(candidate)
+        assert candidate is not None
+        self.assertTrue(candidate.ready_to_enter)
+        self.assertGreaterEqual(candidate.score, 68.0)
+        self.assertTrue(any("seller exhaustion" in note.lower() for note in candidate.notes))
+        self.assertTrue(any("full quantity" in note.lower() for note in candidate.notes))
+
+    def test_stock_mode_builds_early_retracement_reclaim_short_before_expansion(self) -> None:
+        engine = HeuristicDecisionEngine()
+        session = [
+            self._make_candle(0, 104.0, 104.1, 101.9, 102.2),
+            self._make_candle(1, 102.2, 102.3, 100.8, 101.0),
+            self._make_candle(2, 101.0, 101.1, 99.9, 100.2),
+            self._make_candle(3, 100.2, 101.3, 100.0, 101.0),
+            self._make_candle(4, 101.0, 101.6, 100.8, 101.3),
+            self._make_candle(5, 101.3, 101.65, 101.05, 101.4),
+            self._make_candle(6, 101.25, 101.45, 100.8, 101.0),
+        ]
+        context = self._build_context(session, previous_close=104.4).model_copy(
+            update={
+                "instrument": InstrumentState(
+                    mode="stock",
+                    label="EMAMI",
+                    symbol="EMAMI",
+                    security_id="13517",
+                    exchange_segment="NSE_EQ",
+                    instrument_type="EQUITY",
+                    supports_options=False,
+                    lot_size=1,
+                )
+            }
+        )
+        observation = self._build_observation(
+            day_type="gap-and-go",
+            value_state="discount",
+            atr=1.0,
+            strong_intent=True,
+            weak_intent=False,
+            session_high=104.1,
+            session_low=99.9,
+            vwap=101.6,
+            stock_dow_bias="bearish",
+            stock_dow_state="lower-high-lower-low",
+            stock_nifty_bias="neutral",
+            stock_nifty_state="nifty_value_churn",
+        )
+
+        candidates = engine.build_stock_continuation_candidates(context, observation)
+
+        candidate = next((item for item in candidates if item.setup_type == "stock_early_retracement_reclaim_short"), None)
+        self.assertIsNotNone(candidate)
+        assert candidate is not None
+        self.assertTrue(candidate.ready_to_enter)
+        self.assertGreaterEqual(candidate.score, 68.0)
+        self.assertTrue(any("buyer exhaustion" in note.lower() for note in candidate.notes))
+        self.assertTrue(any("full quantity" in note.lower() for note in candidate.notes))
 
     def test_stock_mode_blocks_opening_gap_up_retracement_short_candidate(self) -> None:
         engine = HeuristicDecisionEngine()

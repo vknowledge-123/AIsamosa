@@ -841,9 +841,6 @@ class SimulationEngine:
             if not candidate or candidate in seen:
                 continue
             seen.add(candidate)
-            if self.stock_universe.is_derivative_symbol(candidate):
-                skipped.append(candidate)
-                continue
             try:
                 self.stock_universe.preview(candidate)
             except ValueError:

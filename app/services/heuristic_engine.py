@@ -1168,6 +1168,8 @@ class HeuristicDecisionEngine:
             "stock_breakout_pullback_short",
             "stock_first_pullback_trend_long",
             "stock_first_pullback_trend_short",
+            "stock_early_retracement_reclaim_long",
+            "stock_early_retracement_reclaim_short",
         }
 
     def _stock_trap_setup_names(self) -> set[str]:
@@ -1501,6 +1503,265 @@ class HeuristicDecisionEngine:
                 enter_threshold += 5.0
                 arm_threshold += 4.0
         return max(0.0, enter_threshold), max(0.0, arm_threshold), allow_only_exceptional
+
+    def _candle_range(self, candle: Candle) -> float:
+        return max(candle.high - candle.low, 0.01)
+
+    def _lower_wick_ratio(self, candle: Candle) -> float:
+        lower_body = min(candle.open, candle.close)
+        return max(lower_body - candle.low, 0.0) / self._candle_range(candle)
+
+    def _upper_wick_ratio(self, candle: Candle) -> float:
+        upper_body = max(candle.open, candle.close)
+        return max(candle.high - upper_body, 0.0) / self._candle_range(candle)
+
+    def _stock_early_retracement_score(
+        self,
+        context: StrategyContext,
+        observation: Observation,
+        *,
+        option_type: str,
+        pullback_window: list[Candle],
+        anchor_window: list[Candle],
+        current: Candle,
+    ) -> tuple[float, list[str], list[str], float, float] | None:
+        if context.instrument.supports_options or observation.weak_intent:
+            return None
+        if not self._stock_dow_trend_allows(observation, option_type=option_type, strict=True):
+            return None
+        if option_type == "CE" and observation.stock_nifty_bias == "bearish":
+            return None
+        if option_type == "PE" and observation.stock_nifty_bias == "bullish":
+            return None
+
+        atr = max(observation.atr, 0.01)
+        opening_price = context.session_candles[0].open
+        current_strength = self.candle_strength(current)
+        if current_strength < 0.18:
+            return None
+
+        pullback_high = max(candle.high for candle in pullback_window)
+        pullback_low = min(candle.low for candle in pullback_window)
+        pullback_range = max(pullback_high - pullback_low, 0.01)
+        anchor_high = max(candle.high for candle in anchor_window)
+        anchor_low = min(candle.low for candle in anchor_window)
+        impulse_range = max(anchor_high - anchor_low, 0.01)
+        directional_extension_r = (
+            (current.close - opening_price) / atr
+            if option_type == "CE"
+            else (opening_price - current.close) / atr
+        )
+        value_extension_r = (
+            (current.close - observation.vwap) / atr
+            if option_type == "CE"
+            else (observation.vwap - current.close) / atr
+        )
+        if directional_extension_r < 0.55:
+            return None
+        if directional_extension_r > 4.2 and value_extension_r > 2.2:
+            return None
+        if pullback_range > max(atr * 1.7, impulse_range * 0.68):
+            return None
+
+        pullback_ranges = [self._candle_range(candle) for candle in pullback_window]
+        latest_pullback = pullback_window[-1]
+        prior_pullback = pullback_window[:-1]
+        score = 52.0
+        notes: list[str] = []
+        rule_ids = ["R107", "R108", "R109", "R134", "R135", "R136"]
+
+        if option_type == "CE":
+            bearish_candles = [candle for candle in pullback_window if candle.close < candle.open]
+            if not bearish_candles:
+                return None
+            bearish_bodies = [abs(candle.close - candle.open) for candle in bearish_candles]
+            if len(bearish_bodies) >= 2 and bearish_bodies[-1] <= bearish_bodies[0] * 0.82:
+                score += 8
+                notes.append("Bearish pullback bodies are shrinking, showing seller exhaustion.")
+            elif len(bearish_bodies) == 1 and bearish_bodies[0] <= atr * 0.75:
+                score += 4
+                notes.append("Only one controlled bearish pullback body is present, so selling pressure is not expanding.")
+            else:
+                score -= 8
+            lower_wick_count = sum(1 for candle in pullback_window if self._lower_wick_ratio(candle) >= 0.22)
+            if lower_wick_count >= 2:
+                score += 8
+                notes.append("Lower wicks appeared during the pullback, showing demand defended the retracement low.")
+            elif lower_wick_count >= 1:
+                score += 4
+            latest_low_holding = latest_pullback.low >= min(candle.low for candle in prior_pullback) - atr * 0.06
+            latest_range_cooling = pullback_ranges[-1] <= max(pullback_ranges[:-1]) * 0.9
+            if latest_low_holding and latest_range_cooling:
+                score += 9
+                notes.append("Price stopped making impulsive lower lows and bearish range cooled.")
+            else:
+                score -= 8
+            structure_held = pullback_low >= anchor_low + impulse_range * 0.28 or pullback_low >= observation.vwap - atr * 0.25
+            if not structure_held:
+                return None
+            score += 7
+            notes.append("Pullback stayed structurally controlled instead of breaking the trend base.")
+            reclaim_zone = max(latest_pullback.close, pullback_low + pullback_range * 0.38)
+            reclaim_attempt = current.close >= reclaim_zone and current.close > current.open and current.close >= latest_pullback.close
+            vwap_supportive = current.close >= observation.vwap or pullback_low >= observation.vwap - atr * 0.18
+            if not reclaim_attempt or not vwap_supportive:
+                return None
+            score += 10
+            notes.append("Close started recovering above the small reclaim zone before a full breakout candle.")
+            if observation.stock_nifty_bias in {"bullish", "neutral"}:
+                score += 4
+                notes.append(f"Nifty is {observation.stock_nifty_state}, so it is not opposing the early long reclaim.")
+            defended_level = pullback_low
+            invalidation = round(pullback_low - atr * 0.18, 2)
+        else:
+            bullish_candles = [candle for candle in pullback_window if candle.close > candle.open]
+            if not bullish_candles:
+                return None
+            bullish_bodies = [abs(candle.close - candle.open) for candle in bullish_candles]
+            if len(bullish_bodies) >= 2 and bullish_bodies[-1] <= bullish_bodies[0] * 0.82:
+                score += 8
+                notes.append("Bullish bounce bodies are shrinking, showing buyer exhaustion.")
+            elif len(bullish_bodies) == 1 and bullish_bodies[0] <= atr * 0.75:
+                score += 4
+                notes.append("Only one controlled bullish bounce body is present, so buying pressure is not expanding.")
+            else:
+                score -= 8
+            upper_wick_count = sum(1 for candle in pullback_window if self._upper_wick_ratio(candle) >= 0.22)
+            if upper_wick_count >= 2:
+                score += 8
+                notes.append("Upper wicks appeared during the bounce, showing supply defended the retracement high.")
+            elif upper_wick_count >= 1:
+                score += 4
+            latest_high_holding = latest_pullback.high <= max(candle.high for candle in prior_pullback) + atr * 0.06
+            latest_range_cooling = pullback_ranges[-1] <= max(pullback_ranges[:-1]) * 0.9
+            if latest_high_holding and latest_range_cooling:
+                score += 9
+                notes.append("Price failed to make impulsive higher highs and bullish range cooled.")
+            else:
+                score -= 8
+            structure_held = pullback_high <= anchor_high - impulse_range * 0.28 or pullback_high <= observation.vwap + atr * 0.25
+            if not structure_held:
+                return None
+            score += 7
+            notes.append("Bounce stayed structurally controlled instead of breaking the downtrend base.")
+            reclaim_zone = min(latest_pullback.close, pullback_high - pullback_range * 0.38)
+            reclaim_attempt = current.close <= reclaim_zone and current.close < current.open and current.close <= latest_pullback.close
+            vwap_supportive = current.close <= observation.vwap or pullback_high <= observation.vwap + atr * 0.18
+            if not reclaim_attempt or not vwap_supportive:
+                return None
+            score += 10
+            notes.append("Close started rejecting below the small rejection zone before a full breakdown candle.")
+            if observation.stock_nifty_bias in {"bearish", "neutral"}:
+                score += 4
+                notes.append(f"Nifty is {observation.stock_nifty_state}, so it is not opposing the early short rejection.")
+            defended_level = pullback_high
+            invalidation = round(pullback_high + atr * 0.18, 2)
+
+        if observation.strong_intent:
+            score += 6
+            notes.append("Morning impulse is strong, so the engine can accept an earlier retracement reclaim.")
+        if observation.day_type in {"gap-and-go", "trend-day"}:
+            score += 5
+            notes.append("Trend-day context supports faster pullback timing.")
+        if observation.two_sided_participation:
+            score += 3
+        return max(0.0, min(score, 100.0)), notes, rule_ids, defended_level, invalidation
+
+    def _build_stock_early_retracement_reclaim_candidate(
+        self,
+        context: StrategyContext,
+        observation: Observation,
+        *,
+        option_type: str,
+        recent_same_side_winner: SimulatedTrade | None,
+    ) -> SetupCandidate | None:
+        if context.instrument.supports_options:
+            return None
+        session = context.session_candles
+        if len(session) < 6:
+            return None
+        current = context.current_candle
+        pullback_window = session[-4:-1]
+        anchor_window = session[:-4]
+        if len(pullback_window) < 3 or len(anchor_window) < 2:
+            return None
+        scored = self._stock_early_retracement_score(
+            context,
+            observation,
+            option_type=option_type,
+            pullback_window=pullback_window,
+            anchor_window=anchor_window,
+            current=current,
+        )
+        if scored is None:
+            return None
+        score, notes, rule_ids, defended_level, invalidation = scored
+        if recent_same_side_winner is not None:
+            score += 4
+            notes.append("Recent same-side winner confirms this stock is respecting early trend-pullback entries.")
+            rule_ids.append("R110")
+
+        risk = max(abs(current.close - invalidation), observation.atr * 0.7)
+        if option_type == "CE":
+            target_spot = self.next_upside_target(context, current.close, risk)
+            room = target_spot - current.close
+            if room < risk * 1.45:
+                return None
+            first_target = current.close + risk
+            setup_type = "stock_early_retracement_reclaim_long"
+            direction = "LONG_CALL"
+            side = "sell"
+            level_label = f"Early Retracement Demand {defended_level:.2f}"
+            sweep_price = min(candle.low for candle in pullback_window)
+            trigger_basis = "early_close_above"
+        else:
+            target_spot = self.next_downside_target(context, current.close, risk)
+            room = current.close - target_spot
+            if room < risk * 1.45:
+                return None
+            first_target = current.close - risk
+            setup_type = "stock_early_retracement_reclaim_short"
+            direction = "LONG_PUT"
+            side = "buy"
+            level_label = f"Early Retracement Supply {defended_level:.2f}"
+            sweep_price = max(candle.high for candle in pullback_window)
+            trigger_basis = "early_close_below"
+
+        score += 6
+        notes.append("Early retracement reclaim mode enters full quantity now, before waiting for expansion confirmation.")
+        notes.append("Turnover filter remains the separate hard liquidity gate before execution.")
+        rule_ids.extend(["R137", "R138"])
+        event = SweepEvent(
+            side=side,
+            level_label=level_label,
+            level_price=round(defended_level, 2),
+            sweep_index=max(len(session) - 4, 0),
+            reclaim_index=len(session) - 1,
+            trigger_index=len(session) - 1,
+            sweep_price=round(sweep_price, 2),
+            defended_level=round(defended_level, 2),
+            trigger_price=round(current.close, 2),
+            invalidation_level=round(invalidation, 2),
+            primary=True,
+            quality="tradable",
+            notes=list(notes),
+        )
+        return SetupCandidate(
+            setup_type=setup_type,
+            direction=direction,
+            option_type=option_type,
+            trigger_basis=trigger_basis,
+            trigger_price=round(current.close, 2),
+            invalidation_level=round(invalidation, 2),
+            defended_level=round(defended_level, 2),
+            target_spot_price=round(target_spot, 2),
+            first_target_price=round(first_target, 2),
+            score=max(0.0, min(score, 100.0)),
+            ready_to_enter=True,
+            notes=notes,
+            rule_ids=list(dict.fromkeys(rule_ids)),
+            event=event,
+        )
 
     def _build_stock_first_pullback_candidate(
         self,
@@ -1871,6 +2132,18 @@ class HeuristicDecisionEngine:
             option_type="PE",
             recent_same_side_winner=recent_bearish_winner,
         )
+        early_reclaim_long = self._build_stock_early_retracement_reclaim_candidate(
+            context,
+            observation,
+            option_type="CE",
+            recent_same_side_winner=recent_bullish_winner,
+        )
+        early_reclaim_short = self._build_stock_early_retracement_reclaim_candidate(
+            context,
+            observation,
+            option_type="PE",
+            recent_same_side_winner=recent_bearish_winner,
+        )
 
         return [
             candidate
@@ -1879,6 +2152,8 @@ class HeuristicDecisionEngine:
                 bearish_candidate,
                 first_pullback_long,
                 first_pullback_short,
+                early_reclaim_long,
+                early_reclaim_short,
             )
             if candidate is not None
         ]
