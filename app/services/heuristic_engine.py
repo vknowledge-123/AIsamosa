@@ -916,11 +916,13 @@ class HeuristicDecisionEngine:
         if event.reclaim_index is None or len(context.session_candles) <= event.reclaim_index + 1:
             return False
         bars_after_reclaim = len(context.session_candles) - event.reclaim_index - 1
-        if bars_after_reclaim > 2:
+        if bars_after_reclaim > 3:
             return False
-        if hold_count < 1 or continuation_count > 0 or observation.weak_intent:
+        if hold_count < 1 or observation.weak_intent:
             return False
-        if current_strength < 0.3 or reclaim_strength < 0.55:
+        if continuation_count > 1 and bars_after_reclaim > 2:
+            return False
+        if current_strength < 0.2 or reclaim_strength < 0.38:
             return False
         if option_type == "CE":
             shallow_retest = (
@@ -1313,7 +1315,7 @@ class HeuristicDecisionEngine:
         current = context.current_candle
         session = context.session_candles
         body_quality = self.candle_strength(current)
-        recent_reclaim = candidate.event.reclaim_index is not None and candidate.event.reclaim_index >= max(0, len(session) - 2)
+        recent_reclaim = candidate.event.reclaim_index is not None and candidate.event.reclaim_index >= max(0, len(session) - 3)
         same_candle_reclaim = candidate.event.reclaim_index is not None and candidate.event.reclaim_index == candidate.event.sweep_index
         major_level = self._is_obvious_stop_pool_label(candidate.event.level_label)
         midday_churn = self._stock_midday_churn_active(context, observation)
@@ -1362,7 +1364,7 @@ class HeuristicDecisionEngine:
                     note="The reclaim is already stale, so stock mode will not keep weak trap ideas armed for long.",
                     rule_ids=["R117"],
                 )
-            if body_quality < 0.52:
+            if body_quality < 0.52 and not candidate.ready_to_enter:
                 self._demote_stock_candidate(
                     candidate,
                     cap_score=45.0,
@@ -1537,7 +1539,7 @@ class HeuristicDecisionEngine:
         atr = max(observation.atr, 0.01)
         opening_price = context.session_candles[0].open
         current_strength = self.candle_strength(current)
-        if current_strength < 0.18:
+        if current_strength < 0.1:
             return None
 
         pullback_high = max(candle.high for candle in pullback_window)
@@ -1575,7 +1577,7 @@ class HeuristicDecisionEngine:
             if not bearish_candles:
                 return None
             bearish_bodies = [abs(candle.close - candle.open) for candle in bearish_candles]
-            if len(bearish_bodies) >= 2 and bearish_bodies[-1] <= bearish_bodies[0] * 0.82:
+            if len(bearish_bodies) >= 2 and bearish_bodies[-1] <= bearish_bodies[0] * 0.95:
                 score += 8
                 notes.append("Bearish pullback bodies are shrinking, showing seller exhaustion.")
             elif len(bearish_bodies) == 1 and bearish_bodies[0] <= atr * 0.75:
@@ -1590,7 +1592,7 @@ class HeuristicDecisionEngine:
             elif lower_wick_count >= 1:
                 score += 4
             latest_low_holding = latest_pullback.low >= min(candle.low for candle in prior_pullback) - atr * 0.06
-            latest_range_cooling = pullback_ranges[-1] <= max(pullback_ranges[:-1]) * 0.9
+            latest_range_cooling = pullback_ranges[-1] <= max(pullback_ranges[:-1]) * 1.08
             if latest_low_holding and latest_range_cooling:
                 score += 9
                 notes.append("Price stopped making impulsive lower lows and bearish range cooled.")
@@ -1601,7 +1603,7 @@ class HeuristicDecisionEngine:
                 return None
             score += 7
             notes.append("Pullback stayed structurally controlled instead of breaking the trend base.")
-            reclaim_zone = max(latest_pullback.close, pullback_low + pullback_range * 0.38)
+            reclaim_zone = max(latest_pullback.close, pullback_low + pullback_range * 0.28)
             reclaim_attempt = current.close >= reclaim_zone and current.close > current.open and current.close >= latest_pullback.close
             vwap_supportive = current.close >= observation.vwap or pullback_low >= observation.vwap - atr * 0.18
             if not reclaim_attempt or not vwap_supportive:
@@ -1618,7 +1620,7 @@ class HeuristicDecisionEngine:
             if not bullish_candles:
                 return None
             bullish_bodies = [abs(candle.close - candle.open) for candle in bullish_candles]
-            if len(bullish_bodies) >= 2 and bullish_bodies[-1] <= bullish_bodies[0] * 0.82:
+            if len(bullish_bodies) >= 2 and bullish_bodies[-1] <= bullish_bodies[0] * 0.95:
                 score += 8
                 notes.append("Bullish bounce bodies are shrinking, showing buyer exhaustion.")
             elif len(bullish_bodies) == 1 and bullish_bodies[0] <= atr * 0.75:
@@ -1633,7 +1635,7 @@ class HeuristicDecisionEngine:
             elif upper_wick_count >= 1:
                 score += 4
             latest_high_holding = latest_pullback.high <= max(candle.high for candle in prior_pullback) + atr * 0.06
-            latest_range_cooling = pullback_ranges[-1] <= max(pullback_ranges[:-1]) * 0.9
+            latest_range_cooling = pullback_ranges[-1] <= max(pullback_ranges[:-1]) * 1.08
             if latest_high_holding and latest_range_cooling:
                 score += 9
                 notes.append("Price failed to make impulsive higher highs and bullish range cooled.")
@@ -1644,7 +1646,7 @@ class HeuristicDecisionEngine:
                 return None
             score += 7
             notes.append("Bounce stayed structurally controlled instead of breaking the downtrend base.")
-            reclaim_zone = min(latest_pullback.close, pullback_high - pullback_range * 0.38)
+            reclaim_zone = min(latest_pullback.close, pullback_high - pullback_range * 0.28)
             reclaim_attempt = current.close <= reclaim_zone and current.close < current.open and current.close <= latest_pullback.close
             vwap_supportive = current.close <= observation.vwap or pullback_high <= observation.vwap + atr * 0.18
             if not reclaim_attempt or not vwap_supportive:
@@ -1678,24 +1680,38 @@ class HeuristicDecisionEngine:
         if context.instrument.supports_options:
             return None
         session = context.session_candles
-        if len(session) < 6:
+        if len(session) < 5:
             return None
         current = context.current_candle
-        pullback_window = session[-4:-1]
-        anchor_window = session[:-4]
-        if len(pullback_window) < 3 or len(anchor_window) < 2:
+        scored_options: list[tuple[float, list[str], list[str], float, float, list[Candle], list[Candle]]] = []
+        for pullback_size in (2, 3):
+            if len(session) < pullback_size + 3:
+                continue
+            pullback_window = session[-(pullback_size + 1) : -1]
+            anchor_window = session[: -(pullback_size + 1)]
+            if len(pullback_window) < 2 or len(anchor_window) < 2:
+                continue
+            scored = self._stock_early_retracement_score(
+                context,
+                observation,
+                option_type=option_type,
+                pullback_window=pullback_window,
+                anchor_window=anchor_window,
+                current=current,
+            )
+            if scored is not None:
+                score, notes, rule_ids, defended_level, invalidation = scored
+                if pullback_size == 2:
+                    score += 5
+                    notes.append("Two-candle pullback is enough here, so stock mode does not wait for a third confirmation candle.")
+                    rule_ids.append("R139")
+                scored_options.append((score, notes, rule_ids, defended_level, invalidation, pullback_window, anchor_window))
+        if not scored_options:
             return None
-        scored = self._stock_early_retracement_score(
-            context,
-            observation,
-            option_type=option_type,
-            pullback_window=pullback_window,
-            anchor_window=anchor_window,
-            current=current,
+        score, notes, rule_ids, defended_level, invalidation, pullback_window, _anchor_window = max(
+            scored_options,
+            key=lambda item: item[0],
         )
-        if scored is None:
-            return None
-        score, notes, rule_ids, defended_level, invalidation = scored
         if recent_same_side_winner is not None:
             score += 4
             notes.append("Recent same-side winner confirms this stock is respecting early trend-pullback entries.")
@@ -1735,7 +1751,7 @@ class HeuristicDecisionEngine:
             side=side,
             level_label=level_label,
             level_price=round(defended_level, 2),
-            sweep_index=max(len(session) - 4, 0),
+            sweep_index=max(len(session) - len(pullback_window) - 1, 0),
             reclaim_index=len(session) - 1,
             trigger_index=len(session) - 1,
             sweep_price=round(sweep_price, 2),
@@ -3644,15 +3660,16 @@ class HeuristicDecisionEngine:
         current_spot = context.current_candle.close
         current_price = current_trade_price if current_trade_price is not None else current_spot
         risk = max(abs(trade.entry_spot_price - (trade.invalidation_level or trade.entry_spot_price)), observation.atr * 0.6)
-        bullish_trade = trade.direction in {"LONG_CALL", "LONG_STOCK"}
+        bullish_trade = trade.direction in {"LONG_CALL", "LONG_STOCK", "SHORT_PUT"}
         stock_mode_trade = not context.instrument.supports_options and trade.price_mode == "cash"
+        nifty_mode_trade = context.instrument.symbol == "NIFTY" and context.instrument.supports_options and trade.price_mode == "option"
         heuristic_early_exit_enabled = (not stock_mode_trade) or context.stock_heuristic_early_exit_enabled
         progress_r = (
             (current_spot - trade.entry_spot_price) / max(risk, 0.01)
             if bullish_trade
             else (trade.entry_spot_price - current_spot) / max(risk, 0.01)
         )
-        trailing_stop_enabled = (not context.instrument.supports_options) and context.stock_trailing_stop_enabled
+        trailing_stop_enabled = (stock_mode_trade and context.stock_trailing_stop_enabled) or nifty_mode_trade
         bars_since_entry = sum(1 for candle in context.session_candles if candle.timestamp >= trade.entry_time)
         setup_is_previous_close = trade.setup_type in {"previous_close_reclaim_long", "previous_close_rejection_short"}
         regime_deteriorated = observation.participation_state in {"fair_value_churn", "post_trend_balance"} and (

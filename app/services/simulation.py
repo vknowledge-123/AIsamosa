@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import math
 import queue
 import re
 import threading
@@ -3848,9 +3849,15 @@ class SimulationEngine:
             return trade.current_option_price
         return self.price_option(current_spot, trade.strike, trade.option_type)
 
+    def _is_short_trade_direction(self, direction: str) -> bool:
+        return direction in {"SHORT_STOCK", "SHORT_CALL", "SHORT_PUT"}
+
+    def _is_long_trade_direction(self, direction: str) -> bool:
+        return not self._is_short_trade_direction(direction)
+
     def calculate_trade_pnl(self, trade: SimulatedTrade, current_price: float) -> float:
         open_quantity = trade.open_quantity if trade.open_quantity is not None else trade.quantity
-        if trade.direction == "SHORT_STOCK":
+        if self._is_short_trade_direction(trade.direction):
             unrealized = (trade.entry_price - current_price) * open_quantity
         else:
             unrealized = (current_price - trade.entry_price) * open_quantity
@@ -3864,6 +3871,7 @@ class SimulationEngine:
         option_type: str,
         decision: TradeDecision,
         entry_price: float,
+        short_trade: bool = False,
     ) -> tuple[float, float]:
         stop_price = decision.stop_option_price
         target_price = decision.target_option_price
@@ -3871,8 +3879,12 @@ class SimulationEngine:
             stop_price = self.price_option(decision.invalidation_level, strike, option_type)
         if decision.target_spot_price is not None:
             target_price = self.price_option(decision.target_spot_price, strike, option_type)
-        resolved_stop = round(stop_price or max(entry_price - 25, 5), 2)
-        resolved_target = round(target_price or (entry_price + 50), 2)
+        if short_trade:
+            resolved_stop = round(stop_price or (entry_price + 25), 2)
+            resolved_target = round(target_price or max(entry_price - 50, 5), 2)
+        else:
+            resolved_stop = round(stop_price or max(entry_price - 25, 5), 2)
+            resolved_target = round(target_price or (entry_price + 50), 2)
         return resolved_stop, resolved_target
 
     def _update_trade_level_from_structure(self, trade: SimulatedTrade, current_spot: float, decision: TradeDecision) -> tuple[float | None, float | None]:
@@ -3983,6 +3995,20 @@ class SimulationEngine:
     def _use_spot_pricing_for_source(self, source: str) -> bool:
         return source == "replay" and self.instrument_spec.supports_options
 
+    def _use_nifty_live_option_selling(self, source: str) -> bool:
+        return (
+            source == "live"
+            and self.instrument_mode == InstrumentMode.nifty
+            and self.instrument_spec.symbol == "NIFTY"
+            and self.instrument_spec.supports_options
+        )
+
+    def _nifty_sell_option_type_for_signal(self, signal_option_type: str) -> str:
+        return "PE" if signal_option_type == "CE" else "CE"
+
+    def _nifty_short_direction_for_option(self, option_type: str) -> str:
+        return "SHORT_CALL" if option_type == "CE" else "SHORT_PUT"
+
     def _stock_pre_arm_paper_execution_disabled(self, source: str) -> bool:
         return (
             self.instrument_mode == InstrumentMode.stock
@@ -4011,9 +4037,15 @@ class SimulationEngine:
         *,
         source: str = "manual",
     ) -> SimulatedTrade:
-        option_type = self.normalize_option_type(decision.option_type, action=decision.action) or "CE"
+        signal_option_type = self.normalize_option_type(decision.option_type, action=decision.action) or "CE"
+        option_type = signal_option_type
         is_option_trade = self.instrument_spec.supports_options and not self._use_spot_pricing_for_source(source)
-        strike = decision.strike or (self.select_itm_strike(current_candle.close, option_type) if is_option_trade else 0)
+        use_option_selling = is_option_trade and self._use_nifty_live_option_selling(source)
+        if use_option_selling:
+            option_type = self._nifty_sell_option_type_for_signal(signal_option_type)
+            strike = self.select_nifty_live_sell_strike(current_candle.close, option_type)
+        else:
+            strike = decision.strike or (self.select_itm_strike(current_candle.close, option_type) if is_option_trade else 0)
         contract = None
         entry_quote = None
         quantity = self._resolve_trade_quantity(current_candle.close, is_option_trade)
@@ -4026,7 +4058,11 @@ class SimulationEngine:
             entry_quote = contract.quote if contract and contract.quote else None
             entry_price = entry_quote.last_price if entry_quote else self.price_option(current_candle.close, strike, option_type)
             trade_symbol = contract.symbol if contract else self.format_option_symbol(current_candle.timestamp, strike, option_type)
-            direction = "LONG_CALL" if option_type == "CE" else "LONG_PUT"
+            direction = (
+                self._nifty_short_direction_for_option(option_type)
+                if use_option_selling
+                else ("LONG_CALL" if option_type == "CE" else "LONG_PUT")
+            )
             trade_security_id = contract.security_id if contract else None
             quote_exchange_segment = "NSE_FNO"
             stop_price, target_price = self.derive_option_trade_plan(
@@ -4035,6 +4071,7 @@ class SimulationEngine:
                 option_type=option_type,
                 decision=decision,
                 entry_price=entry_price,
+                short_trade=use_option_selling,
             )
         else:
             entry_price = round(current_candle.close, 2)
@@ -4109,7 +4146,7 @@ class SimulationEngine:
             self._record_execution_feedback_locked(symbol=trade.symbol, message=message, error=message)
             self.rulebook_service.learning_log.insert(0, message)
             return
-        transaction_type = "BUY" if trade.direction in {"LONG_CALL", "LONG_PUT", "LONG_STOCK"} else "SELL"
+        transaction_type = "BUY" if self._is_long_trade_direction(trade.direction) else "SELL"
         correlation_id = f"entry-{trade.trade_id}"
         try:
             result = self.execution_service.place_market_order(
@@ -4169,7 +4206,7 @@ class SimulationEngine:
             self._record_execution_feedback_locked(symbol=trade.symbol, message=message, error=message)
             self.rulebook_service.learning_log.insert(0, message)
             return False
-        transaction_type = "SELL" if trade.direction in {"LONG_CALL", "LONG_PUT", "LONG_STOCK"} else "BUY"
+        transaction_type = "SELL" if self._is_long_trade_direction(trade.direction) else "BUY"
         correlation_id = f"exit-{trade.trade_id}-{trade.partial_exit_count + 1}"
         try:
             result = self.execution_service.place_market_order(
@@ -4258,7 +4295,7 @@ class SimulationEngine:
             if next_stop is None:
                 return
             next_stop = round(next_stop, 2)
-            if self.active_trade.direction == "SHORT_STOCK":
+            if self._is_short_trade_direction(self.active_trade.direction):
                 next_stop = min(self.active_trade.stop_price, next_stop)
             else:
                 next_stop = max(self.active_trade.stop_price, next_stop)
@@ -4274,7 +4311,7 @@ class SimulationEngine:
             if next_target is None:
                 return
             next_target = round(next_target, 2)
-            if self.active_trade.direction == "SHORT_STOCK":
+            if self._is_short_trade_direction(self.active_trade.direction):
                 next_target = min(self.active_trade.target_price, next_target)
             else:
                 next_target = max(self.active_trade.target_price, next_target)
@@ -4331,7 +4368,7 @@ class SimulationEngine:
         self.active_trade.exit_quote_source = exit_quote.source if exit_quote else self.active_trade.current_quote_source
         self.active_trade.exit_quote_time = exit_quote.quote_time if exit_quote else candle.timestamp
         remaining_quantity = self.active_trade.open_quantity if self.active_trade.open_quantity is not None else self.active_trade.quantity
-        if self.active_trade.direction == "SHORT_STOCK":
+        if self._is_short_trade_direction(self.active_trade.direction):
             self.active_trade.booked_pnl = round(
                 self.active_trade.booked_pnl + ((self.active_trade.entry_price - exit_price) * remaining_quantity),
                 2,
@@ -4361,7 +4398,7 @@ class SimulationEngine:
             return
         exit_quantity = max(1, min(quantity or max(1, open_quantity // 2), open_quantity - 1))
         exit_price = self.current_trade_market_price(candle.close, self.active_trade)
-        if self.active_trade.direction == "SHORT_STOCK":
+        if self._is_short_trade_direction(self.active_trade.direction):
             booked_increment = (self.active_trade.entry_price - exit_price) * exit_quantity
         else:
             booked_increment = (exit_price - self.active_trade.entry_price) * exit_quantity
@@ -4382,6 +4419,11 @@ class SimulationEngine:
         if option_type == "CE":
             return int(spot // 100) * 100
         return int(((spot + 99) // 100) * 100)
+
+    def select_nifty_live_sell_strike(self, spot: float, option_type: str) -> int:
+        if option_type == "CE":
+            return int(math.ceil(spot / 100.0) * 100 + 100)
+        return int(math.floor(spot / 100.0) * 100 - 100)
 
     def format_option_symbol(self, candle_time: datetime, strike: int, option_type: str) -> str:
         expiry = self.option_expiry_for_preference(candle_time.date(), self._nifty_expiry_preference())

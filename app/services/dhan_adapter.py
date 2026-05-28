@@ -101,7 +101,7 @@ class DhanMarketFeedAdapter:
             return
         subscribe = getattr(feed, "subscribe_symbols", None)
         if callable(subscribe):
-            subscribe(instruments)
+            self._call_feed_method(subscribe, instruments)
 
     def unsubscribe_symbols(self, instruments: list[tuple[Any, str, Any]]) -> None:
         if not instruments:
@@ -114,7 +114,26 @@ class DhanMarketFeedAdapter:
             return
         unsubscribe = getattr(feed, "unsubscribe_symbols", None)
         if callable(unsubscribe):
-            unsubscribe(instruments)
+            self._call_feed_method(unsubscribe, instruments)
+
+    def _call_feed_method(self, method: Callable[[list[tuple[Any, str, Any]]], Any], instruments: list[tuple[Any, str, Any]]) -> None:
+        try:
+            result = method(instruments)
+        except Exception:
+            return
+        if not inspect.isawaitable(result):
+            return
+        loop = self._loop
+        if loop is not None and loop.is_running():
+            asyncio.run_coroutine_threadsafe(result, loop)
+            return
+        try:
+            asyncio.run(result)
+        except RuntimeError:
+            try:
+                result.close()
+            except Exception:
+                pass
 
     def _notify_status(
         self,

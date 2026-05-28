@@ -18,7 +18,7 @@ from app.services.credential_store import CredentialStore
 from app.services.dhan_execution import BrokerOrderResult
 from app.services.dhan_history import DhanChartEmptyDataError, DhanChartError, DhanChartRateLimitError, DhanChartService, DhanSessionBundle
 from app.services.dhan_order_updates import DhanOrderUpdateAdapter
-from app.services.dhan_options import OptionContract, OptionQuote
+from app.services.dhan_options import DhanOptionQuoteError, OptionContract, OptionQuote
 from app.services.heuristic_engine import HeuristicDecisionEngine, Observation, SetupCandidate, SweepEvent
 from app.services.instruments import build_stock_instrument
 from app.services.simulation import SimulationEngine
@@ -3315,6 +3315,106 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertEqual(self.test_engine.active_trade.current_quote_source, "dhan-rest-quote")
         self.assertEqual(self.test_engine.active_trade.entry_time.isoformat(), "2026-05-14T11:27:14+05:30")
 
+    def test_nifty_live_mode_sells_opposite_otm_option(self) -> None:
+        candle = Candle(timestamp="2026-05-14T11:27:00", open=23510, high=23542, low=23502, close=23534, volume=1000)
+
+        bullish_trade = self.test_engine._build_entry_trade(
+            candle,
+            TradeDecision(action=TradeAction.enter_call, option_type="CE", invalidation_level=23480, target_spot_price=23650),
+            source="live",
+        )
+        bearish_trade = self.test_engine._build_entry_trade(
+            candle,
+            TradeDecision(action=TradeAction.enter_put, option_type="PE", invalidation_level=23590, target_spot_price=23410),
+            source="live",
+        )
+
+        self.assertEqual(bullish_trade.direction, "SHORT_PUT")
+        self.assertEqual(bullish_trade.option_type, "PE")
+        self.assertEqual(bullish_trade.strike, 23400)
+        self.assertEqual(bearish_trade.direction, "SHORT_CALL")
+        self.assertEqual(bearish_trade.option_type, "CE")
+        self.assertEqual(bearish_trade.strike, 23700)
+
+    def test_short_option_pnl_and_live_order_sides_are_reversed(self) -> None:
+        candle = Candle(timestamp="2026-05-14T11:27:00", open=23510, high=23542, low=23502, close=23534, volume=1000)
+        decision = TradeDecision(action=TradeAction.enter_put, option_type="PE", invalidation_level=23590, target_spot_price=23410)
+        trade = self.test_engine._build_entry_trade(candle, decision, source="live")
+        trade.option_security_id = "999001"
+        trade.entry_price = 100.0
+        trade.current_price = 70.0
+
+        self.assertEqual(self.test_engine.calculate_trade_pnl(trade, 70.0), 1950.0)
+
+        self.test_engine.live_trading_enabled = True
+        self.test_engine.operating_mode = OperatingMode.heuristic
+        self.test_engine.live_feed_adapter = Mock()
+        self.temp_store.save(client_id="cid", access_token=self._make_dhan_token("cid"))
+        with patch.object(
+            self.test_engine.execution_service,
+            "place_market_order",
+            return_value=BrokerOrderResult(ok=True, order_id="entry-1", order_status="PENDING", message="ok", raw={}),
+        ) as place_order:
+            self.test_engine._enter_live_trade(candle, decision, trade)
+
+        self.assertEqual(place_order.call_args.kwargs["transaction_type"], "SELL")
+        self.assertIsNotNone(self.test_engine.active_trade)
+
+        with patch.object(
+            self.test_engine.execution_service,
+            "place_market_order",
+            return_value=BrokerOrderResult(ok=True, order_id="exit-1", order_status="PENDING", message="ok", raw={}),
+        ) as exit_order:
+            with patch.object(self.test_engine.option_quote_service, "fetch_quote", side_effect=DhanOptionQuoteError("offline")):
+                self.test_engine._exit_live_trade(candle, "test exit")
+
+        self.assertEqual(exit_order.call_args.kwargs["transaction_type"], "BUY")
+
+    def test_nifty_option_trade_trails_stop_after_one_r(self) -> None:
+        session = [
+            self._make_candle(0, 23500, 23520, 23490, 23500),
+            self._make_candle(1, 23500, 23580, 23495, 23570),
+            self._make_candle(2, 23570, 23620, 23560, 23610),
+        ]
+        trade = SimulatedTrade(
+            trade_id="nifty-short-put",
+            status="OPEN",
+            direction="SHORT_PUT",
+            option_type="PE",
+            strike=23400,
+            symbol="NIFTY 14MAY2026 23400PE",
+            quantity=65,
+            open_quantity=65,
+            entry_time=session[0].timestamp,
+            entry_price=100.0,
+            entry_spot_price=23500.0,
+            entry_option_price=100.0,
+            current_price=75.0,
+            current_option_price=75.0,
+            stop_price=130.0,
+            stop_option_price=130.0,
+            target_price=50.0,
+            target_option_price=50.0,
+            invalidation_level=23400.0,
+            target_spot_price=23720.0,
+            setup_type="bullish_reclaim_watch",
+        )
+        context = self._build_context(session, active_trade=trade)
+        observation = self._build_observation(
+            atr=50.0,
+            vwap=23520.0,
+            session_high=23620.0,
+            session_low=23490.0,
+            day_type="trend-day",
+            range_state="expanding",
+            participation_state="directional",
+        )
+
+        decision = self.test_engine.heuristic_engine.manage_active_trade(context, observation, current_trade_price=75.0)
+
+        self.assertEqual(decision.action, TradeAction.update_stop)
+        self.assertGreaterEqual(decision.invalidation_level, trade.entry_spot_price)
+
     def test_connect_live_feed_starts_adapter_once(self) -> None:
         fake_adapter = Mock()
         fake_adapter.start = Mock()
@@ -3466,17 +3566,17 @@ class AppIntegrationTests(unittest.TestCase):
         service._remote_master_loaded = False
 
         def fake_load_master() -> None:
-            service._resolved_entries["SOLARA"] = StockUniverseEntry(
-                symbol="SOLARA",
-                label="SOLARA ACTIVE PHA SCI LTD",
-                security_id="3672",
+            service._resolved_entries["TCS"] = StockUniverseEntry(
+                symbol="TCS",
+                label="TATA CONSULTANCY SERV LT",
+                security_id="11536",
             )
             service._remote_master_loaded = True
 
         with patch.object(service, "_load_master_locked", side_effect=fake_load_master) as load_mock:
-            resolved = service.resolve("SOLARA")
+            resolved = service.resolve("TCS")
 
-        self.assertEqual(resolved.security_id, "3672")
+        self.assertEqual(resolved.security_id, "11536")
         load_mock.assert_called_once()
 
     def test_removing_selected_stock_promotes_remaining_watchlist_stock(self) -> None:
@@ -3596,7 +3696,7 @@ class AppIntegrationTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         refresh_mock.assert_called_once()
-        prepare_mock.assert_called_once_with(["GLAND"])
+        prepare_mock.assert_called_once_with(["AMBER", "GLAND"])
 
     def test_stock_mode_sync_history_updates_all_watchlist_sessions(self) -> None:
         with patch.object(
@@ -4568,7 +4668,7 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertNotEqual(decision.action, TradeAction.exit)
         self.assertNotIn("opposite sl-hunting setup", decision.reason.lower())
 
-    def test_heuristic_v2_does_not_trail_stop_for_nifty_mode(self) -> None:
+    def test_heuristic_v2_trails_stop_for_nifty_mode(self) -> None:
         self.test_engine.set_instrument_mode("nifty")
         candles = [
             Candle(timestamp="2026-05-13T09:15:00", open=23490, high=23510, low=23480, close=23500, volume=1000),
@@ -4617,8 +4717,8 @@ class AppIntegrationTests(unittest.TestCase):
 
         decision = self.test_engine.heuristic_decision(self.test_engine.build_context())
 
-        self.assertEqual(decision.action, TradeAction.hold)
-        self.assertIsNone(decision.invalidation_level)
+        self.assertEqual(decision.action, TradeAction.update_stop)
+        self.assertGreaterEqual(decision.invalidation_level or 0, 23500)
 
     def test_heuristic_replaces_stale_long_setup_with_short_when_market_keeps_falling(self) -> None:
         candles = [

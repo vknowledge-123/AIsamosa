@@ -204,7 +204,10 @@ class StockUniverseService:
         try:
             with self._lock:
                 if not self._remote_master_loaded:
-                    self._load_master_locked()
+                    try:
+                        self._load_master_locked()
+                    except RuntimeError:
+                        pass
         finally:
             with self._lock:
                 self._warmup_started = False
