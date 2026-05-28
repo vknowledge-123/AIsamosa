@@ -3415,6 +3415,106 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertEqual(decision.action, TradeAction.update_stop)
         self.assertGreaterEqual(decision.invalidation_level, trade.entry_spot_price)
 
+    def test_nifty_primary_sweep_enters_on_same_candle_reclaim_with_three_r_target(self) -> None:
+        session = [
+            Candle(timestamp="2026-05-26T09:15:00", open=23920, high=23924, low=23908, close=23910, volume=1000),
+            Candle(timestamp="2026-05-26T09:16:00", open=23910, high=23918, low=23890, close=23912, volume=1400),
+        ]
+        context = self._build_context(session, previous_close=23900)
+        observation = self._build_observation(
+            atr=10.0,
+            vwap=23900.0,
+            session_high=23924.0,
+            session_low=23890.0,
+            day_type="trap-day",
+            value_state="discount",
+            range_state="expanding",
+            participation_state="directional",
+            strong_intent=True,
+            weak_intent=False,
+            higher_timeframe_context="neutral",
+        )
+        event = SweepEvent(
+            side="sell",
+            level_label="Round Number 23900.00",
+            level_price=23900.0,
+            sweep_index=1,
+            reclaim_index=1,
+            trigger_index=1,
+            sweep_price=23890.0,
+            defended_level=23900.0,
+            trigger_price=23890.0,
+            invalidation_level=23890.0,
+            primary=True,
+            quality="tradable",
+            notes=["Round Number 23900.00 swept.", "Sweep and reclaim happened on the same candle."],
+        )
+
+        candidate = self.test_engine.heuristic_engine.build_candidate_from_event(
+            context,
+            observation,
+            event,
+            option_type="CE",
+            direction="LONG_CALL",
+        )
+
+        self.assertIsNotNone(candidate)
+        assert candidate is not None
+        self.assertTrue(candidate.ready_to_enter)
+        self.assertIn("R140", candidate.rule_ids)
+        risk = session[-1].close - candidate.invalidation_level
+        self.assertGreaterEqual(candidate.target_spot_price - session[-1].close, risk * 3 - 0.01)
+
+    def test_nifty_primary_sweep_enters_on_same_candle_rejection_with_three_r_target(self) -> None:
+        session = [
+            Candle(timestamp="2026-05-26T09:15:00", open=24020, high=24042, low=24018, close=24038, volume=1000),
+            Candle(timestamp="2026-05-26T09:16:00", open=24055, high=24070, low=24030, close=24042, volume=1400),
+        ]
+        context = self._build_context(session, previous_close=24050)
+        observation = self._build_observation(
+            atr=10.0,
+            vwap=24050.0,
+            session_high=24070.0,
+            session_low=24018.0,
+            day_type="trap-day",
+            value_state="inflated",
+            range_state="expanding",
+            participation_state="directional",
+            strong_intent=True,
+            weak_intent=False,
+            higher_timeframe_context="neutral",
+        )
+        event = SweepEvent(
+            side="buy",
+            level_label="Round Number 24050.00",
+            level_price=24050.0,
+            sweep_index=1,
+            reclaim_index=1,
+            trigger_index=1,
+            sweep_price=24070.0,
+            defended_level=24050.0,
+            trigger_price=24070.0,
+            invalidation_level=24070.0,
+            primary=True,
+            quality="tradable",
+            notes=["Round Number 24050.00 swept.", "Sweep and reclaim happened on the same candle."],
+        )
+
+        candidate = self.test_engine.heuristic_engine.build_candidate_from_event(
+            context,
+            observation,
+            event,
+            option_type="PE",
+            direction="LONG_PUT",
+        )
+
+        self.assertIsNotNone(candidate)
+        assert candidate is not None
+        self.assertTrue(candidate.ready_to_enter)
+        self.assertIn("R140", candidate.rule_ids)
+        risk = candidate.invalidation_level - session[-1].close
+        self.assertGreaterEqual(session[-1].close - candidate.target_spot_price, risk * 3 - 0.01)
+
     def test_connect_live_feed_starts_adapter_once(self) -> None:
         fake_adapter = Mock()
         fake_adapter.start = Mock()

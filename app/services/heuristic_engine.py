@@ -892,6 +892,52 @@ class HeuristicDecisionEngine:
             return htf not in {"bearish_trend"}
         return htf not in {"bullish_trend"}
 
+    def _nifty_immediate_sweep_reclaim(
+        self,
+        context: StrategyContext,
+        event: SweepEvent,
+        observation: Observation,
+        *,
+        option_type: str,
+        current: Candle,
+        reclaim_strength: float,
+    ) -> bool:
+        if not self._is_nifty_mode(context) or not event.primary or observation.weak_intent:
+            return False
+        if event.reclaim_index != len(context.session_candles) - 1:
+            return False
+        if reclaim_strength < 0.05:
+            return False
+        if option_type == "CE":
+            return current.close > event.defended_level and current.close > current.open
+        return current.close < event.defended_level and current.close < current.open
+
+    def _enforce_nifty_three_r_target(
+        self,
+        context: StrategyContext,
+        *,
+        option_type: str,
+        entry_price: float,
+        target_spot: float,
+        risk: float,
+    ) -> tuple[float, bool]:
+        if not self._is_nifty_mode(context):
+            return target_spot, False
+        plan_risk = max(abs(risk), 0.01)
+        minimum_distance = plan_risk * 3.0
+        max_reasonable_distance = max(plan_risk * 8.0, 350.0)
+        if option_type == "CE":
+            minimum_target = entry_price + minimum_distance
+            adjusted = max(target_spot, minimum_target)
+            if adjusted - entry_price > max_reasonable_distance:
+                adjusted = minimum_target
+        else:
+            minimum_target = entry_price - minimum_distance
+            adjusted = min(target_spot, minimum_target)
+            if entry_price - adjusted > max_reasonable_distance:
+                adjusted = minimum_target
+        return round(adjusted, 2), abs(adjusted - target_spot) >= 0.01
+
     def _stock_early_retest_entry(
         self,
         context: StrategyContext,
@@ -2795,6 +2841,16 @@ class HeuristicDecisionEngine:
         score += htf_adjustment
         if htf_note:
             notes.append(htf_note)
+        target_spot, target_adjusted = self._enforce_nifty_three_r_target(
+            context,
+            option_type=option_type,
+            entry_price=current.close,
+            target_spot=target_spot,
+            risk=max(abs(current.close - invalidation), observation.atr * 0.2, 0.01),
+        )
+        if target_adjusted:
+            notes.append("Nifty target is normalized to at least 3R from the entry/invalidation risk.")
+            rule_ids.append("R142")
         if ready_to_enter:
             score += 10
             notes.append("Nifty confirmed the companion reversal with its own trigger close.")
@@ -2881,6 +2937,16 @@ class HeuristicDecisionEngine:
             if ready_to_enter:
                 score += 10
             target_spot = self.next_upside_target(context, current.close, risk)
+            target_spot, target_adjusted = self._enforce_nifty_three_r_target(
+                context,
+                option_type="CE",
+                entry_price=current.close,
+                target_spot=target_spot,
+                risk=max(current.close - (previous_close - observation.atr * 0.25), observation.atr * 0.2, 0.01),
+            )
+            if target_adjusted:
+                notes.append("Nifty target is normalized to at least 3R from the entry/invalidation risk.")
+                rule_ids.append("R142")
             candidates.append(
                 SetupCandidate(
                     setup_type="previous_close_reclaim_long",
@@ -2953,6 +3019,16 @@ class HeuristicDecisionEngine:
             if ready_to_enter:
                 score += 10
             target_spot = self.next_downside_target(context, current.close, risk)
+            target_spot, target_adjusted = self._enforce_nifty_three_r_target(
+                context,
+                option_type="PE",
+                entry_price=current.close,
+                target_spot=target_spot,
+                risk=max((previous_close + observation.atr * 0.25) - current.close, observation.atr * 0.2, 0.01),
+            )
+            if target_adjusted:
+                notes.append("Nifty target is normalized to at least 3R from the entry/invalidation risk.")
+                rule_ids.append("R142")
             candidates.append(
                 SetupCandidate(
                     setup_type="previous_close_rejection_short",
@@ -3008,6 +3084,14 @@ class HeuristicDecisionEngine:
             return None
         current_strength = self.candle_strength(current)
         reclaim_strength = self.candle_strength(reclaim_candle)
+        nifty_immediate_reclaim = self._nifty_immediate_sweep_reclaim(
+            context,
+            event,
+            observation,
+            option_type=option_type,
+            current=current,
+            reclaim_strength=reclaim_strength,
+        )
         continuation_count = 0
         hold_count = 0
         follow_through = False
@@ -3172,6 +3256,10 @@ class HeuristicDecisionEngine:
             score += 10
             notes.append("Reclaim or rejection candle has healthy body quality.")
             rule_ids.append("R89")
+        elif nifty_immediate_reclaim:
+            score += 4
+            notes.append("Same-candle sweep reclaim is accepted even without a large body because the liquidity trap closed back inside immediately.")
+            rule_ids.extend(["R140", "R141"])
         else:
             score -= 12
             notes.append("Reclaim or rejection candle is weak.")
@@ -3179,6 +3267,10 @@ class HeuristicDecisionEngine:
             score += 12
             notes.append("Follow-through confirmed after the reclaim or rejection.")
             rule_ids.append("R89")
+        elif nifty_immediate_reclaim:
+            score += 8
+            notes.append("Nifty primary sweep reclaimed on the current candle, so entry does not wait for a later follow-through candle.")
+            rule_ids.extend(["R140", "R141"])
         else:
             score -= 15
             notes.append("Follow-through is still missing.")
@@ -3246,7 +3338,7 @@ class HeuristicDecisionEngine:
             score -= 8
             notes.append("Expiry-day conditions demand stronger confirmation than this weak trap.")
             rule_ids.append("R47")
-        if current_strength < 0.35:
+        if current_strength < 0.35 and not nifty_immediate_reclaim:
             score -= 12
             notes.append("Latest candle body is weak for entry.")
         if observation.weak_intent:
@@ -3403,14 +3495,22 @@ class HeuristicDecisionEngine:
                 retest_hold
                 and follow_through
                 and (not stock_opening_retest_required or stock_retracement_confirmed)
-            ) or stock_early_entry
+            ) or stock_early_entry or nifty_immediate_reclaim
             trigger_basis = "close_above"
             trigger_price = (
                 round(max(event.defended_level, current.low), 2)
-                if stock_early_entry
+                if stock_early_entry or nifty_immediate_reclaim
                 else max(reclaim_candle.high, event.defended_level + observation.atr * 0.1)
             )
             invalidation = min(event.trigger_price, event.defended_level - observation.atr * 0.18)
+            plan_risk = max(current.close - invalidation, observation.atr * 0.2, 0.01)
+            target_spot, target_adjusted = self._enforce_nifty_three_r_target(
+                context,
+                option_type=option_type,
+                entry_price=current.close,
+                target_spot=target_spot,
+                risk=plan_risk,
+            )
         else:
             target_spot = self.next_downside_target(context, min(current.close, reclaim_candle.close), risk)
             first_target = current.close - risk
@@ -3450,20 +3550,33 @@ class HeuristicDecisionEngine:
                 retest_hold
                 and follow_through
                 and (not stock_opening_retest_required or stock_retracement_confirmed)
-            ) or stock_early_entry
+            ) or stock_early_entry or nifty_immediate_reclaim
             trigger_basis = "close_below"
             trigger_price = (
                 round(min(event.defended_level, current.high), 2)
-                if stock_early_entry
+                if stock_early_entry or nifty_immediate_reclaim
                 else min(reclaim_candle.low, event.defended_level - observation.atr * 0.1)
             )
             invalidation = max(event.trigger_price, event.defended_level + observation.atr * 0.18)
+            plan_risk = max(invalidation - current.close, observation.atr * 0.2, 0.01)
+            target_spot, target_adjusted = self._enforce_nifty_three_r_target(
+                context,
+                option_type=option_type,
+                entry_price=current.close,
+                target_spot=target_spot,
+                risk=plan_risk,
+            )
+        if target_adjusted:
+            notes.append("Nifty target is normalized to at least 3R from the entry/invalidation risk.")
+            rule_ids.append("R142")
         if stock_early_entry:
             score += 12
             notes.append(
                 "Stock mode allows the first shallow defended retest after a primary sweep, so entry can trigger before a mature multi-candle rally."
             )
             rule_ids.extend(["R105", "R106"])
+        if nifty_immediate_reclaim:
+            score += 8
         elif (
             not context.instrument.supports_options
             and setup_type in {"bullish_reclaim_watch", "bearish_rejection_watch"}
