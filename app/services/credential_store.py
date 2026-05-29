@@ -40,6 +40,7 @@ class CredentialStore:
         stock_partial_profit_enabled: bool | None = None,
         stock_trailing_stop_enabled: bool | None = None,
         stock_heuristic_early_exit_enabled: bool | None = None,
+        pyramiding_enabled: bool | None = None,
     ) -> None:
         payload = self.load()
         updated = False
@@ -117,6 +118,11 @@ class CredentialStore:
             normalized = bool(stock_heuristic_early_exit_enabled)
             if payload.get("stock_heuristic_early_exit_enabled") != normalized:
                 payload["stock_heuristic_early_exit_enabled"] = normalized
+                updated = True
+        if pyramiding_enabled is not None:
+            normalized = bool(pyramiding_enabled)
+            if payload.get("pyramiding_enabled") != normalized:
+                payload["pyramiding_enabled"] = normalized
                 updated = True
 
         if not updated:
@@ -255,6 +261,10 @@ class CredentialStore:
         payload = self.load()
         return self._coerce_bool(payload.get("stock_heuristic_early_exit_enabled"), True)
 
+    def get_pyramiding_enabled(self, settings: Settings) -> bool:
+        payload = self.load()
+        return self._coerce_bool(payload.get("pyramiding_enabled"), bool(settings.pyramiding_enabled))
+
     def get_ui_preferences(self) -> tuple[InstrumentMode, str | None, list[str]]:
         payload = self.load()
         raw_mode = str(payload.get("instrument_mode") or InstrumentMode.nifty.value).strip().lower()
@@ -299,6 +309,7 @@ class CredentialStore:
             stock_partial_profit_enabled=self.get_stock_partial_profit_enabled(settings),
             stock_trailing_stop_enabled=self.get_stock_trailing_stop_enabled(settings),
             stock_heuristic_early_exit_enabled=self.get_stock_heuristic_early_exit_enabled(settings),
+            pyramiding_enabled=self.get_pyramiding_enabled(settings),
             dhan_credential_message=self.resolve_dhan_credentials(
                 payload.get("client_id") or settings.dhan_client_id,
                 payload.get("access_token") or settings.dhan_access_token,

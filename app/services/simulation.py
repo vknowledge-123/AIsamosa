@@ -587,6 +587,7 @@ class SimulationEngine:
             stock_partial_profit_enabled=self.credential_store.get_stock_partial_profit_enabled(self.settings),
             stock_trailing_stop_enabled=self.credential_store.get_stock_trailing_stop_enabled(self.settings),
             stock_heuristic_early_exit_enabled=self.credential_store.get_stock_heuristic_early_exit_enabled(self.settings),
+            pyramiding_enabled=self.credential_store.get_pyramiding_enabled(self.settings),
             stock_trade_bias=self.stock_watch_meta.get(self.instrument_spec.symbol, {}).get("trade_bias", "both"),
         )
 
@@ -693,7 +694,7 @@ class SimulationEngine:
         return trade.pnl
 
     def _estimated_order_count_for_trade(self, trade: SimulatedTrade) -> int:
-        count = 1 + max(int(trade.partial_exit_count or 0), 0)
+        count = 1 + max(int(trade.pyramid_count or 0), 0) + max(int(trade.partial_exit_count or 0), 0)
         if (
             trade.status == "CLOSED"
             or trade.exit_time is not None
@@ -2674,6 +2675,7 @@ class SimulationEngine:
         stock_partial_profit_enabled: bool | None = None,
         stock_trailing_stop_enabled: bool | None = None,
         stock_heuristic_early_exit_enabled: bool | None = None,
+        pyramiding_enabled: bool | None = None,
     ) -> DashboardState:
         with self.lock:
             self.credential_store.save(
@@ -2691,6 +2693,7 @@ class SimulationEngine:
                 stock_partial_profit_enabled=stock_partial_profit_enabled,
                 stock_trailing_stop_enabled=stock_trailing_stop_enabled,
                 stock_heuristic_early_exit_enabled=stock_heuristic_early_exit_enabled,
+                pyramiding_enabled=pyramiding_enabled,
             )
             self._credential_summary_cache = self.credential_store.summary(self.settings)
             self._configure_ai_service()
@@ -2854,6 +2857,7 @@ class SimulationEngine:
             stock_partial_profit_enabled=self.credential_store.get_stock_partial_profit_enabled(self.settings),
             stock_trailing_stop_enabled=self.credential_store.get_stock_trailing_stop_enabled(self.settings),
             stock_heuristic_early_exit_enabled=self.credential_store.get_stock_heuristic_early_exit_enabled(self.settings),
+            pyramiding_enabled=self.credential_store.get_pyramiding_enabled(self.settings),
         )
 
     def get_state(self) -> DashboardState:
@@ -3683,7 +3687,14 @@ class SimulationEngine:
         decision: TradeDecision,
         active_trade: SimulatedTrade | None,
     ) -> TradeDecision:
-        if active_trade is None and decision.action in {TradeAction.hold, TradeAction.exit, TradeAction.partial_exit, TradeAction.update_stop, TradeAction.update_target}:
+        if active_trade is None and decision.action in {
+            TradeAction.hold,
+            TradeAction.exit,
+            TradeAction.partial_exit,
+            TradeAction.add_position,
+            TradeAction.update_stop,
+            TradeAction.update_target,
+        }:
             decision.action = TradeAction.no_trade
         normalized_option_type = self.normalize_option_type(
             decision.option_type,
@@ -3695,7 +3706,14 @@ class SimulationEngine:
             decision.option_type = "CE"
         elif decision.action == TradeAction.enter_put:
             decision.option_type = "PE"
-        if active_trade and decision.action in {TradeAction.hold, TradeAction.exit, TradeAction.partial_exit, TradeAction.update_stop, TradeAction.update_target}:
+        if active_trade and decision.action in {
+            TradeAction.hold,
+            TradeAction.exit,
+            TradeAction.partial_exit,
+            TradeAction.add_position,
+            TradeAction.update_stop,
+            TradeAction.update_target,
+        }:
             decision.option_type = active_trade.option_type
             decision.strike = active_trade.strike
         decision.pending_setup_action = self.normalize_pending_setup_action(decision.pending_setup_action)
@@ -4229,6 +4247,7 @@ class SimulationEngine:
             symbol=trade_symbol,
             option_security_id=contract.security_id if contract else None,
             quantity=quantity,
+            base_quantity=quantity,
             open_quantity=quantity,
             entry_time=entry_time,
             entry_price=entry_price,
@@ -4381,6 +4400,95 @@ class SimulationEngine:
             self.partial_exit_active_trade(current_candle, note, quantity=exit_quantity)
         return True
 
+    def _add_to_active_trade(self, current_candle: Candle, note: str, quantity: int | None = None) -> bool:
+        if not self.active_trade:
+            return False
+        trade = self.active_trade
+        if max(int(trade.pyramid_count or 0), 0) >= 2:
+            return False
+        base_quantity = max(int(trade.base_quantity or trade.quantity or 1), 1)
+        add_quantity = base_quantity
+        open_quantity = trade.open_quantity if trade.open_quantity is not None else trade.quantity
+        if open_quantity <= 0:
+            return False
+        add_price = self.current_trade_market_price(current_candle.close, trade)
+        new_open_quantity = open_quantity + add_quantity
+        trade.entry_price = round(
+            ((trade.entry_price * open_quantity) + (add_price * add_quantity)) / new_open_quantity,
+            2,
+        )
+        trade.entry_option_price = trade.entry_price
+        trade.quantity += add_quantity
+        trade.open_quantity = new_open_quantity
+        trade.pyramid_count += 1
+        trade.last_pyramid_time = current_candle.timestamp
+        trade.last_pyramid_price = add_price
+        trade.current_price = add_price
+        trade.current_option_price = add_price
+        trade.current_quote_time = current_candle.timestamp
+        trade.pnl = self.calculate_trade_pnl(trade, add_price)
+        trade.notes = note
+        if note:
+            trade.entry_notes = f"{trade.entry_notes} Pyramiding add {trade.pyramid_count}: {note}".strip()
+        self._mark_state_dirty_locked()
+        return True
+
+    def _add_live_trade(self, current_candle: Candle, decision: TradeDecision) -> bool:
+        if not self.active_trade:
+            return False
+        trade = self.active_trade
+        client_id, access_token = self._available_dhan_credentials()
+        if not client_id or not access_token:
+            message = "Live add skipped because Dhan credentials are unavailable."
+            self._record_execution_feedback_locked(symbol=trade.symbol, message=message, error=message)
+            self.rulebook_service.learning_log.insert(0, message)
+            return False
+        security_id = trade.option_security_id if trade.price_mode == "option" else trade.trade_security_id
+        exchange_segment = trade.quote_exchange_segment or self.instrument_spec.exchange_segment
+        if not security_id or not exchange_segment:
+            message = "Live add skipped because the execution contract could not be resolved."
+            self._record_execution_feedback_locked(symbol=trade.symbol, message=message, error=message)
+            self.rulebook_service.learning_log.insert(0, message)
+            return False
+        base_quantity = max(int(trade.base_quantity or trade.quantity or 1), 1)
+        add_quantity = base_quantity
+        transaction_type = "BUY" if self._is_long_trade_direction(trade.direction) else "SELL"
+        correlation_id = f"add-{trade.trade_id}-{trade.pyramid_count + 1}"
+        try:
+            result = self.execution_service.place_market_order(
+                client_id=client_id,
+                access_token=access_token,
+                security_id=security_id,
+                exchange_segment=exchange_segment,
+                transaction_type=transaction_type,
+                quantity=add_quantity,
+                product_type=trade.broker_product_type or "INTRADAY",
+                correlation_id=correlation_id,
+            )
+        except DhanExecutionError as exc:
+            error_message = str(exc)
+            self._record_execution_feedback_locked(
+                symbol=trade.symbol,
+                message=f"Live add failed for {trade.symbol}: {error_message}",
+                error=error_message,
+            )
+            self.rulebook_service.learning_log.insert(0, f"Live add failed for {trade.symbol}: {error_message}")
+            return False
+        if not result.ok:
+            self._record_execution_feedback_locked(
+                symbol=trade.symbol,
+                message=f"Live add rejected for {trade.symbol}: {result.message}",
+                error=result.message,
+            )
+            self.rulebook_service.learning_log.insert(0, f"Live add rejected for {trade.symbol}: {result.message}")
+            return False
+        trade.broker_status = result.order_status or "PENDING"
+        trade.broker_status_message = result.message
+        success_message = f"Live pyramiding add order sent for {trade.symbol} with qty {add_quantity}."
+        self._record_execution_feedback_locked(symbol=trade.symbol, message=success_message)
+        self.rulebook_service.learning_log.insert(0, success_message)
+        return self._add_to_active_trade(current_candle, decision.reason, quantity=add_quantity)
+
     def _square_off_active_trade_locked(self, client_id: str, access_token: str, *, reason: str) -> bool:
         if self.active_trade is None:
             return False
@@ -4419,6 +4527,13 @@ class SimulationEngine:
             return
 
         if not self.active_trade:
+            return
+
+        if decision.action == TradeAction.add_position:
+            if self._should_send_live_orders(source):
+                self._add_live_trade(current_candle, decision)
+            else:
+                self._add_to_active_trade(current_candle, decision.reason, quantity=decision.add_quantity)
             return
 
         if decision.action == TradeAction.update_stop:

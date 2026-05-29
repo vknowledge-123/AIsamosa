@@ -3810,8 +3810,10 @@ class HeuristicDecisionEngine:
                 rule_ids_used=["R41", "R42", "R45", "R55", "R74", "R90", "R91", "R99"],
             )
 
-        opposing_candidates = self.build_candidates(context, observation)
-        strongest_opposite = next((candidate for candidate in opposing_candidates if (candidate.option_type == "PE") == bullish_trade), None)
+        candidates = self.build_candidates(context, observation)
+        strongest_opposite = self.select_best_candidate(
+            [candidate for candidate in candidates if (candidate.option_type == "PE") == bullish_trade]
+        )
         if heuristic_early_exit_enabled and strongest_opposite and strongest_opposite.ready_to_enter and strongest_opposite.score >= 78:
             return TradeDecision(
                 action=TradeAction.exit,
@@ -3902,6 +3904,64 @@ class HeuristicDecisionEngine:
                     market_state=observation.day_type,
                     rule_ids_used=["R41", "R42", "R45", "R66"],
                 )
+
+        pyramid_count = max(int(trade.pyramid_count or 0), 0)
+        if context.pyramiding_enabled and pyramid_count < 2:
+            base_quantity = max(int(trade.base_quantity or trade.quantity or 1), 1)
+            required_progress = 1.0 + (pyramid_count * 0.6)
+            stop_is_protected = (
+                trade.invalidation_level is not None
+                and (
+                    (bullish_trade and trade.invalidation_level >= trade.entry_spot_price)
+                    or ((not bullish_trade) and trade.invalidation_level <= trade.entry_spot_price)
+                )
+            )
+            same_side = self.select_best_candidate(
+                [candidate for candidate in candidates if (candidate.option_type == "CE") == bullish_trade]
+            )
+            if same_side is not None:
+                enter_threshold, _, allow_only_exceptional = self._effective_entry_thresholds(context, observation, same_side)
+                target_room = (
+                    same_side.target_spot_price - current_spot
+                    if bullish_trade
+                    else current_spot - same_side.target_spot_price
+                )
+                late_session_exception = (
+                    same_side.event.primary
+                    and same_side.event.quality == "explosive"
+                    and same_side.score >= enter_threshold + 5
+                )
+                opposite_pressure = strongest_opposite.score if strongest_opposite is not None else 0.0
+                already_added_this_candle = trade.last_pyramid_time == context.current_candle.timestamp
+                if (
+                    same_side.ready_to_enter
+                    and same_side.score >= max(enter_threshold, 68.0)
+                    and progress_r >= required_progress
+                    and stop_is_protected
+                    and target_room >= risk * 1.2
+                    and opposite_pressure < 72
+                    and not already_added_this_candle
+                    and (not allow_only_exceptional or late_session_exception)
+                ):
+                    return TradeDecision(
+                        action=TradeAction.add_position,
+                        confidence=min(0.92, same_side.score / 100),
+                        reason=(
+                            f"Pyramiding add {pyramid_count + 1}/2 is allowed because the active SL-hunting thesis "
+                            f"is protected at breakeven or better, progress is {progress_r:.2f}R, and a same-side "
+                            f"{same_side.setup_type} confirmed with score {same_side.score:.1f}/100. Add quantity "
+                            f"matches the initial entry size."
+                        ),
+                        decision_source="heuristic",
+                        option_type=trade.option_type,
+                        add_quantity=base_quantity,
+                        invalidation_level=round(trade.invalidation_level, 2) if trade.invalidation_level is not None else None,
+                        target_spot_price=round(same_side.target_spot_price, 2),
+                        market_state=observation.day_type,
+                        setup_score=round(same_side.score, 2),
+                        setup_type=same_side.setup_type,
+                        rule_ids_used=list(dict.fromkeys(same_side.rule_ids + ["R41", "R42", "R43", "R63", "R74", "R99"])),
+                    )
 
         if trailing_stop_enabled and progress_r >= 1.0:
             latest_defense = self.latest_defended_zone(context, bullish_trade, observation)
@@ -4063,7 +4123,7 @@ class HeuristicDecisionEngine:
         block_reason = None
         if decision.action in {TradeAction.enter_call, TradeAction.enter_put}:
             status = "trade_entered"
-        elif decision.action in {TradeAction.exit, TradeAction.partial_exit, TradeAction.update_stop, TradeAction.update_target, TradeAction.hold}:
+        elif decision.action in {TradeAction.exit, TradeAction.partial_exit, TradeAction.add_position, TradeAction.update_stop, TradeAction.update_target, TradeAction.hold}:
             status = "active_trade_management"
         elif decision.pending_setup_action == "ARM":
             status = "setup_armed"
@@ -4093,7 +4153,7 @@ class HeuristicDecisionEngine:
 
         is_important = (
             decision.pending_setup_action != "NONE"
-            or decision.action in {TradeAction.enter_call, TradeAction.enter_put, TradeAction.exit, TradeAction.partial_exit, TradeAction.update_stop, TradeAction.update_target}
+            or decision.action in {TradeAction.enter_call, TradeAction.enter_put, TradeAction.exit, TradeAction.partial_exit, TradeAction.add_position, TradeAction.update_stop, TradeAction.update_target}
             or best is not None
             or context.active_trade is not None
             or bool(observation.buy_sweeps or observation.sell_sweeps or observation.previous_close_touched)
@@ -4208,7 +4268,7 @@ class HeuristicDecisionEngine:
                 detail=decision.reason,
             )
 
-        if decision.action in {TradeAction.enter_call, TradeAction.enter_put, TradeAction.partial_exit, TradeAction.exit}:
+        if decision.action in {TradeAction.enter_call, TradeAction.enter_put, TradeAction.partial_exit, TradeAction.add_position, TradeAction.exit}:
             self._push_narrative(
                 timestamp=current.timestamp,
                 event_type="trade-action",

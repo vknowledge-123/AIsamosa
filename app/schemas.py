@@ -13,6 +13,7 @@ class TradeAction(str, Enum):
     hold = "HOLD"
     exit = "EXIT"
     partial_exit = "PARTIAL_EXIT"
+    add_position = "ADD_POSITION"
     update_target = "UPDATE_TARGET"
     update_stop = "UPDATE_STOP"
 
@@ -174,6 +175,7 @@ class StrategyContext(BaseModel):
     stock_partial_profit_enabled: bool = True
     stock_trailing_stop_enabled: bool = True
     stock_heuristic_early_exit_enabled: bool = True
+    pyramiding_enabled: bool = False
     stock_trade_bias: str = "both"
 
 
@@ -218,6 +220,7 @@ class TradeDecision(BaseModel):
     target_spot_price: float | None = None
     first_target_price: float | None = None
     partial_exit_quantity: int | None = None
+    add_quantity: int | None = None
     market_state: str | None = None
     setup_score: float | None = None
     setup_type: str | None = None
@@ -247,6 +250,7 @@ class SimulatedTrade(BaseModel):
     symbol: str
     option_security_id: str | None = None
     quantity: int
+    base_quantity: int | None = None
     open_quantity: int | None = None
     closed_quantity: int = 0
     entry_time: datetime
@@ -277,6 +281,9 @@ class SimulatedTrade(BaseModel):
     booked_pnl: float = 0.0
     partial_exit_count: int = 0
     last_partial_exit_time: datetime | None = None
+    pyramid_count: int = 0
+    last_pyramid_time: datetime | None = None
+    last_pyramid_price: float | None = None
     pnl: float = 0.0
     entry_notes: str = ""
     exit_notes: str | None = None
@@ -330,6 +337,7 @@ class CredentialSummary(BaseModel):
     stock_partial_profit_enabled: bool = True
     stock_trailing_stop_enabled: bool = True
     stock_heuristic_early_exit_enabled: bool = True
+    pyramiding_enabled: bool = False
     dhan_credential_message: str | None = None
     storage_path: str
     last_updated: datetime | None = None

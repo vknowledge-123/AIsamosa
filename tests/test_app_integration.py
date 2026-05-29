@@ -247,6 +247,7 @@ class AppIntegrationTests(unittest.TestCase):
                 "stock_partial_profit_enabled": "false",
                 "stock_trailing_stop_enabled": "false",
                 "stock_heuristic_early_exit_enabled": "false",
+                "pyramiding_enabled": "true",
             },
         )
 
@@ -266,6 +267,7 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertFalse(summary["stock_partial_profit_enabled"])
         self.assertFalse(summary["stock_trailing_stop_enabled"])
         self.assertFalse(summary["stock_heuristic_early_exit_enabled"])
+        self.assertTrue(summary["pyramiding_enabled"])
         self.assertTrue(Path(summary["storage_path"]).exists())
 
     def test_extract_bulk_stock_symbols_from_nse_style_table(self) -> None:
@@ -3406,6 +3408,20 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertEqual(place_order.call_args.kwargs["transaction_type"], "SELL")
         self.assertIsNotNone(self.test_engine.active_trade)
 
+        add_decision = TradeDecision(action=TradeAction.add_position, reason="Add after protected continuation.", add_quantity=999)
+        with patch.object(
+            self.test_engine.execution_service,
+            "place_market_order",
+            return_value=BrokerOrderResult(ok=True, order_id="add-1", order_status="PENDING", message="ok", raw={}),
+        ) as add_order:
+            self.test_engine._add_live_trade(candle, add_decision)
+
+        self.assertEqual(add_order.call_args.kwargs["transaction_type"], "SELL")
+        self.assertEqual(add_order.call_args.kwargs["quantity"], 65)
+        self.assertEqual(self.test_engine.active_trade.quantity, 130)
+        self.assertEqual(self.test_engine.active_trade.open_quantity, 130)
+        self.assertEqual(self.test_engine.active_trade.pyramid_count, 1)
+
         with patch.object(
             self.test_engine.execution_service,
             "place_market_order",
@@ -3415,6 +3431,111 @@ class AppIntegrationTests(unittest.TestCase):
                 self.test_engine._exit_live_trade(candle, "test exit")
 
         self.assertEqual(exit_order.call_args.kwargs["transaction_type"], "BUY")
+        self.assertEqual(exit_order.call_args.kwargs["quantity"], 130)
+
+    def test_pyramiding_add_uses_initial_quantity_and_full_exit_closes_all_units(self) -> None:
+        trade = SimulatedTrade(
+            trade_id="stock-pyramid",
+            status="OPEN",
+            direction="LONG_STOCK",
+            instrument_mode=InstrumentMode.stock,
+            instrument_label="SBIN",
+            price_mode="cash",
+            trade_security_id="3045",
+            quote_exchange_segment="NSE_EQ",
+            option_type="CE",
+            strike=0,
+            symbol="SBIN EQ",
+            quantity=10,
+            base_quantity=10,
+            open_quantity=10,
+            entry_time=datetime(2026, 5, 29, 9, 30),
+            entry_price=100.0,
+            entry_spot_price=100.0,
+            entry_option_price=100.0,
+            current_price=100.0,
+            current_option_price=100.0,
+            stop_price=98.0,
+            stop_option_price=98.0,
+            target_price=130.0,
+            target_option_price=130.0,
+            invalidation_level=100.0,
+            target_spot_price=130.0,
+        )
+        self.test_engine.active_trade = trade
+        self.test_engine.trade_history = [trade]
+
+        self.test_engine.apply_trade_logic(
+            self._make_candle(20, 109, 111, 108, 110),
+            TradeDecision(action=TradeAction.add_position, reason="Protected continuation add.", add_quantity=999),
+            source="replay",
+        )
+
+        self.assertEqual(trade.quantity, 20)
+        self.assertEqual(trade.open_quantity, 20)
+        self.assertEqual(trade.base_quantity, 10)
+        self.assertEqual(trade.pyramid_count, 1)
+        self.assertEqual(trade.entry_price, 105.0)
+
+        self.test_engine.close_active_trade(self._make_candle(30, 119, 121, 118, 120), "full exit")
+
+        self.assertEqual(self.test_engine.trade_history[-1].closed_quantity, 20)
+        self.assertEqual(self.test_engine.trade_history[-1].open_quantity, 0)
+        self.assertEqual(self.test_engine.trade_history[-1].booked_pnl, 300.0)
+
+    def test_heuristic_pyramiding_requires_toggle_protected_stop_and_same_side_setup(self) -> None:
+        candles = [
+            self._make_candle(0, 100, 101, 99, 100),
+            self._make_candle(1, 100, 103, 99.8, 102),
+            self._make_candle(2, 102, 105, 101.5, 104),
+        ]
+        trade = self._build_trade(
+            entry_time=candles[0].timestamp,
+            entry_spot_price=100.0,
+            invalidation_level=100.0,
+            setup_type="bullish_reclaim_watch",
+        )
+        trade.base_quantity = 1
+        context = self._build_context(candles, active_trade=trade)
+        observation = self._build_observation(atr=2.0, day_type="gap-and-go")
+        candidate = SetupCandidate(
+            setup_type="bullish_pullback_continuation",
+            direction="LONG_CALL",
+            option_type="CE",
+            trigger_basis="close_above",
+            trigger_price=103.0,
+            invalidation_level=100.0,
+            defended_level=101.5,
+            target_spot_price=112.0,
+            first_target_price=106.0,
+            score=82.0,
+            ready_to_enter=True,
+            notes=["Same-side continuation held after the protected reclaim."],
+            rule_ids=["R25", "R27", "R63"],
+            event=SweepEvent(
+                side="sell",
+                level_label="opening-range-low",
+                level_price=100.0,
+                sweep_index=1,
+                reclaim_index=2,
+                trigger_index=2,
+                sweep_price=99.8,
+                defended_level=101.5,
+                trigger_price=103.0,
+                invalidation_level=100.0,
+                primary=True,
+                quality="tradable",
+            ),
+        )
+
+        with patch.object(self.test_engine.heuristic_engine, "build_candidates", return_value=[candidate]):
+            disabled = self.test_engine.heuristic_engine.manage_active_trade(context, observation, current_trade_price=12.0)
+            enabled_context = context.model_copy(update={"pyramiding_enabled": True})
+            enabled = self.test_engine.heuristic_engine.manage_active_trade(enabled_context, observation, current_trade_price=12.0)
+
+        self.assertNotEqual(disabled.action, TradeAction.add_position)
+        self.assertEqual(enabled.action, TradeAction.add_position)
+        self.assertEqual(enabled.add_quantity, 1)
 
     def test_nifty_live_ltp_crossing_invalidation_sends_immediate_exit(self) -> None:
         trade = SimulatedTrade(
