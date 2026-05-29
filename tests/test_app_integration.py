@@ -305,6 +305,52 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertIn("AMBER", watch_symbols)
         self.assertIn("GLAND", watch_symbols)
         self.assertIn("SJVN", watch_symbols)
+        self.assertTrue(all(item["trade_bias"] == "both" for item in payload["state"]["stock_watchlist"] if item["symbol"] in {"AMBER", "GLAND", "SJVN"}))
+
+    def test_bulk_add_stock_watchlist_api_marks_long_and_short_bias(self) -> None:
+        with patch.object(self.test_engine, "_auto_prepare_watchlist_symbols_async", return_value=None):
+            long_response = self.client.post(
+                "/api/stocks/watchlist/bulk-add",
+                data={"bulk_text": "AMBER\nGLAND\n", "trade_bias": "long"},
+            )
+            short_response = self.client.post(
+                "/api/stocks/watchlist/bulk-add",
+                data={"bulk_text": "SJVN\n", "trade_bias": "short"},
+            )
+
+        self.assertEqual(long_response.status_code, 200)
+        self.assertEqual(short_response.status_code, 200)
+        by_symbol = {item["symbol"]: item for item in short_response.json()["state"]["stock_watchlist"]}
+        self.assertEqual(by_symbol["AMBER"]["trade_bias"], "long")
+        self.assertEqual(by_symbol["GLAND"]["trade_bias"], "long")
+        self.assertEqual(by_symbol["SJVN"]["trade_bias"], "short")
+
+    def test_stock_trade_bias_filter_blocks_wrong_side_decision(self) -> None:
+        self.test_engine.set_instrument_mode("stock")
+        with self.test_engine.lock:
+            self.test_engine.stock_watch_meta["SBIN"]["trade_bias"] = "long"
+            self.test_engine.instrument_spec = self.test_engine.stock_watchlist["SBIN"]
+
+        blocked = self.test_engine._apply_stock_trade_bias_filter_locked(
+            TradeDecision(
+                action=TradeAction.enter_put,
+                confidence=0.82,
+                reason="Short setup should be blocked.",
+                option_type="PE",
+                pending_setup_action="ARM",
+                pending_setup_option_type="PE",
+                pending_setup_direction="LONG_PUT",
+                pending_setup_trigger_price=99.0,
+            )
+        )
+        allowed = self.test_engine._apply_stock_trade_bias_filter_locked(
+            TradeDecision(action=TradeAction.enter_call, confidence=0.82, reason="Long setup is allowed.", option_type="CE")
+        )
+
+        self.assertEqual(blocked.action, TradeAction.no_trade)
+        self.assertEqual(blocked.pending_setup_action, "NONE")
+        self.assertIn("long-only", blocked.reason)
+        self.assertEqual(allowed.action, TradeAction.enter_call)
 
     def test_dashboard_state_tracks_integrated_stock_pnl_and_extrema(self) -> None:
         selected_spec = build_stock_instrument("SBIN", "3045", label="SBIN")
@@ -4098,7 +4144,7 @@ class AppIntegrationTests(unittest.TestCase):
         with patch.object(
             service,
             "fetch_session_day_candles",
-            side_effect=[(previous_context, "historical"), (replay_session, "historical")],
+            side_effect=[(replay_session, "historical"), (previous_context, "historical")],
         ) as session_mock:
             with patch.object(service, "fetch_intraday_candles") as intraday_mock:
                 bundle = service.fetch_market_context(
@@ -4116,6 +4162,36 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertEqual(bundle.intraday_source, "historical")
         self.assertEqual(session_mock.call_count, 2)
         self.assertFalse(intraday_mock.called)
+
+    def test_dhan_market_context_skips_empty_holiday_session_before_open(self) -> None:
+        service = DhanChartService()
+        previous_context = [Candle(timestamp="2026-05-26T09:15:00", open=99, high=101, low=98, close=100, volume=1000)]
+        replay_session = [Candle(timestamp="2026-05-27T09:15:00", open=101, high=103, low=100, close=102, volume=1200)]
+        market_now = datetime(2026, 5, 29, 1, 30, tzinfo=service.market_timezone)
+
+        def fake_fetch_session_day_candles(_client_id, _access_token, _security_id, session_day, *_args):
+            if session_day == date(2026, 5, 28):
+                raise DhanChartEmptyDataError("holiday")
+            if session_day == date(2026, 5, 27):
+                return replay_session, "intraday-fallback"
+            if session_day == date(2026, 5, 26):
+                return previous_context, "historical"
+            raise AssertionError(f"Unexpected session day {session_day}")
+
+        with patch.object(service, "fetch_session_day_candles", side_effect=fake_fetch_session_day_candles) as session_mock:
+            bundle = service.fetch_market_context(
+                client_id="cid",
+                access_token="tok",
+                security_id="13",
+                prefer_last_closed_session_before_open=True,
+                market_now=market_now,
+            )
+
+        self.assertEqual(bundle.intraday_candles, replay_session)
+        self.assertEqual(bundle.previous_day_candles, previous_context)
+        self.assertEqual(bundle.replay_session_day, date(2026, 5, 27))
+        self.assertEqual(bundle.previous_context_day, date(2026, 5, 26))
+        self.assertEqual(session_mock.call_count, 3)
 
     def test_dhan_market_context_for_days_uses_selected_replay_and_previous_context(self) -> None:
         service = DhanChartService()

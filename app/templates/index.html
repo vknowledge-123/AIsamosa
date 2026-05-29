@@ -59,14 +59,23 @@
           <input type="text" name="query" placeholder="Search symbols like SBIN, TCS, RELIANCE" />
           <button type="submit">Search Stock Universe</button>
         </form>
-        <form id="stockBulkImportForm" class="stack-form">
-          <label>Bulk Stock Paste</label>
+        <form id="stockLongBulkImportForm" class="stack-form stock-bulk-form" data-trade-bias="long">
+          <label>Long Bulk Stock Paste</label>
           <textarea
             name="bulk_text"
-            rows="7"
-            placeholder="Paste an NSE table here. The app will extract first-column symbols like AMBER, GLAND, SJVN and add them to the watchlist."
+            rows="5"
+            placeholder="Paste stocks for long-only stock heuristic analysis. First-column symbols like AMBER, GLAND, SJVN will be added as long-only."
           ></textarea>
-          <button type="submit">Add Bulk Stocks</button>
+          <button type="submit">Add Long Stocks</button>
+        </form>
+        <form id="stockShortBulkImportForm" class="stack-form stock-bulk-form" data-trade-bias="short">
+          <label>Short Bulk Stock Paste</label>
+          <textarea
+            name="bulk_text"
+            rows="5"
+            placeholder="Paste stocks for short-only stock heuristic analysis. First-column symbols will be added as short-only."
+          ></textarea>
+          <button type="submit">Add Short Stocks</button>
         </form>
         <div id="stockSearchResults" class="list-surface">
           <div class="list-item empty-state">Search results will appear here in stock mode.</div>

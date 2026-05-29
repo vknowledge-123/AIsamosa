@@ -587,6 +587,7 @@ class SimulationEngine:
             stock_partial_profit_enabled=self.credential_store.get_stock_partial_profit_enabled(self.settings),
             stock_trailing_stop_enabled=self.credential_store.get_stock_trailing_stop_enabled(self.settings),
             stock_heuristic_early_exit_enabled=self.credential_store.get_stock_heuristic_early_exit_enabled(self.settings),
+            stock_trade_bias=self.stock_watch_meta.get(self.instrument_spec.symbol, {}).get("trade_bias", "both"),
         )
 
     def _ensure_default_stock_watchlist(self) -> None:
@@ -766,7 +767,29 @@ class SimulationEngine:
             min_total_pnl_at=self._integrated_pnl_trough_at,
         )
 
-    def _add_stock_to_watchlist_locked(self, symbol: str, *, make_selected: bool = False) -> InstrumentSpec:
+    def _normalize_stock_trade_bias(self, trade_bias: str | None) -> str:
+        normalized = (trade_bias or "both").strip().lower()
+        if normalized in {"long", "long-only", "long_only", "buy"}:
+            return "long"
+        if normalized in {"short", "short-only", "short_only", "sell"}:
+            return "short"
+        return "both"
+
+    def _stock_trade_bias_label(self, trade_bias: str | None) -> str:
+        bias = self._normalize_stock_trade_bias(trade_bias)
+        if bias == "long":
+            return "long-only"
+        if bias == "short":
+            return "short-only"
+        return "both-side"
+
+    def _add_stock_to_watchlist_locked(
+        self,
+        symbol: str,
+        *,
+        make_selected: bool = False,
+        trade_bias: str | None = None,
+    ) -> InstrumentSpec:
         entry = self.stock_universe.preview(symbol)
         spec = build_stock_instrument(
             entry.symbol,
@@ -779,6 +802,10 @@ class SimulationEngine:
         if spec.security_id:
             self._stock_symbol_by_security_id[spec.security_id] = spec.symbol
         meta = self.stock_watch_meta.setdefault(spec.symbol, {})
+        if trade_bias is not None:
+            meta["trade_bias"] = self._normalize_stock_trade_bias(trade_bias)
+        else:
+            meta.setdefault("trade_bias", "both")
         if not spec.security_id:
             meta["history_status"] = "resolving"
         self.stock_sessions.setdefault(spec.symbol, self._build_stock_runtime_session(spec))
@@ -851,10 +878,15 @@ class SimulationEngine:
             added.append(candidate)
         return added, skipped
 
-    def add_bulk_stocks_to_watchlist(self, raw_text: str) -> tuple[DashboardState, list[str], list[str]]:
+    def add_bulk_stocks_to_watchlist(
+        self,
+        raw_text: str,
+        trade_bias: str | None = "both",
+    ) -> tuple[DashboardState, list[str], list[str]]:
         symbols, skipped = self.extract_bulk_stock_symbols(raw_text)
         if not symbols:
             raise ValueError("No valid stock symbols were found in the pasted text.")
+        normalized_bias = self._normalize_stock_trade_bias(trade_bias)
         with self.lock:
             previous_mode = self.instrument_mode
             had_live_feed = self.live_feed_adapter is not None
@@ -865,7 +897,11 @@ class SimulationEngine:
             selected_symbol = self.selected_stock_symbol
             added_symbols: list[str] = []
             for symbol in symbols:
-                spec = self._add_stock_to_watchlist_locked(symbol, make_selected=False)
+                spec = self._add_stock_to_watchlist_locked(
+                    symbol,
+                    make_selected=False,
+                    trade_bias=normalized_bias,
+                )
                 added_symbols.append(spec.symbol)
                 if first_selected and selected_symbol is None:
                     selected_symbol = spec.symbol
@@ -890,7 +926,8 @@ class SimulationEngine:
             skipped_note = f" Skipped {', '.join(skipped)}." if skipped else ""
             self.rulebook_service.learning_log.insert(
                 0,
-                f"Bulk-added {len(added_symbols)} stock(s) to the watchlist: {', '.join(added_symbols)}.{skipped_note}",
+                f"Bulk-added {len(added_symbols)} {self._stock_trade_bias_label(normalized_bias)} stock(s) "
+                f"to the watchlist: {', '.join(added_symbols)}.{skipped_note}",
             )
             self._persist_ui_preferences_locked()
             self._mark_state_dirty_locked()
@@ -1255,6 +1292,7 @@ class SimulationEngine:
                     symbol=symbol,
                     label=spec.label,
                     security_id=spec.security_id,
+                    trade_bias=meta.get("trade_bias", "both"),
                     selected=symbol == self.selected_stock_symbol,
                     subscribed=spec.security_id in self._stock_quote_subscriptions,
                     last_ltp=meta.get("last_ltp"),
@@ -1417,6 +1455,40 @@ class SimulationEngine:
             f"turnover was {self._format_crore(snapshot.turnover)} "
             f"(close {snapshot.close:.2f} x volume {snapshot.volume:.0f}), below required "
             f"{self._format_crore(threshold)}."
+        )
+        return blocked
+
+    def _apply_stock_trade_bias_filter_locked(self, decision: TradeDecision) -> TradeDecision:
+        if self.instrument_spec.supports_options:
+            return decision
+        bias = self._normalize_stock_trade_bias(
+            self.stock_watch_meta.get(self.instrument_spec.symbol, {}).get("trade_bias", "both")
+        )
+        if bias == "both":
+            return decision
+        blocked_side = "short" if bias == "long" else "long"
+        entry_blocked = (
+            (bias == "long" and decision.action == TradeAction.enter_put)
+            or (bias == "short" and decision.action == TradeAction.enter_call)
+        )
+        pending_option = self.normalize_option_type(decision.pending_setup_option_type)
+        pending_blocked = (
+            decision.pending_setup_action in {"ARM", "REPLACE", "KEEP"}
+            and ((bias == "long" and pending_option == "PE") or (bias == "short" and pending_option == "CE"))
+        )
+        if not entry_blocked and not pending_blocked:
+            return decision
+        blocked = decision.model_copy(deep=True)
+        blocked.action = TradeAction.no_trade
+        blocked.confidence = min(blocked.confidence, 0.49)
+        blocked.pending_setup_action = "INVALIDATE" if decision.decision_source == "pending-setup-trigger" else "NONE"
+        blocked.pending_setup_notes = f"Pending setup invalidated by {self._stock_trade_bias_label(bias)} stock bias."
+        blocked.pending_setup_option_type = None
+        blocked.pending_setup_direction = None
+        blocked.pending_setup_trigger_price = None
+        blocked.reason = (
+            f"Stock is in the {self._stock_trade_bias_label(bias)} bulk list, so {blocked_side} setups are ignored. "
+            f"Original setup: {decision.reason}"
         )
         return blocked
 
@@ -3219,6 +3291,7 @@ class SimulationEngine:
                 if not self._stock_pre_arm_paper_execution_disabled(source):
                     trigger_decision = self.evaluate_pending_setup_trigger(snapshot.current_candle)
                 if trigger_decision is not None:
+                    trigger_decision = self._apply_stock_trade_bias_filter_locked(trigger_decision)
                     trigger_decision = self._apply_stock_turnover_filter_locked(snapshot.current_candle, trigger_decision)
                     self.decision = trigger_decision
                     self._record_signal_events_locked(snapshot.signal_events)
@@ -3234,6 +3307,7 @@ class SimulationEngine:
                 if evaluation_index >= len(self.candles):
                     return
                 self.current_index = evaluation_index
+                decision = self._apply_stock_trade_bias_filter_locked(decision)
                 decision = self._apply_stock_turnover_filter_locked(snapshot.current_candle, decision)
                 self.decision = decision
                 self.apply_pending_setup_decision(snapshot.current_candle, decision)

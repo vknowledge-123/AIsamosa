@@ -68,18 +68,9 @@ class DhanChartService:
             market_now,
             prefer_last_closed_session_before_open=prefer_last_closed_session_before_open,
         )
-        previous_day = self._previous_trading_day(session_day)
-        previous_candles, previous_source = self.fetch_session_day_candles(
-            client_id,
-            access_token,
-            security_id,
-            previous_day,
-            exchange_segment,
-            instrument_type,
-        )
         intraday_source = "intraday"
         if use_closed_session_replay:
-            intraday_candles, intraday_source = self.fetch_session_day_candles(
+            intraday_candles, intraday_source, session_day = self.fetch_latest_available_session_day_candles(
                 client_id,
                 access_token,
                 security_id,
@@ -98,6 +89,15 @@ class DhanChartService:
                 exchange_segment,
                 instrument_type,
             )
+        previous_day = self._previous_trading_day(session_day)
+        previous_candles, previous_source, previous_day = self.fetch_latest_available_session_day_candles(
+            client_id,
+            access_token,
+            security_id,
+            previous_day,
+            exchange_segment,
+            instrument_type,
+        )
         return DhanSessionBundle(
             previous_day_candles=previous_candles,
             intraday_candles=intraday_candles,
@@ -106,6 +106,39 @@ class DhanChartService:
             replay_session_day=session_day,
             intraday_source=intraday_source,
             previous_context_day=previous_day,
+        )
+
+    def fetch_latest_available_session_day_candles(
+        self,
+        client_id: str,
+        access_token: str,
+        security_id: str,
+        session_day: date,
+        exchange_segment: str,
+        instrument_type: str,
+        *,
+        max_lookback_sessions: int = 7,
+    ) -> tuple[list[Candle], str, date]:
+        candidate_day = session_day
+        empty_errors: list[str] = []
+        for _ in range(max_lookback_sessions):
+            try:
+                candles, source = self.fetch_session_day_candles(
+                    client_id,
+                    access_token,
+                    security_id,
+                    candidate_day,
+                    exchange_segment,
+                    instrument_type,
+                )
+                return candles, source, candidate_day
+            except DhanChartEmptyDataError as exc:
+                empty_errors.append(str(exc))
+                candidate_day = self._previous_trading_day(candidate_day)
+        detail = empty_errors[-1] if empty_errors else f"No candles found on or before {session_day}."
+        raise DhanChartEmptyDataError(
+            f"No available trading-day candles were found for security {security_id} "
+            f"within {max_lookback_sessions} trading sessions on or before {session_day}. {detail}"
         )
 
     def fetch_market_context_for_days(

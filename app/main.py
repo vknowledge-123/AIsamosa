@@ -118,9 +118,16 @@ async def add_stock_to_watchlist(symbol: str = Form(...)):
 
 
 @app.post("/api/stocks/watchlist/bulk-add")
-async def bulk_add_stocks_to_watchlist(bulk_text: str = Form(...)):
+async def bulk_add_stocks_to_watchlist(
+    bulk_text: str = Form(...),
+    trade_bias: str = Form(default="both"),
+):
     try:
-        state, added_symbols, skipped_symbols = await run_in_threadpool(engine.add_bulk_stocks_to_watchlist, bulk_text)
+        state, added_symbols, skipped_symbols = await run_in_threadpool(
+            engine.add_bulk_stocks_to_watchlist,
+            bulk_text,
+            trade_bias,
+        )
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     message = f"Added {len(added_symbols)} stock(s) to the watchlist: {', '.join(added_symbols)}."

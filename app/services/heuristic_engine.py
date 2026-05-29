@@ -2701,6 +2701,11 @@ class HeuristicDecisionEngine:
         companion_candidates = self.build_companion_index_candidates(context, observation)
         candidates.extend(companion_candidates)
         if not context.instrument.supports_options:
+            stock_bias = (context.stock_trade_bias or "both").strip().lower()
+            if stock_bias == "long":
+                candidates = [candidate for candidate in candidates if candidate.option_type == "CE"]
+            elif stock_bias == "short":
+                candidates = [candidate for candidate in candidates if candidate.option_type == "PE"]
             candidates = [self._refine_stock_candidate(context, observation, candidate) for candidate in candidates]
         return candidates
 

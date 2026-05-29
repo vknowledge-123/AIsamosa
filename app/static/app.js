@@ -703,6 +703,7 @@ function renderStockWatchlist(state) {
     <div class="list-item">
       <strong>${item.symbol}</strong>
       <span class="pill">${item.selected ? "active" : (item.subscribed ? "subscribed" : "queued")}</span>
+      <span class="pill">${item.trade_bias === "long" ? "long-only" : (item.trade_bias === "short" ? "short-only" : "both-side")}</span>
       <p>${item.label || item.symbol} | Security ${item.security_id}</p>
       <p>LTP ${money(item.last_ltp)} | Ticks ${item.ticks_received || 0} | Last Tick ${formatSignalTime(item.last_tick_at)}</p>
       <p>History ${item.history_status || "idle"} | ${item.previous_day_candles || 0} previous day | ${item.intraday_candles || 0} intraday</p>
@@ -1057,9 +1058,10 @@ async function addStock(symbol) {
   await postForm("/api/stocks/watchlist/add", formData);
 }
 
-async function addBulkStocks(bulkText) {
+async function addBulkStocks(bulkText, tradeBias = "both") {
   const formData = new FormData();
   formData.append("bulk_text", bulkText);
+  formData.append("trade_bias", tradeBias);
   await postForm("/api/stocks/watchlist/bulk-add", formData);
 }
 
@@ -1296,13 +1298,15 @@ document.getElementById("stockSearchForm").addEventListener("submit", (event) =>
   });
 });
 
-document.getElementById("stockBulkImportForm").addEventListener("submit", (event) => {
-  event.preventDefault();
-  const form = event.currentTarget;
-  runAction(async () => {
-    const bulkText = (form.elements.bulk_text?.value || "").trim();
-    await addBulkStocks(bulkText);
-    form.reset();
+document.querySelectorAll(".stock-bulk-form").forEach((bulkForm) => {
+  bulkForm.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    runAction(async () => {
+      const bulkText = (form.elements.bulk_text?.value || "").trim();
+      await addBulkStocks(bulkText, form.dataset.tradeBias || "both");
+      form.reset();
+    });
   });
 });
 

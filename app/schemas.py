@@ -119,6 +119,7 @@ class StockWatchItem(BaseModel):
     symbol: str
     label: str
     security_id: str
+    trade_bias: str = "both"
     selected: bool = False
     subscribed: bool = False
     last_ltp: float | None = None
@@ -173,6 +174,7 @@ class StrategyContext(BaseModel):
     stock_partial_profit_enabled: bool = True
     stock_trailing_stop_enabled: bool = True
     stock_heuristic_early_exit_enabled: bool = True
+    stock_trade_bias: str = "both"
 
 
 class PendingSetup(BaseModel):
