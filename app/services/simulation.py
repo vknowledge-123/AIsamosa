@@ -3054,6 +3054,7 @@ class SimulationEngine:
     def _handle_live_packet_now(self, packet: dict) -> None:
         evaluation_index = None
         evaluation_symbol: str | None = None
+        hard_stop_check: tuple[float, datetime] | None = None
         with self.lock:
             security_id = str(packet.get("security_id", ""))
             ltp = self._as_float(packet.get("LTP"))
@@ -3098,6 +3099,12 @@ class SimulationEngine:
                 self._update_companion_live_candle_locked(tick_time, ltp, volume_delta)
                 self._mark_state_dirty_locked()
                 return
+            if (
+                self.active_trade is not None
+                and security_id == self.instrument_spec.security_id
+                and self._live_ltp_crossed_invalidation(self.active_trade, ltp)
+            ):
+                hard_stop_check = (ltp, tick_time)
             self.live_feed.connected = True
             self.live_feed.status = "connected"
             self.live_feed.source = "dhan-websocket"
@@ -3110,6 +3117,10 @@ class SimulationEngine:
             self.live_feed.error = None
             evaluation_index = self._update_live_candle_locked(tick_time, ltp, volume_delta)
             self._mark_state_dirty_locked()
+        if hard_stop_check is not None:
+            stop_ltp, stop_time = hard_stop_check
+            if self._exit_active_trade_on_ltp_invalidation(stop_ltp, stop_time):
+                return
         if evaluation_index is not None:
             self._queue_live_evaluation(evaluation_symbol, evaluation_index)
 
@@ -3165,6 +3176,9 @@ class SimulationEngine:
                 return
             evaluation_index = self._update_live_candle_for_session_locked(session, tick_time, ltp, volume)
             self._mark_state_dirty_locked()
+            hard_stop_crossed = self._live_ltp_crossed_invalidation(session.active_trade, ltp)
+        if hard_stop_crossed and self._exit_stock_session_on_ltp_invalidation(symbol, ltp, tick_time):
+            return
         if evaluation_index is None:
             return
         self._queue_live_evaluation(symbol, evaluation_index)
@@ -3928,6 +3942,49 @@ class SimulationEngine:
 
     def _is_long_trade_direction(self, direction: str) -> bool:
         return not self._is_short_trade_direction(direction)
+
+    def _is_bullish_spot_trade_direction(self, direction: str) -> bool:
+        return direction in {"LONG_CALL", "LONG_STOCK", "SHORT_PUT"}
+
+    def _live_ltp_crossed_invalidation(self, trade: SimulatedTrade | None, ltp: float) -> bool:
+        if trade is None or trade.invalidation_level is None:
+            return False
+        if self._is_bullish_spot_trade_direction(trade.direction):
+            return ltp <= trade.invalidation_level
+        return ltp >= trade.invalidation_level
+
+    def _exit_active_trade_on_ltp_invalidation(self, ltp: float, tick_time: datetime) -> bool:
+        with self.lock:
+            trade = self.active_trade
+            if not self._live_ltp_crossed_invalidation(trade, ltp):
+                return False
+            assert trade is not None
+            invalidation = trade.invalidation_level or ltp
+            note = (
+                f"Hard LTP stop triggered: live price {ltp:.2f} crossed invalidation "
+                f"{invalidation:.2f} before candle close."
+            )
+            exit_candle = Candle(
+                timestamp=tick_time,
+                open=ltp,
+                high=ltp,
+                low=ltp,
+                close=ltp,
+                volume=0.0,
+            )
+        if self._should_send_live_orders("live"):
+            return self._exit_live_trade(exit_candle, note)
+        with self.lock:
+            if self._live_ltp_crossed_invalidation(self.active_trade, ltp):
+                self.close_active_trade(exit_candle, note)
+                return True
+        return False
+
+    def _exit_stock_session_on_ltp_invalidation(self, symbol: str, ltp: float, tick_time: datetime) -> bool:
+        def operation():
+            return self._exit_active_trade_on_ltp_invalidation(ltp, tick_time)
+
+        return bool(self._run_in_stock_session(symbol, operation))
 
     def calculate_trade_pnl(self, trade: SimulatedTrade, current_price: float) -> float:
         open_quantity = trade.open_quantity if trade.open_quantity is not None else trade.quantity

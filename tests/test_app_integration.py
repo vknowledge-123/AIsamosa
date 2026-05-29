@@ -3416,6 +3416,92 @@ class AppIntegrationTests(unittest.TestCase):
 
         self.assertEqual(exit_order.call_args.kwargs["transaction_type"], "BUY")
 
+    def test_nifty_live_ltp_crossing_invalidation_sends_immediate_exit(self) -> None:
+        trade = SimulatedTrade(
+            trade_id="nifty-hard-stop",
+            status="OPEN",
+            direction="SHORT_PUT",
+            instrument_mode=InstrumentMode.nifty,
+            instrument_label="Nifty 50",
+            price_mode="option",
+            trade_security_id="13",
+            quote_exchange_segment="NSE_FNO",
+            option_type="PE",
+            strike=23400,
+            symbol="NIFTY 23400 PE",
+            option_security_id="opt-23400-pe",
+            quantity=65,
+            open_quantity=65,
+            entry_time=datetime(2026, 5, 29, 10, 0),
+            entry_price=100.0,
+            entry_spot_price=23500.0,
+            entry_option_price=100.0,
+            current_price=100.0,
+            current_option_price=100.0,
+            stop_price=140.0,
+            stop_option_price=140.0,
+            target_price=40.0,
+            target_option_price=40.0,
+            invalidation_level=23400.0,
+            target_spot_price=23800.0,
+        )
+        self.test_engine.active_trade = trade
+        self.test_engine.trade_history = [trade]
+        self.test_engine.live_trading_enabled = True
+        self.test_engine.operating_mode = OperatingMode.heuristic
+        self.test_engine.live_feed_adapter = Mock()
+        self.temp_store.save(client_id="cid", access_token=self._make_dhan_token("cid"))
+
+        with patch.object(
+            self.test_engine.execution_service,
+            "place_market_order",
+            return_value=BrokerOrderResult(ok=True, order_id="exit-hard-stop", order_status="PENDING", message="ok", raw={}),
+        ) as place_order:
+            with patch.object(self.test_engine.option_quote_service, "fetch_quote", side_effect=DhanOptionQuoteError("offline")):
+                self.test_engine._handle_live_packet_now({"security_id": "13", "LTP": 23399.0, "LTT": "10:02:01", "volume": 1000})
+
+        self.assertEqual(place_order.call_args.kwargs["transaction_type"], "BUY")
+        self.assertIsNone(self.test_engine.active_trade)
+        self.assertIn("Hard LTP stop triggered", self.test_engine.trade_history[-1].exit_notes or "")
+
+    def test_stock_live_ltp_crossing_invalidation_closes_paper_trade_immediately(self) -> None:
+        self.test_engine.set_instrument_mode("stock")
+        trade = SimulatedTrade(
+            trade_id="stock-hard-stop",
+            status="OPEN",
+            direction="LONG_STOCK",
+            instrument_mode=InstrumentMode.stock,
+            instrument_label="SBIN",
+            price_mode="cash",
+            trade_security_id="3045",
+            quote_exchange_segment="NSE_EQ",
+            option_type="CE",
+            strike=0,
+            symbol="SBIN EQ",
+            quantity=10,
+            open_quantity=10,
+            entry_time=datetime(2026, 5, 29, 10, 0),
+            entry_price=100.0,
+            entry_spot_price=100.0,
+            entry_option_price=100.0,
+            current_price=100.0,
+            current_option_price=100.0,
+            stop_price=99.0,
+            stop_option_price=99.0,
+            target_price=110.0,
+            target_option_price=110.0,
+            invalidation_level=99.0,
+            target_spot_price=110.0,
+        )
+        self.test_engine.active_trade = trade
+        self.test_engine.trade_history = [trade]
+
+        self.test_engine._handle_live_packet_now({"security_id": "3045", "LTP": 98.95, "LTT": "10:02:01", "volume": 1000})
+
+        self.assertIsNone(self.test_engine.active_trade)
+        self.assertEqual(self.test_engine.trade_history[-1].exit_price, 98.95)
+        self.assertIn("Hard LTP stop triggered", self.test_engine.trade_history[-1].exit_notes or "")
+
     def test_nifty_option_trade_trails_stop_after_one_r(self) -> None:
         session = [
             self._make_candle(0, 23500, 23520, 23490, 23500),
