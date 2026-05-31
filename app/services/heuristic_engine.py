@@ -3082,6 +3082,8 @@ class HeuristicDecisionEngine:
             if round_probe is None:
                 return None
             nifty_round, nifty_distance, nifty_front_run, nifty_full_sweep = round_probe
+            if self._ignore_opening_candle_round_number(nifty_session, nifty_round, True):
+                return None
             if nifty_front_run and not self._nifty_round_front_run_grace_allowed(observation, option_type, current, nifty_session):
                 return None
             probe_index = max(index for index, candle in enumerate(nifty_recent) if candle.low == nifty_probe)
@@ -3138,6 +3140,8 @@ class HeuristicDecisionEngine:
             if round_probe is None:
                 return None
             nifty_round, nifty_distance, nifty_front_run, nifty_full_sweep = round_probe
+            if self._ignore_opening_candle_round_number(nifty_session, nifty_round, True):
+                return None
             if nifty_front_run and not self._nifty_round_front_run_grace_allowed(observation, option_type, current, nifty_session):
                 return None
             probe_index = max(index for index, candle in enumerate(nifty_recent) if candle.high == nifty_probe)

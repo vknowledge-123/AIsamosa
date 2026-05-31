@@ -2891,6 +2891,44 @@ class AppIntegrationTests(unittest.TestCase):
 
         self.assertTrue(any(candidate.setup_type == "companion_round_rejection_short" for candidate in candidates))
 
+    def test_nifty_companion_ignores_round_number_inside_first_candle_range(self) -> None:
+        engine = HeuristicDecisionEngine()
+        session = [
+            Candle(timestamp="2026-04-15T09:15:00", open=24163.8, high=24280.9, low=24162.7, close=24232.9, volume=1000),
+            Candle(timestamp="2026-04-15T09:26:00", open=24208.0, high=24216.0, low=24194.0, close=24202.0, volume=1100),
+            Candle(timestamp="2026-04-15T09:27:00", open=24202.0, high=24212.0, low=24188.0, close=24196.0, volume=1150),
+            Candle(timestamp="2026-04-15T09:28:00", open=24196.0, high=24198.0, low=24174.0, close=24180.0, volume=1250),
+            Candle(timestamp="2026-04-15T09:29:00", open=24180.0, high=24187.0, low=24162.0, close=24168.0, volume=1300),
+            Candle(timestamp="2026-04-15T09:30:00", open=24193.5, high=24194.7, low=24176.35, close=24183.25, volume=1350),
+        ]
+        context = self._build_context(session, previous_close=24120.0).model_copy(
+            update={
+                "companion_symbol": "BANKNIFTY",
+                "companion_session_candles": [
+                    Candle(timestamp="2026-04-15T09:26:00", open=50620.0, high=50642.0, low=50590.0, close=50610.0, volume=1000),
+                    Candle(timestamp="2026-04-15T09:27:00", open=50610.0, high=50624.0, low=50594.0, close=50605.0, volume=1050),
+                    Candle(timestamp="2026-04-15T09:28:00", open=50605.0, high=50620.0, low=50590.0, close=50612.0, volume=1100),
+                    Candle(timestamp="2026-04-15T09:29:00", open=50612.0, high=50616.0, low=50555.0, close=50570.0, volume=1300),
+                    Candle(timestamp="2026-04-15T09:30:00", open=50570.0, high=50578.0, low=50535.0, close=50542.0, volume=1350),
+                ],
+                "companion_current_candle": Candle(
+                    timestamp="2026-04-15T09:30:00", open=50570.0, high=50578.0, low=50535.0, close=50542.0, volume=1350
+                ),
+            }
+        )
+        observation = self._build_observation(
+            range_state="expanding",
+            participation_state="directional",
+            strong_intent=True,
+            vwap=24140.0,
+            atr=20.0,
+            higher_timeframe_context="neutral",
+        )
+
+        candidates = engine.build_companion_index_candidates(context, observation)
+
+        self.assertFalse(any(candidate.setup_type == "companion_round_rejection_short" for candidate in candidates))
+
     def test_nifty_mid_noise_filter_skips_fresh_entries(self) -> None:
         engine = HeuristicDecisionEngine()
         session = [
@@ -5663,6 +5701,62 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertEqual(decision.action, TradeAction.exit)
         self.assertEqual(decision.pending_setup_action, "ARM")
         self.assertEqual(decision.pending_setup_option_type, "PE")
+        self.assertIn("opposite liquidity sweep", decision.reason.lower())
+
+    def test_nifty_short_exits_and_arms_long_on_opening_low_reclaim(self) -> None:
+        candles = [
+            Candle(timestamp="2026-04-15T09:15:00", open=24163.8, high=24280.9, low=24162.7, close=24232.9, volume=1000),
+            Candle(timestamp="2026-04-15T09:30:00", open=24193.5, high=24194.7, low=24176.35, close=24183.25, volume=1300),
+            Candle(timestamp="2026-04-15T09:38:00", open=24171.8, high=24175.75, low=24147.5, close=24147.95, volume=1500),
+            Candle(timestamp="2026-04-15T09:39:00", open=24147.7, high=24158.2, low=24145.8, close=24151.35, volume=1550),
+            Candle(timestamp="2026-04-15T09:40:00", open=24151.05, high=24175.4, low=24149.7, close=24174.85, volume=1800),
+        ]
+        trade = self._build_trade(
+            entry_time=candles[1].timestamp,
+            entry_spot_price=24183.25,
+            invalidation_level=24223.25,
+            setup_type="bearish_rejection_watch",
+        ).model_copy(update={"direction": "LONG_PUT", "option_type": "PE", "target_spot_price": 24121.92})
+        context = self._build_context(candles, active_trade=trade)
+        observation = self._build_observation(atr=30.0, nifty_mid_noise=False)
+        opposite_candidate = SetupCandidate(
+            setup_type="bullish_reclaim_watch",
+            direction="LONG_CALL",
+            option_type="CE",
+            trigger_basis="close_above",
+            trigger_price=24162.7,
+            invalidation_level=24142.7,
+            defended_level=24162.7,
+            target_spot_price=24240.0,
+            first_target_price=24205.0,
+            score=74.0,
+            ready_to_enter=True,
+            notes=["Opening range low was swept and reclaimed with a strong recovery close."],
+            rule_ids=["R25", "R27", "R45", "R86"],
+            event=SweepEvent(
+                side="sell",
+                level_label="Opening Range Low",
+                level_price=24162.7,
+                sweep_index=2,
+                reclaim_index=4,
+                trigger_index=4,
+                sweep_price=24147.5,
+                defended_level=24162.7,
+                trigger_price=24162.7,
+                invalidation_level=24142.7,
+                primary=True,
+                quality="tradable",
+                notes=["Day/opening low liquidity was swept before reclaim."],
+            ),
+        )
+
+        with patch.object(self.test_engine.heuristic_engine, "build_candidates", return_value=[opposite_candidate]):
+            decision = self.test_engine.heuristic_engine.manage_active_trade(context, observation, current_trade_price=12.0)
+
+        self.assertEqual(decision.action, TradeAction.exit)
+        self.assertEqual(decision.pending_setup_action, "ARM")
+        self.assertEqual(decision.pending_setup_option_type, "CE")
+        self.assertEqual(decision.pending_setup_trigger_price, 24162.7)
         self.assertIn("opposite liquidity sweep", decision.reason.lower())
 
     def test_reversal_exit_can_enter_opposite_pending_setup_after_square_off(self) -> None:
