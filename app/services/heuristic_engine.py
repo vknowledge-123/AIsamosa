@@ -916,23 +916,98 @@ class HeuristicDecisionEngine:
             return None
         if (not bullish_trade) and exit_trigger >= trade.entry_spot_price:
             return None
-        tagged = context.current_candle.high >= exit_trigger if bullish_trade else context.current_candle.low <= exit_trigger
-        if not tagged:
+        if not self._nifty_round_reversal_structure_confirmed(
+            context.session_candles,
+            trade.entry_time,
+            bullish_trade=bullish_trade,
+            exit_trigger=exit_trigger,
+        ):
             return None
         return TradeDecision(
             action=TradeAction.exit,
             confidence=0.9,
             reason=(
-                f"Nifty moved from entry toward the next 100-point round shelf {round_level:.2f} and tagged "
-                f"the square-off band at {exit_trigger:.2f}; book the position before round-number resistance/support can reverse it."
+                f"Nifty moved from entry toward the next 100-point round shelf {round_level:.2f}, tagged "
+                f"the square-off band at {exit_trigger:.2f}, and then printed reversal structure; "
+                "book the position before round-number resistance/support expands against the trade."
             ),
             decision_source="heuristic",
             option_type=trade.option_type,
-            target_spot_price=exit_trigger,
+            target_spot_price=round(context.current_candle.close, 2),
             market_state=observation.day_type,
             setup_type=trade.setup_type,
             rule_ids_used=["R2", "R41", "R42", "R44", "R74", "R78", "R99"],
         )
+
+    def _nifty_round_reversal_structure_confirmed(
+        self,
+        candles: list[Candle],
+        entry_time,
+        *,
+        bullish_trade: bool,
+        exit_trigger: float,
+    ) -> bool:
+        if not candles:
+            return False
+        try:
+            since_entry = [candle for candle in candles if candle.timestamp >= entry_time]
+        except TypeError:
+            since_entry = candles
+        if not since_entry:
+            since_entry = candles
+        tag_index = next(
+            (
+                index
+                for index, candle in enumerate(since_entry)
+                if (candle.high >= exit_trigger if bullish_trade else candle.low <= exit_trigger)
+            ),
+            None,
+        )
+        if tag_index is None:
+            return False
+        after_tag = since_entry[tag_index:]
+        latest = after_tag[-1]
+        recent = after_tag[-3:]
+        last_two = after_tag[-2:]
+
+        def body(candle: Candle) -> float:
+            return abs(candle.close - candle.open)
+
+        def candle_range(candle: Candle) -> float:
+            return max(candle.high - candle.low, 0.01)
+
+        if bullish_trade:
+            rejection_at_band = any(
+                candle.high >= exit_trigger
+                and candle.close < min(candle.open, exit_trigger)
+                and (candle.high - max(candle.open, candle.close)) >= max(body(candle) * 0.35, candle_range(candle) * 0.12)
+                for candle in recent
+            )
+            consecutive_red = (
+                len(last_two) >= 2
+                and all(candle.close < candle.open for candle in last_two)
+                and last_two[-1].close < last_two[0].close
+            )
+            current_reversal = latest.close < latest.open and latest.close < exit_trigger and (
+                len(after_tag) == 1 or latest.close < after_tag[-2].close
+            )
+            return rejection_at_band or consecutive_red or current_reversal
+
+        rejection_at_band = any(
+            candle.low <= exit_trigger
+            and candle.close > max(candle.open, exit_trigger)
+            and (min(candle.open, candle.close) - candle.low) >= max(body(candle) * 0.35, candle_range(candle) * 0.12)
+            for candle in recent
+        )
+        consecutive_green = (
+            len(last_two) >= 2
+            and all(candle.close > candle.open for candle in last_two)
+            and last_two[-1].close > last_two[0].close
+        )
+        current_reversal = latest.close > latest.open and latest.close > exit_trigger and (
+            len(after_tag) == 1 or latest.close > after_tag[-2].close
+        )
+        return rejection_at_band or consecutive_green or current_reversal
 
     def _is_nifty_mode(self, context: StrategyContext) -> bool:
         return context.instrument.symbol == "NIFTY" and context.instrument.supports_options

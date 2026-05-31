@@ -3414,6 +3414,35 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertEqual(bearish_trade.option_type, "PE")
         self.assertEqual(bearish_trade.strike, 23200)
 
+    def test_nifty_entry_invalidation_is_normalized_to_20_40_point_risk(self) -> None:
+        candle = Candle(timestamp="2026-05-14T11:27:00", open=24240, high=24258, low=24230, close=24252, volume=1000)
+
+        tight_long = self.test_engine._build_entry_trade(
+            candle,
+            TradeDecision(action=TradeAction.enter_call, option_type="CE", invalidation_level=24245, target_spot_price=24340),
+            source="replay",
+        )
+        wide_long = self.test_engine._build_entry_trade(
+            candle,
+            TradeDecision(action=TradeAction.enter_call, option_type="CE", invalidation_level=24180, target_spot_price=24380),
+            source="replay",
+        )
+        tight_short = self.test_engine._build_entry_trade(
+            candle,
+            TradeDecision(action=TradeAction.enter_put, option_type="PE", invalidation_level=24260, target_spot_price=24180),
+            source="replay",
+        )
+        wide_short = self.test_engine._build_entry_trade(
+            candle,
+            TradeDecision(action=TradeAction.enter_put, option_type="PE", invalidation_level=24320, target_spot_price=24120),
+            source="replay",
+        )
+
+        self.assertEqual(tight_long.invalidation_level, 24232.0)
+        self.assertEqual(wide_long.invalidation_level, 24212.0)
+        self.assertEqual(tight_short.invalidation_level, 24272.0)
+        self.assertEqual(wide_short.invalidation_level, 24292.0)
+
     def test_short_option_pnl_and_live_order_sides_are_reversed(self) -> None:
         candle = Candle(timestamp="2026-05-14T11:27:00", open=23510, high=23542, low=23502, close=23534, volume=1000)
         decision = TradeDecision(action=TradeAction.enter_put, option_type="PE", invalidation_level=23590, target_spot_price=23410)
@@ -3728,6 +3757,13 @@ class AppIntegrationTests(unittest.TestCase):
         self.test_engine.live_trading_enabled = True
         self.test_engine.operating_mode = OperatingMode.heuristic
         self.test_engine.live_feed_adapter = Mock()
+        self.test_engine.candles = [
+            Candle(timestamp=datetime(2026, 5, 29, 10, 0), open=24252, high=24260, low=24245, close=24252, volume=1000),
+            Candle(timestamp=datetime(2026, 5, 29, 10, 1), open=24252, high=24283, low=24248, close=24276, volume=1200),
+            Candle(timestamp=datetime(2026, 5, 29, 10, 2), open=24276, high=24278, low=24258, close=24260, volume=1300),
+            Candle(timestamp=datetime(2026, 5, 29, 10, 3), open=24260, high=24262, low=24242, close=24245, volume=1400),
+        ]
+        self.test_engine.current_index = len(self.test_engine.candles) - 1
         self.temp_store.save(client_id="cid", access_token=self._make_dhan_token("cid"))
 
         with patch.object(
@@ -3736,7 +3772,7 @@ class AppIntegrationTests(unittest.TestCase):
             return_value=BrokerOrderResult(ok=True, order_id="exit-round", order_status="PENDING", message="ok", raw={}),
         ) as place_order:
             with patch.object(self.test_engine.option_quote_service, "fetch_quote", side_effect=DhanOptionQuoteError("offline")):
-                self.test_engine._handle_live_packet_now({"security_id": "13", "LTP": 24280.0, "LTT": "10:03:01", "volume": 1000})
+                self.test_engine._apply_live_ltp_trade_controls(24245.0, datetime(2026, 5, 29, 10, 3))
 
         self.assertEqual(place_order.call_args.kwargs["transaction_type"], "BUY")
         self.assertIsNone(self.test_engine.active_trade)
@@ -5390,7 +5426,9 @@ class AppIntegrationTests(unittest.TestCase):
         candles = [
             Candle(timestamp="2026-05-13T09:15:00", open=24120, high=24170, low=24100, close=24150, volume=1000),
             Candle(timestamp="2026-05-14T09:15:00", open=24240, high=24260, low=24230, close=24252, volume=1200),
-            Candle(timestamp="2026-05-14T09:16:00", open=24252, high=24282, low=24248, close=24262, volume=1400),
+            Candle(timestamp="2026-05-14T09:16:00", open=24252, high=24282, low=24248, close=24276, volume=1400),
+            Candle(timestamp="2026-05-14T09:17:00", open=24276, high=24278, low=24255, close=24258, volume=1450),
+            Candle(timestamp="2026-05-14T09:18:00", open=24258, high=24260, low=24240, close=24244, volume=1500),
         ]
         trade = self._build_trade(
             entry_time=candles[1].timestamp,
@@ -5409,8 +5447,33 @@ class AppIntegrationTests(unittest.TestCase):
         decision = self.test_engine.heuristic_engine.manage_active_trade(context, observation, current_trade_price=12.0)
 
         self.assertEqual(decision.action, TradeAction.exit)
-        self.assertEqual(decision.target_spot_price, 24280.0)
+        self.assertEqual(decision.target_spot_price, 24244.0)
         self.assertIn("next 100-point round shelf 24300.00", decision.reason)
+        self.assertIn("reversal structure", decision.reason)
+
+    def test_nifty_does_not_square_off_on_blind_next_round_band_tag(self) -> None:
+        candles = [
+            Candle(timestamp="2026-05-13T09:15:00", open=24120, high=24170, low=24100, close=24150, volume=1000),
+            Candle(timestamp="2026-05-14T09:15:00", open=24240, high=24260, low=24230, close=24252, volume=1200),
+            Candle(timestamp="2026-05-14T09:16:00", open=24252, high=24282, low=24248, close=24276, volume=1400),
+        ]
+        trade = self._build_trade(
+            entry_time=candles[1].timestamp,
+            entry_spot_price=24252.0,
+            invalidation_level=24220.0,
+            setup_type="bullish_reclaim_watch",
+        )
+        context = self._build_context(candles, active_trade=trade).model_copy(
+            update={
+                "nifty_heuristic_early_exit_enabled": False,
+                "nifty_target_enabled": False,
+            }
+        )
+        observation = self._build_observation(atr=25.0)
+
+        decision = self.test_engine.heuristic_engine.manage_active_trade(context, observation, current_trade_price=12.0)
+
+        self.assertNotEqual(decision.action, TradeAction.exit)
 
     def test_heuristic_v2_skips_nifty_opposite_setup_exit_when_setting_disabled(self) -> None:
         candles = [

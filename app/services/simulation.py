@@ -4273,10 +4273,16 @@ class SimulationEngine:
             exit_trigger = round_level - 20.0
             if exit_trigger <= trade.entry_spot_price:
                 return None
-            if ltp >= exit_trigger:
+            if self.heuristic_engine._nifty_round_reversal_structure_confirmed(
+                list(self.candles),
+                trade.entry_time,
+                bullish_trade=True,
+                exit_trigger=exit_trigger,
+            ):
                 return (
                     f"Nifty moved from entry toward the next 100-point round shelf {round_level:.2f}; "
-                    f"live spot tagged the square-off band at {exit_trigger:.2f}, so exit before round-number resistance can reverse it.",
+                    f"live candles tagged the square-off band at {exit_trigger:.2f} and confirmed reversal structure, "
+                    "so exit before round-number resistance expands against the trade.",
                     round(exit_trigger, 2),
                 )
             return None
@@ -4286,10 +4292,16 @@ class SimulationEngine:
         exit_trigger = round_level + 20.0
         if exit_trigger >= trade.entry_spot_price:
             return None
-        if ltp <= exit_trigger:
+        if self.heuristic_engine._nifty_round_reversal_structure_confirmed(
+            list(self.candles),
+            trade.entry_time,
+            bullish_trade=False,
+            exit_trigger=exit_trigger,
+        ):
             return (
                 f"Nifty moved from entry toward the next 100-point round shelf {round_level:.2f}; "
-                f"live spot tagged the square-off band at {exit_trigger:.2f}, so exit before round-number support can reverse it.",
+                f"live candles tagged the square-off band at {exit_trigger:.2f} and confirmed reversal structure, "
+                "so exit before round-number support expands against the trade.",
                 round(exit_trigger, 2),
             )
         return None
@@ -4405,6 +4417,35 @@ class SimulationEngine:
             resolved_stop = round(stop_price or max(entry_price - 25, 5), 2)
             resolved_target = round(target_price or (entry_price + 50), 2)
         return resolved_stop, resolved_target
+
+    def _normalize_nifty_entry_invalidation(
+        self,
+        entry_spot: float,
+        signal_option_type: str,
+        invalidation_level: float | None,
+    ) -> float | None:
+        if self.instrument_mode != InstrumentMode.nifty or self.instrument_spec.symbol != "NIFTY":
+            return invalidation_level
+        if invalidation_level is None or abs(entry_spot) < 10000:
+            return invalidation_level
+        bullish_signal = signal_option_type == "CE"
+        if bullish_signal:
+            distance = entry_spot - invalidation_level
+            if distance <= 0:
+                return round(entry_spot - 20.0, 2)
+            if distance < 20.0:
+                return round(entry_spot - 20.0, 2)
+            if distance > 40.0:
+                return round(entry_spot - 40.0, 2)
+            return round(invalidation_level, 2)
+        distance = invalidation_level - entry_spot
+        if distance <= 0:
+            return round(entry_spot + 20.0, 2)
+        if distance < 20.0:
+            return round(entry_spot + 20.0, 2)
+        if distance > 40.0:
+            return round(entry_spot + 40.0, 2)
+        return round(invalidation_level, 2)
 
     def _update_trade_level_from_structure(self, trade: SimulatedTrade, current_spot: float, decision: TradeDecision) -> tuple[float | None, float | None]:
         next_stop = decision.stop_option_price
@@ -4567,6 +4608,13 @@ class SimulationEngine:
         source: str = "manual",
     ) -> SimulatedTrade:
         signal_option_type = self.normalize_option_type(decision.option_type, action=decision.action) or "CE"
+        normalized_invalidation = self._normalize_nifty_entry_invalidation(
+            current_candle.close,
+            signal_option_type,
+            decision.invalidation_level,
+        )
+        if normalized_invalidation != decision.invalidation_level:
+            decision = decision.model_copy(update={"invalidation_level": normalized_invalidation})
         option_type = signal_option_type
         is_option_trade = self.instrument_spec.supports_options and not self._use_spot_pricing_for_source(source)
         use_option_selling = is_option_trade and self._use_nifty_live_option_selling(source)
