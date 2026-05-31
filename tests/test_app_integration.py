@@ -5613,6 +5613,96 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertNotEqual(disabled.action, TradeAction.exit)
         self.assertNotEqual(replay_cash_disabled.action, TradeAction.exit)
 
+    def test_nifty_exits_and_arms_opposite_trade_on_confirmed_liquidity_reversal(self) -> None:
+        candles = [
+            self._make_candle(0, 24120, 24130, 24100, 24120),
+            self._make_candle(1, 24120, 24155, 24115, 24145),
+            self._make_candle(2, 24145, 24162, 24092, 24096),
+        ]
+        trade = self._build_trade(
+            entry_time=candles[0].timestamp,
+            entry_spot_price=24120.0,
+            invalidation_level=24080.0,
+            setup_type="bullish_reclaim_watch",
+        )
+        context = self._build_context(candles, active_trade=trade)
+        observation = self._build_observation(atr=25.0)
+        opposite_candidate = SetupCandidate(
+            setup_type="bearish_rejection_watch",
+            direction="LONG_PUT",
+            option_type="PE",
+            trigger_basis="close_below",
+            trigger_price=24100.0,
+            invalidation_level=24140.0,
+            defended_level=24100.0,
+            target_spot_price=24020.0,
+            first_target_price=24070.0,
+            score=70.0,
+            ready_to_enter=True,
+            notes=["Previous day high swept and rejected cleanly."],
+            rule_ids=["R26", "R28", "R45"],
+            event=SweepEvent(
+                side="buy",
+                level_label="Previous Day High",
+                level_price=24100.0,
+                sweep_index=1,
+                reclaim_index=2,
+                trigger_index=2,
+                sweep_price=24162.0,
+                defended_level=24100.0,
+                trigger_price=24100.0,
+                invalidation_level=24140.0,
+                primary=True,
+                quality="tradable",
+            ),
+        )
+
+        with patch.object(self.test_engine.heuristic_engine, "build_candidates", return_value=[opposite_candidate]):
+            decision = self.test_engine.heuristic_engine.manage_active_trade(context, observation, current_trade_price=12.0)
+
+        self.assertEqual(decision.action, TradeAction.exit)
+        self.assertEqual(decision.pending_setup_action, "ARM")
+        self.assertEqual(decision.pending_setup_option_type, "PE")
+        self.assertIn("opposite liquidity sweep", decision.reason.lower())
+
+    def test_reversal_exit_can_enter_opposite_pending_setup_after_square_off(self) -> None:
+        exit_candle = Candle(timestamp="2026-05-14T09:42:00", open=24105, high=24108, low=24062, close=24070, volume=1600)
+        old_trade = self._build_trade(
+            entry_time=datetime(2026, 5, 14, 9, 30),
+            entry_spot_price=24120.0,
+            invalidation_level=24080.0,
+            setup_type="bullish_reclaim_watch",
+        )
+        old_trade.price_mode = "cash"
+        self.test_engine.active_trade = old_trade
+        self.test_engine.trade_history = [old_trade]
+        decision = TradeDecision(
+            action=TradeAction.exit,
+            confidence=0.82,
+            reason="Opposite liquidity reversal confirmed.",
+            option_type="CE",
+            target_spot_price=24020.0,
+            pending_setup_action="ARM",
+            pending_setup_type="bearish_rejection_watch",
+            pending_setup_direction="LONG_PUT",
+            pending_setup_option_type="PE",
+            pending_setup_trigger_price=24100.0,
+            pending_setup_invalidation_level=24140.0,
+            pending_setup_trigger_basis="close_below",
+            pending_setup_notes="Bearish setup is ready after liquidity sweep.",
+        )
+
+        self.test_engine.apply_pending_setup_decision(exit_candle, decision)
+        self.test_engine.apply_trade_logic(exit_candle, decision, source="replay")
+
+        self.assertEqual(old_trade.status, "CLOSED")
+        self.assertIsNotNone(self.test_engine.active_trade)
+        assert self.test_engine.active_trade is not None
+        self.assertNotEqual(self.test_engine.active_trade.trade_id, old_trade.trade_id)
+        self.assertEqual(self.test_engine.active_trade.option_type, "PE")
+        self.assertEqual(self.test_engine.active_trade.setup_type, "bearish_rejection_watch")
+        self.assertEqual(old_trade.exit_price, 24070.0)
+
     def test_heuristic_replaces_stale_long_setup_with_short_when_market_keeps_falling(self) -> None:
         candles = [
             Candle(timestamp="2026-05-13T09:15:00", open=100, high=101, low=99, close=100, volume=1000),

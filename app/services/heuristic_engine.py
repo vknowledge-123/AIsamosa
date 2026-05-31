@@ -4283,17 +4283,35 @@ class HeuristicDecisionEngine:
         strongest_opposite = self.select_best_candidate(
             [candidate for candidate in candidates if (candidate.option_type == "PE") == bullish_trade]
         )
-        if heuristic_early_exit_enabled and strongest_opposite and strongest_opposite.ready_to_enter and strongest_opposite.score >= 78:
+        opposite_reversal = self._active_trade_opposite_liquidity_reversal(
+            context,
+            observation,
+            strongest_opposite,
+        )
+        if heuristic_early_exit_enabled and opposite_reversal is not None:
             return TradeDecision(
                 action=TradeAction.exit,
-                confidence=min(0.95, strongest_opposite.score / 100),
-                reason="A strong opposite SL-hunting setup has confirmed against the active thesis.",
+                confidence=min(0.95, opposite_reversal.score / 100),
+                reason=(
+                    "A proper opposite liquidity sweep and reclaim/rejection has confirmed against the active thesis, "
+                    "so square off before the stop is hit and prepare the opposite trade."
+                ),
                 decision_source="heuristic",
                 option_type=trade.option_type,
                 market_state=observation.day_type,
-                setup_score=strongest_opposite.score,
-                setup_type=strongest_opposite.setup_type,
-                rule_ids_used=strongest_opposite.rule_ids + ["R45"],
+                setup_score=opposite_reversal.score,
+                setup_type=opposite_reversal.setup_type,
+                target_spot_price=opposite_reversal.target_spot_price,
+                first_target_price=opposite_reversal.first_target_price,
+                pending_setup_action="REPLACE" if context.pending_setup is not None else "ARM",
+                pending_setup_type=opposite_reversal.setup_type,
+                pending_setup_direction=opposite_reversal.direction,
+                pending_setup_trigger_price=round(opposite_reversal.trigger_price, 2),
+                pending_setup_invalidation_level=round(opposite_reversal.invalidation_level, 2),
+                pending_setup_trigger_basis=opposite_reversal.trigger_basis,
+                pending_setup_notes=self._candidate_reason(opposite_reversal, observation, enter_now=False),
+                pending_setup_option_type=opposite_reversal.option_type,
+                rule_ids_used=opposite_reversal.rule_ids + ["R45", "R86"],
                 )
 
         if (
@@ -4621,6 +4639,37 @@ class HeuristicDecisionEngine:
         if not candidates:
             return None
         return max(candidates, key=lambda item: item.score)
+
+    def _active_trade_opposite_liquidity_reversal(
+        self,
+        context: StrategyContext,
+        observation: Observation,
+        candidate: SetupCandidate | None,
+    ) -> SetupCandidate | None:
+        if candidate is None or not candidate.ready_to_enter:
+            return None
+        score_floor = 66.0 if self._is_nifty_mode(context) else 72.0
+        if candidate.score < score_floor:
+            return None
+        event = candidate.event
+        if event is None or event.reclaim_index is None:
+            return None
+        if event.quality not in {"tradable", "explosive"}:
+            return None
+        label = event.level_label.lower()
+        liquidity_based = (
+            event.primary
+            or self._is_obvious_stop_pool_label(event.level_label)
+            or label.startswith("companion round number")
+        )
+        if not liquidity_based:
+            return None
+        recent_reclaim = event.reclaim_index >= max(0, len(context.session_candles) - 3)
+        if not recent_reclaim:
+            return None
+        if self._is_nifty_mode(context) and observation.nifty_mid_noise and candidate.score < 82:
+            return None
+        return candidate
 
     def _candidate_reason(self, candidate: SetupCandidate, observation: Observation, *, enter_now: bool) -> str:
         action_phrase = "Entry is allowed now" if enter_now else "Setup should stay armed"

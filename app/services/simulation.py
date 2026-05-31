@@ -4202,6 +4202,16 @@ class SimulationEngine:
         self.pending_setup.status_reason = reason
         self.pending_setup.executed_trade_id = executed_trade_id
 
+    def _trigger_pending_setup_after_exit(self, current_candle: Candle, source: str) -> None:
+        trigger_decision = self.evaluate_pending_setup_trigger(current_candle)
+        if trigger_decision is None or trigger_decision.action not in {TradeAction.enter_call, TradeAction.enter_put}:
+            return
+        trigger_decision = self._apply_stock_trade_bias_filter_locked(trigger_decision)
+        trigger_decision = self._apply_stock_turnover_filter_locked(current_candle, trigger_decision)
+        self.decision = trigger_decision
+        self.apply_pending_setup_decision(current_candle, trigger_decision)
+        self.apply_trade_logic(current_candle, trigger_decision, source=source)
+
     def current_trade_market_price(self, current_spot: float, trade: SimulatedTrade) -> float:
         if trade.price_mode == "cash":
             return round(current_spot, 2)
@@ -5145,11 +5155,15 @@ class SimulationEngine:
             return
 
         if decision.action == TradeAction.exit:
+            exited = False
             if self._should_send_live_orders(source):
-                self._exit_live_trade(current_candle, decision.reason)
+                exited = self._exit_live_trade(current_candle, decision.reason)
             else:
                 exit_candle = current_candle
-                if decision.target_spot_price is not None:
+                if (
+                    decision.target_spot_price is not None
+                    and self.normalize_pending_setup_action(decision.pending_setup_action) == "NONE"
+                ):
                     exit_spot = round(decision.target_spot_price, 2)
                     exit_candle = Candle(
                         timestamp=current_candle.timestamp,
@@ -5160,6 +5174,9 @@ class SimulationEngine:
                         volume=current_candle.volume,
                     )
                 self.close_active_trade(exit_candle, decision.reason)
+                exited = True
+            if exited and self.normalize_pending_setup_action(decision.pending_setup_action) in {"ARM", "REPLACE", "KEEP"}:
+                self._trigger_pending_setup_after_exit(current_candle, source)
 
     def close_active_trade(self, candle: Candle, note: str) -> None:
         if not self.active_trade:
