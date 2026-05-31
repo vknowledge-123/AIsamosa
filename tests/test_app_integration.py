@@ -5283,6 +5283,61 @@ class AppIntegrationTests(unittest.TestCase):
 
         self.assertNotEqual(disabled_decision.action, TradeAction.update_stop)
 
+    def test_nifty_cost_sl_control_moves_stop_to_entry_without_trailing_toggle(self) -> None:
+        candles = [
+            Candle(timestamp="2026-05-13T09:15:00", open=23100, high=23120, low=23080, close=23100, volume=1000),
+            Candle(timestamp="2026-05-14T09:15:00", open=23192, high=23205, low=23180, close=23196, volume=1200),
+            Candle(timestamp="2026-05-14T09:16:00", open=23196, high=23228, low=23194, close=23220, volume=1400),
+        ]
+        trade = self._build_trade(
+            entry_time=candles[1].timestamp,
+            entry_spot_price=23192.0,
+            invalidation_level=23140.0,
+            setup_type="bullish_reclaim_watch",
+        )
+        context = self._build_context(candles, active_trade=trade).model_copy(
+            update={
+                "nifty_trailing_stop_enabled": False,
+                "nifty_cost_sl_enabled": True,
+                "nifty_cost_sl_points": 35.0,
+                "nifty_target_enabled": False,
+            }
+        )
+        observation = self._build_observation(atr=25.0)
+
+        decision = self.test_engine.heuristic_engine.manage_active_trade(context, observation, current_trade_price=11.0)
+
+        self.assertEqual(decision.action, TradeAction.update_stop)
+        self.assertEqual(decision.invalidation_level, 23192.0)
+        self.assertIn("cost-sl", decision.reason.lower())
+
+    def test_nifty_fixed_target_control_exits_on_spot_points(self) -> None:
+        candles = [
+            Candle(timestamp="2026-05-13T09:15:00", open=23100, high=23120, low=23080, close=23100, volume=1000),
+            Candle(timestamp="2026-05-14T09:15:00", open=23192, high=23205, low=23180, close=23196, volume=1200),
+            Candle(timestamp="2026-05-14T09:16:00", open=23196, high=23282, low=23194, close=23270, volume=1400),
+        ]
+        trade = self._build_trade(
+            entry_time=candles[1].timestamp,
+            entry_spot_price=23192.0,
+            invalidation_level=23140.0,
+            setup_type="bullish_reclaim_watch",
+        )
+        context = self._build_context(candles, active_trade=trade).model_copy(
+            update={
+                "nifty_heuristic_early_exit_enabled": False,
+                "nifty_target_enabled": True,
+                "nifty_target_points": 90.0,
+            }
+        )
+        observation = self._build_observation(atr=25.0)
+
+        decision = self.test_engine.heuristic_engine.manage_active_trade(context, observation, current_trade_price=12.0)
+
+        self.assertEqual(decision.action, TradeAction.exit)
+        self.assertEqual(decision.target_spot_price, 23282.0)
+        self.assertIn("fixed target", decision.reason.lower())
+
     def test_heuristic_v2_skips_nifty_opposite_setup_exit_when_setting_disabled(self) -> None:
         candles = [
             self._make_candle(0, 100, 101, 99, 100),
@@ -5331,9 +5386,21 @@ class AppIntegrationTests(unittest.TestCase):
             enabled = self.test_engine.heuristic_engine.manage_active_trade(context, observation, current_trade_price=12.0)
             disabled_context = context.model_copy(update={"nifty_heuristic_early_exit_enabled": False})
             disabled = self.test_engine.heuristic_engine.manage_active_trade(disabled_context, observation, current_trade_price=12.0)
+            replay_cash_context = context.model_copy(
+                update={
+                    "active_trade": trade.model_copy(update={"price_mode": "cash"}),
+                    "nifty_heuristic_early_exit_enabled": False,
+                }
+            )
+            replay_cash_disabled = self.test_engine.heuristic_engine.manage_active_trade(
+                replay_cash_context,
+                observation,
+                current_trade_price=101.2,
+            )
 
         self.assertEqual(enabled.action, TradeAction.exit)
         self.assertNotEqual(disabled.action, TradeAction.exit)
+        self.assertNotEqual(replay_cash_disabled.action, TradeAction.exit)
 
     def test_heuristic_replaces_stale_long_setup_with_short_when_market_keeps_falling(self) -> None:
         candles = [

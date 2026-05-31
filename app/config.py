@@ -20,6 +20,10 @@ class Settings(BaseSettings):
     nifty_expiry_preference: str = "current-weekly"
     nifty_trailing_stop_enabled: bool = True
     nifty_heuristic_early_exit_enabled: bool = True
+    nifty_cost_sl_enabled: bool = False
+    nifty_cost_sl_points: float = 35.0
+    nifty_target_enabled: bool = False
+    nifty_target_points: float = 90.0
     pyramiding_enabled: bool = False
     intelligent_pyramiding_enabled: bool = False
     nifty_option_trade_mode: str = "selling"

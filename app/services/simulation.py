@@ -306,6 +306,18 @@ class SimulationEngine:
     def _nifty_expiry_preference(self) -> str:
         return self.credential_store.get_nifty_expiry_preference(self.settings)
 
+    def _nifty_cost_sl_enabled(self) -> bool:
+        return self.credential_store.get_nifty_cost_sl_enabled(self.settings)
+
+    def _nifty_cost_sl_points(self) -> float:
+        return self.credential_store.get_nifty_cost_sl_points(self.settings)
+
+    def _nifty_target_enabled(self) -> bool:
+        return self.credential_store.get_nifty_target_enabled(self.settings)
+
+    def _nifty_target_points(self) -> float:
+        return self.credential_store.get_nifty_target_points(self.settings)
+
     def _use_banknifty_companion(self) -> bool:
         return self.instrument_mode == InstrumentMode.nifty and self.instrument_spec.symbol == "NIFTY"
 
@@ -594,6 +606,10 @@ class SimulationEngine:
             stock_heuristic_early_exit_enabled=self.credential_store.get_stock_heuristic_early_exit_enabled(self.settings),
             nifty_trailing_stop_enabled=self.credential_store.get_nifty_trailing_stop_enabled(self.settings),
             nifty_heuristic_early_exit_enabled=self.credential_store.get_nifty_heuristic_early_exit_enabled(self.settings),
+            nifty_cost_sl_enabled=self._nifty_cost_sl_enabled(),
+            nifty_cost_sl_points=self._nifty_cost_sl_points(),
+            nifty_target_enabled=self._nifty_target_enabled(),
+            nifty_target_points=self._nifty_target_points(),
             pyramiding_enabled=self.credential_store.get_pyramiding_enabled(self.settings),
             intelligent_pyramiding_enabled=self.credential_store.get_intelligent_pyramiding_enabled(self.settings),
             nifty_option_trade_mode=self.credential_store.get_nifty_option_trade_mode(self.settings),
@@ -2720,6 +2736,10 @@ class SimulationEngine:
         stock_heuristic_early_exit_enabled: bool | None = None,
         nifty_trailing_stop_enabled: bool | None = None,
         nifty_heuristic_early_exit_enabled: bool | None = None,
+        nifty_cost_sl_enabled: bool | None = None,
+        nifty_cost_sl_points: float | None = None,
+        nifty_target_enabled: bool | None = None,
+        nifty_target_points: float | None = None,
         pyramiding_enabled: bool | None = None,
         intelligent_pyramiding_enabled: bool | None = None,
         nifty_option_trade_mode: str | None = None,
@@ -2742,6 +2762,10 @@ class SimulationEngine:
                 stock_heuristic_early_exit_enabled=stock_heuristic_early_exit_enabled,
                 nifty_trailing_stop_enabled=nifty_trailing_stop_enabled,
                 nifty_heuristic_early_exit_enabled=nifty_heuristic_early_exit_enabled,
+                nifty_cost_sl_enabled=nifty_cost_sl_enabled,
+                nifty_cost_sl_points=nifty_cost_sl_points,
+                nifty_target_enabled=nifty_target_enabled,
+                nifty_target_points=nifty_target_points,
                 pyramiding_enabled=pyramiding_enabled,
                 intelligent_pyramiding_enabled=intelligent_pyramiding_enabled,
                 nifty_option_trade_mode=nifty_option_trade_mode,
@@ -2913,6 +2937,10 @@ class SimulationEngine:
             stock_heuristic_early_exit_enabled=self.credential_store.get_stock_heuristic_early_exit_enabled(self.settings),
             nifty_trailing_stop_enabled=self.credential_store.get_nifty_trailing_stop_enabled(self.settings),
             nifty_heuristic_early_exit_enabled=self.credential_store.get_nifty_heuristic_early_exit_enabled(self.settings),
+            nifty_cost_sl_enabled=self._nifty_cost_sl_enabled(),
+            nifty_cost_sl_points=self._nifty_cost_sl_points(),
+            nifty_target_enabled=self._nifty_target_enabled(),
+            nifty_target_points=self._nifty_target_points(),
             pyramiding_enabled=self.credential_store.get_pyramiding_enabled(self.settings),
             intelligent_pyramiding_enabled=self.credential_store.get_intelligent_pyramiding_enabled(self.settings),
             nifty_option_trade_mode=self.credential_store.get_nifty_option_trade_mode(self.settings),
@@ -3118,7 +3146,7 @@ class SimulationEngine:
     def _handle_live_packet_now(self, packet: dict) -> None:
         evaluation_index = None
         evaluation_symbol: str | None = None
-        hard_stop_check: tuple[float, datetime] | None = None
+        live_trade_control_check: tuple[float, datetime] | None = None
         with self.lock:
             security_id = str(packet.get("security_id", ""))
             ltp = self._as_float(packet.get("LTP"))
@@ -3166,9 +3194,8 @@ class SimulationEngine:
             if (
                 self.active_trade is not None
                 and security_id == self.instrument_spec.security_id
-                and self._live_ltp_crossed_invalidation(self.active_trade, ltp)
             ):
-                hard_stop_check = (ltp, tick_time)
+                live_trade_control_check = (ltp, tick_time)
             self.live_feed.connected = True
             self.live_feed.status = "connected"
             self.live_feed.source = "dhan-websocket"
@@ -3181,9 +3208,9 @@ class SimulationEngine:
             self.live_feed.error = None
             evaluation_index = self._update_live_candle_locked(tick_time, ltp, volume_delta)
             self._mark_state_dirty_locked()
-        if hard_stop_check is not None:
-            stop_ltp, stop_time = hard_stop_check
-            if self._exit_active_trade_on_ltp_invalidation(stop_ltp, stop_time):
+        if live_trade_control_check is not None:
+            control_ltp, control_time = live_trade_control_check
+            if self._apply_live_ltp_trade_controls(control_ltp, control_time):
                 return
         if evaluation_index is not None:
             self._queue_live_evaluation(evaluation_symbol, evaluation_index)
@@ -4221,6 +4248,86 @@ class SimulationEngine:
         with self.lock:
             if self._live_ltp_crossed_invalidation(self.active_trade, ltp):
                 self.close_active_trade(exit_candle, note)
+                return True
+        return False
+
+    def _is_nifty_active_trade(self, trade: SimulatedTrade | None) -> bool:
+        if trade is None:
+            return False
+        mode_value = getattr(trade.instrument_mode, "value", trade.instrument_mode)
+        return (
+            mode_value == InstrumentMode.nifty.value
+            and self.instrument_mode == InstrumentMode.nifty
+            and self.instrument_spec.symbol == "NIFTY"
+        )
+
+    def _apply_live_ltp_trade_controls(self, ltp: float, tick_time: datetime) -> bool:
+        with self.lock:
+            trade = self.active_trade
+            if trade is None:
+                return False
+            bullish_trade = self._is_bullish_spot_trade_direction(trade.direction)
+            nifty_trade = self._is_nifty_active_trade(trade)
+            exit_note: str | None = None
+            if nifty_trade and self._nifty_target_enabled() and self._nifty_target_points() > 0:
+                target_points = self._nifty_target_points()
+                target_spot = trade.entry_spot_price + target_points if bullish_trade else trade.entry_spot_price - target_points
+                target_hit = ltp >= target_spot if bullish_trade else ltp <= target_spot
+                if target_hit:
+                    exit_note = (
+                        f"Nifty fixed target control booked profit: live spot {ltp:.2f} reached "
+                        f"{target_spot:.2f}, {target_points:.2f} points from entry."
+                    )
+            if exit_note is None and self._live_ltp_crossed_invalidation(trade, ltp):
+                invalidation = trade.invalidation_level or ltp
+                exit_note = (
+                    f"Hard LTP stop triggered: live price {ltp:.2f} crossed invalidation "
+                    f"{invalidation:.2f} before candle close."
+                )
+            if exit_note is None and nifty_trade and self._nifty_cost_sl_enabled() and self._nifty_cost_sl_points() > 0:
+                cost_points = self._nifty_cost_sl_points()
+                favorable_spot = trade.entry_spot_price + cost_points if bullish_trade else trade.entry_spot_price - cost_points
+                favorable_hit = ltp >= favorable_spot if bullish_trade else ltp <= favorable_spot
+                already_at_cost = (
+                    trade.invalidation_level is not None
+                    and (
+                        (bullish_trade and trade.invalidation_level >= trade.entry_spot_price)
+                        or ((not bullish_trade) and trade.invalidation_level <= trade.entry_spot_price)
+                    )
+                )
+                if favorable_hit and not already_at_cost:
+                    trade.invalidation_level = round(trade.entry_spot_price, 2)
+                    next_stop = (
+                        self.price_option(trade.invalidation_level, trade.strike, trade.option_type)
+                        if trade.price_mode == "option"
+                        else trade.invalidation_level
+                    )
+                    if self._is_short_trade_direction(trade.direction):
+                        trade.stop_price = min(trade.stop_price, round(next_stop, 2))
+                    else:
+                        trade.stop_price = max(trade.stop_price, round(next_stop, 2))
+                    trade.stop_option_price = trade.stop_price
+                    trade.notes = (
+                        f"Nifty cost-SL control moved invalidation to entry after live spot moved "
+                        f"{cost_points:.2f} points in favor."
+                    )
+                    self._mark_state_dirty_locked()
+                    return True
+            if exit_note is None:
+                return False
+            exit_candle = Candle(
+                timestamp=tick_time,
+                open=ltp,
+                high=ltp,
+                low=ltp,
+                close=ltp,
+                volume=0.0,
+            )
+        if self._should_send_live_orders("live"):
+            return self._exit_live_trade(exit_candle, exit_note)
+        with self.lock:
+            if self.active_trade is not None:
+                self.close_active_trade(exit_candle, exit_note)
                 return True
         return False
 

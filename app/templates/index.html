@@ -249,6 +249,18 @@
             <span>Allow Nifty Heuristic Early Exits</span>
           </label>
           <label class="checkbox-row">
+            <input type="checkbox" name="nifty_cost_sl_enabled" />
+            <span>Enable Nifty Cost SL Control</span>
+          </label>
+          <label>Nifty Cost SL Points</label>
+          <input type="number" name="nifty_cost_sl_points" min="0" step="1" value="35" />
+          <label class="checkbox-row">
+            <input type="checkbox" name="nifty_target_enabled" />
+            <span>Enable Nifty Target Control</span>
+          </label>
+          <label>Nifty Target Points</label>
+          <input type="number" name="nifty_target_points" min="0" step="1" value="90" />
+          <label class="checkbox-row">
             <input type="checkbox" name="pyramiding_enabled" />
             <span>Enable Heuristic Pyramiding</span>
           </label>
@@ -338,6 +350,22 @@
           <div class="list-item">
             <strong>Nifty Heuristic Early Exits</strong>
             <p id="savedNiftyHeuristicExitValue">Enabled</p>
+          </div>
+          <div class="list-item">
+            <strong>Nifty Cost SL Control</strong>
+            <p id="savedNiftyCostSlValue">Disabled</p>
+          </div>
+          <div class="list-item">
+            <strong>Nifty Cost SL Points</strong>
+            <p id="savedNiftyCostSlPointsValue">35</p>
+          </div>
+          <div class="list-item">
+            <strong>Nifty Target Control</strong>
+            <p id="savedNiftyTargetValue">Disabled</p>
+          </div>
+          <div class="list-item">
+            <strong>Nifty Target Points</strong>
+            <p id="savedNiftyTargetPointsValue">90</p>
           </div>
           <div class="list-item">
             <strong>Heuristic Pyramiding</strong>

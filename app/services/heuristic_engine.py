@@ -3880,7 +3880,12 @@ class HeuristicDecisionEngine:
         risk = max(abs(trade.entry_spot_price - (trade.invalidation_level or trade.entry_spot_price)), observation.atr * 0.6)
         bullish_trade = trade.direction in {"LONG_CALL", "LONG_STOCK", "SHORT_PUT"}
         stock_mode_trade = not context.instrument.supports_options and trade.price_mode == "cash"
-        nifty_mode_trade = context.instrument.symbol == "NIFTY" and context.instrument.supports_options and trade.price_mode == "option"
+        instrument_mode = getattr(context.instrument.mode, "value", context.instrument.mode)
+        nifty_mode_trade = (
+            instrument_mode == "nifty"
+            and context.instrument.symbol == "NIFTY"
+            and context.instrument.supports_options
+        )
         heuristic_early_exit_enabled = (
             (stock_mode_trade and context.stock_heuristic_early_exit_enabled)
             or (nifty_mode_trade and context.nifty_heuristic_early_exit_enabled)
@@ -3900,6 +3905,89 @@ class HeuristicDecisionEngine:
         regime_deteriorated = observation.participation_state in {"fair_value_churn", "post_trend_balance"} and (
             observation.session_phase == "midday" or observation.range_state == "compressing"
         )
+
+        if nifty_mode_trade and context.nifty_target_enabled and context.nifty_target_points > 0:
+            target_spot = (
+                trade.entry_spot_price + context.nifty_target_points
+                if bullish_trade
+                else trade.entry_spot_price - context.nifty_target_points
+            )
+            target_tagged = (
+                context.current_candle.high >= target_spot
+                if bullish_trade
+                else context.current_candle.low <= target_spot
+            )
+            if target_tagged:
+                return TradeDecision(
+                    action=TradeAction.exit,
+                    confidence=0.95,
+                    reason=(
+                        f"Nifty fixed target control booked profit because spot reached "
+                        f"{target_spot:.2f}, {context.nifty_target_points:.2f} points from entry."
+                    ),
+                    decision_source="heuristic",
+                    option_type=trade.option_type,
+                    target_spot_price=round(target_spot, 2),
+                    market_state=observation.day_type,
+                    setup_type=trade.setup_type,
+                    rule_ids_used=["R41", "R42", "R44", "R74", "R99"],
+                )
+
+        if trade.invalidation_level is not None:
+            invalidation_tagged = (
+                context.current_candle.low <= trade.invalidation_level
+                if bullish_trade
+                else context.current_candle.high >= trade.invalidation_level
+            )
+            if nifty_mode_trade and invalidation_tagged:
+                return TradeDecision(
+                    action=TradeAction.exit,
+                    confidence=0.92,
+                    reason=(
+                        f"Nifty spot touched invalidation {trade.invalidation_level:.2f}, "
+                        "so exit without waiting for candle close."
+                    ),
+                    decision_source="heuristic",
+                    option_type=trade.option_type,
+                    market_state=observation.day_type,
+                    setup_type=trade.setup_type,
+                    rule_ids_used=["R41", "R42", "R45", "R66", "R99"],
+                )
+
+        if nifty_mode_trade and context.nifty_cost_sl_enabled and context.nifty_cost_sl_points > 0:
+            favorable_level = (
+                trade.entry_spot_price + context.nifty_cost_sl_points
+                if bullish_trade
+                else trade.entry_spot_price - context.nifty_cost_sl_points
+            )
+            favorable_tagged = (
+                context.current_candle.high >= favorable_level
+                if bullish_trade
+                else context.current_candle.low <= favorable_level
+            )
+            already_at_cost = (
+                trade.invalidation_level is not None
+                and (
+                    (bullish_trade and trade.invalidation_level >= trade.entry_spot_price)
+                    or ((not bullish_trade) and trade.invalidation_level <= trade.entry_spot_price)
+                )
+            )
+            if favorable_tagged and not already_at_cost:
+                return TradeDecision(
+                    action=TradeAction.update_stop,
+                    confidence=0.86,
+                    reason=(
+                        f"Nifty cost-SL control is active: spot moved {context.nifty_cost_sl_points:.2f} "
+                        "points in favor, so move invalidation to entry cost."
+                    ),
+                    decision_source="heuristic",
+                    option_type=trade.option_type,
+                    invalidation_level=round(trade.entry_spot_price, 2),
+                    market_state=observation.day_type,
+                    setup_type=trade.setup_type,
+                    rule_ids_used=["R41", "R42", "R43", "R74", "R99"],
+                )
+
         if heuristic_early_exit_enabled and regime_deteriorated and bars_since_entry >= 5 and progress_r <= 0.25 and (
             setup_is_previous_close or observation.range_state == "compressing"
         ):

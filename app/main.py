@@ -393,6 +393,10 @@ async def save_credentials(
     stock_heuristic_early_exit_enabled: str = Form(default="true"),
     nifty_trailing_stop_enabled: str = Form(default="true"),
     nifty_heuristic_early_exit_enabled: str = Form(default="true"),
+    nifty_cost_sl_enabled: str = Form(default="false"),
+    nifty_cost_sl_points: float = Form(default=35.0),
+    nifty_target_enabled: str = Form(default="false"),
+    nifty_target_points: float = Form(default=90.0),
     pyramiding_enabled: str = Form(default="false"),
     intelligent_pyramiding_enabled: str = Form(default="false"),
     nifty_option_trade_mode: str = Form(default="selling"),
@@ -402,6 +406,8 @@ async def save_credentials(
     heuristic_early_exit_enabled = stock_heuristic_early_exit_enabled.strip().lower() in {"1", "true", "yes", "on"}
     nifty_trailing_enabled = nifty_trailing_stop_enabled.strip().lower() in {"1", "true", "yes", "on"}
     nifty_early_exit_enabled = nifty_heuristic_early_exit_enabled.strip().lower() in {"1", "true", "yes", "on"}
+    nifty_cost_enabled = nifty_cost_sl_enabled.strip().lower() in {"1", "true", "yes", "on"}
+    nifty_target_control_enabled = nifty_target_enabled.strip().lower() in {"1", "true", "yes", "on"}
     pyramid_enabled = pyramiding_enabled.strip().lower() in {"1", "true", "yes", "on"}
     intelligent_pyramid_enabled = intelligent_pyramiding_enabled.strip().lower() in {"1", "true", "yes", "on"}
     state = await run_in_threadpool(
@@ -422,6 +428,10 @@ async def save_credentials(
         stock_heuristic_early_exit_enabled=heuristic_early_exit_enabled,
         nifty_trailing_stop_enabled=nifty_trailing_enabled,
         nifty_heuristic_early_exit_enabled=nifty_early_exit_enabled,
+        nifty_cost_sl_enabled=nifty_cost_enabled,
+        nifty_cost_sl_points=nifty_cost_sl_points,
+        nifty_target_enabled=nifty_target_control_enabled,
+        nifty_target_points=nifty_target_points,
         pyramiding_enabled=pyramid_enabled,
         intelligent_pyramiding_enabled=intelligent_pyramid_enabled,
         nifty_option_trade_mode=nifty_option_trade_mode,

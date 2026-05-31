@@ -42,6 +42,10 @@ class CredentialStore:
         stock_heuristic_early_exit_enabled: bool | None = None,
         nifty_trailing_stop_enabled: bool | None = None,
         nifty_heuristic_early_exit_enabled: bool | None = None,
+        nifty_cost_sl_enabled: bool | None = None,
+        nifty_cost_sl_points: float | None = None,
+        nifty_target_enabled: bool | None = None,
+        nifty_target_points: float | None = None,
         pyramiding_enabled: bool | None = None,
         intelligent_pyramiding_enabled: bool | None = None,
         nifty_option_trade_mode: str | None = None,
@@ -132,6 +136,26 @@ class CredentialStore:
             normalized = bool(nifty_heuristic_early_exit_enabled)
             if payload.get("nifty_heuristic_early_exit_enabled") != normalized:
                 payload["nifty_heuristic_early_exit_enabled"] = normalized
+                updated = True
+        if nifty_cost_sl_enabled is not None:
+            normalized = bool(nifty_cost_sl_enabled)
+            if payload.get("nifty_cost_sl_enabled") != normalized:
+                payload["nifty_cost_sl_enabled"] = normalized
+                updated = True
+        if nifty_cost_sl_points is not None:
+            normalized = round(max(float(nifty_cost_sl_points), 0.0), 2)
+            if payload.get("nifty_cost_sl_points") != normalized:
+                payload["nifty_cost_sl_points"] = normalized
+                updated = True
+        if nifty_target_enabled is not None:
+            normalized = bool(nifty_target_enabled)
+            if payload.get("nifty_target_enabled") != normalized:
+                payload["nifty_target_enabled"] = normalized
+                updated = True
+        if nifty_target_points is not None:
+            normalized = round(max(float(nifty_target_points), 0.0), 2)
+            if payload.get("nifty_target_points") != normalized:
+                payload["nifty_target_points"] = normalized
                 updated = True
         if pyramiding_enabled is not None:
             normalized = bool(pyramiding_enabled)
@@ -296,6 +320,22 @@ class CredentialStore:
             bool(settings.nifty_heuristic_early_exit_enabled),
         )
 
+    def get_nifty_cost_sl_enabled(self, settings: Settings) -> bool:
+        payload = self.load()
+        return self._coerce_bool(payload.get("nifty_cost_sl_enabled"), bool(settings.nifty_cost_sl_enabled))
+
+    def get_nifty_cost_sl_points(self, settings: Settings) -> float:
+        payload = self.load()
+        return self._coerce_float(payload.get("nifty_cost_sl_points"), float(settings.nifty_cost_sl_points), minimum=0.0)
+
+    def get_nifty_target_enabled(self, settings: Settings) -> bool:
+        payload = self.load()
+        return self._coerce_bool(payload.get("nifty_target_enabled"), bool(settings.nifty_target_enabled))
+
+    def get_nifty_target_points(self, settings: Settings) -> float:
+        payload = self.load()
+        return self._coerce_float(payload.get("nifty_target_points"), float(settings.nifty_target_points), minimum=0.0)
+
     def get_pyramiding_enabled(self, settings: Settings) -> bool:
         payload = self.load()
         return self._coerce_bool(payload.get("pyramiding_enabled"), bool(settings.pyramiding_enabled))
@@ -357,6 +397,10 @@ class CredentialStore:
             stock_heuristic_early_exit_enabled=self.get_stock_heuristic_early_exit_enabled(settings),
             nifty_trailing_stop_enabled=self.get_nifty_trailing_stop_enabled(settings),
             nifty_heuristic_early_exit_enabled=self.get_nifty_heuristic_early_exit_enabled(settings),
+            nifty_cost_sl_enabled=self.get_nifty_cost_sl_enabled(settings),
+            nifty_cost_sl_points=self.get_nifty_cost_sl_points(settings),
+            nifty_target_enabled=self.get_nifty_target_enabled(settings),
+            nifty_target_points=self.get_nifty_target_points(settings),
             pyramiding_enabled=self.get_pyramiding_enabled(settings),
             intelligent_pyramiding_enabled=self.get_intelligent_pyramiding_enabled(settings),
             nifty_option_trade_mode=self.get_nifty_option_trade_mode(settings),
@@ -406,3 +450,13 @@ class CredentialStore:
         if normalized in {"0", "false", "no", "off"}:
             return False
         return default
+
+    @staticmethod
+    def _coerce_float(value: object, default: float, *, minimum: float | None = None) -> float:
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            parsed = float(default)
+        if minimum is not None:
+            parsed = max(parsed, minimum)
+        return round(parsed, 2)

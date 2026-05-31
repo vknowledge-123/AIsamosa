@@ -58,6 +58,10 @@ const elements = {
   savedStockHeuristicExitValue: document.getElementById("savedStockHeuristicExitValue"),
   savedNiftyTrailingStopValue: document.getElementById("savedNiftyTrailingStopValue"),
   savedNiftyHeuristicExitValue: document.getElementById("savedNiftyHeuristicExitValue"),
+  savedNiftyCostSlValue: document.getElementById("savedNiftyCostSlValue"),
+  savedNiftyCostSlPointsValue: document.getElementById("savedNiftyCostSlPointsValue"),
+  savedNiftyTargetValue: document.getElementById("savedNiftyTargetValue"),
+  savedNiftyTargetPointsValue: document.getElementById("savedNiftyTargetPointsValue"),
   savedPyramidingValue: document.getElementById("savedPyramidingValue"),
   savedIntelligentPyramidingValue: document.getElementById("savedIntelligentPyramidingValue"),
   savedPathValue: document.getElementById("savedPathValue"),
@@ -363,6 +367,10 @@ function buildCredentialPayload(form) {
     stock_heuristic_early_exit_enabled: form.elements.stock_heuristic_early_exit_enabled?.checked ? "true" : "false",
     nifty_trailing_stop_enabled: form.elements.nifty_trailing_stop_enabled?.checked ? "true" : "false",
     nifty_heuristic_early_exit_enabled: form.elements.nifty_heuristic_early_exit_enabled?.checked ? "true" : "false",
+    nifty_cost_sl_enabled: form.elements.nifty_cost_sl_enabled?.checked ? "true" : "false",
+    nifty_cost_sl_points: (form.elements.nifty_cost_sl_points?.value || "35").trim(),
+    nifty_target_enabled: form.elements.nifty_target_enabled?.checked ? "true" : "false",
+    nifty_target_points: (form.elements.nifty_target_points?.value || "90").trim(),
     pyramiding_enabled: form.elements.pyramiding_enabled?.checked ? "true" : "false",
     intelligent_pyramiding_enabled: form.elements.intelligent_pyramiding_enabled?.checked ? "true" : "false",
     nifty_option_trade_mode: (form.elements.nifty_option_trade_mode?.value || "selling").trim(),
@@ -391,6 +399,10 @@ function serializeCredentialPayload(payload) {
     stock_heuristic_early_exit_enabled: payload.stock_heuristic_early_exit_enabled,
     nifty_trailing_stop_enabled: payload.nifty_trailing_stop_enabled,
     nifty_heuristic_early_exit_enabled: payload.nifty_heuristic_early_exit_enabled,
+    nifty_cost_sl_enabled: payload.nifty_cost_sl_enabled,
+    nifty_cost_sl_points: payload.nifty_cost_sl_points,
+    nifty_target_enabled: payload.nifty_target_enabled,
+    nifty_target_points: payload.nifty_target_points,
     pyramiding_enabled: payload.pyramiding_enabled,
     intelligent_pyramiding_enabled: payload.intelligent_pyramiding_enabled,
     nifty_option_trade_mode: payload.nifty_option_trade_mode,
@@ -869,6 +881,10 @@ function renderState(state) {
   elements.savedStockHeuristicExitValue.textContent = state.credentials.stock_heuristic_early_exit_enabled ? "Enabled" : "Disabled";
   elements.savedNiftyTrailingStopValue.textContent = state.credentials.nifty_trailing_stop_enabled ? "Enabled" : "Disabled";
   elements.savedNiftyHeuristicExitValue.textContent = state.credentials.nifty_heuristic_early_exit_enabled ? "Enabled" : "Disabled";
+  elements.savedNiftyCostSlValue.textContent = state.credentials.nifty_cost_sl_enabled ? "Enabled" : "Disabled";
+  elements.savedNiftyCostSlPointsValue.textContent = money(state.credentials.nifty_cost_sl_points);
+  elements.savedNiftyTargetValue.textContent = state.credentials.nifty_target_enabled ? "Enabled" : "Disabled";
+  elements.savedNiftyTargetPointsValue.textContent = money(state.credentials.nifty_target_points);
   elements.savedPyramidingValue.textContent = state.credentials.pyramiding_enabled ? "Enabled" : "Disabled";
   elements.savedIntelligentPyramidingValue.textContent = state.credentials.intelligent_pyramiding_enabled ? "Enabled" : "Disabled";
   elements.savedPathValue.textContent = state.credentials.storage_path || "-";
@@ -1052,6 +1068,10 @@ function renderState(state) {
     syncCredentialField(credentialSaveForm, "stock_heuristic_early_exit_enabled", state.credentials.stock_heuristic_early_exit_enabled !== false);
     syncCredentialField(credentialSaveForm, "nifty_trailing_stop_enabled", state.credentials.nifty_trailing_stop_enabled !== false);
     syncCredentialField(credentialSaveForm, "nifty_heuristic_early_exit_enabled", state.credentials.nifty_heuristic_early_exit_enabled !== false);
+    syncCredentialField(credentialSaveForm, "nifty_cost_sl_enabled", state.credentials.nifty_cost_sl_enabled === true);
+    syncCredentialField(credentialSaveForm, "nifty_cost_sl_points", String(state.credentials.nifty_cost_sl_points ?? 35));
+    syncCredentialField(credentialSaveForm, "nifty_target_enabled", state.credentials.nifty_target_enabled === true);
+    syncCredentialField(credentialSaveForm, "nifty_target_points", String(state.credentials.nifty_target_points ?? 90));
     syncCredentialField(credentialSaveForm, "pyramiding_enabled", state.credentials.pyramiding_enabled === true);
     syncCredentialField(credentialSaveForm, "intelligent_pyramiding_enabled", state.credentials.intelligent_pyramiding_enabled === true);
     if (!settingsUiState.dirtyFields.size && !settingsUiState.saveInFlight) {
