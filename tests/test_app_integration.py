@@ -3829,15 +3829,15 @@ class AppIntegrationTests(unittest.TestCase):
 
     def test_nifty_primary_sweep_enters_on_same_candle_rejection_with_three_r_target(self) -> None:
         session = [
-            Candle(timestamp="2026-05-26T09:15:00", open=24020, high=24042, low=24018, close=24038, volume=1000),
-            Candle(timestamp="2026-05-26T09:16:00", open=24055, high=24070, low=24030, close=24042, volume=1400),
+            Candle(timestamp="2026-05-26T09:15:00", open=24070, high=24092, low=24068, close=24088, volume=1000),
+            Candle(timestamp="2026-05-26T09:16:00", open=24105, high=24120, low=24080, close=24092, volume=1400),
         ]
-        context = self._build_context(session, previous_close=24050)
+        context = self._build_context(session, previous_close=24100)
         observation = self._build_observation(
             atr=10.0,
-            vwap=24050.0,
-            session_high=24070.0,
-            session_low=24018.0,
+            vwap=24100.0,
+            session_high=24120.0,
+            session_low=24068.0,
             day_type="trap-day",
             value_state="inflated",
             range_state="expanding",
@@ -3848,18 +3848,18 @@ class AppIntegrationTests(unittest.TestCase):
         )
         event = SweepEvent(
             side="buy",
-            level_label="Round Number 24050.00",
-            level_price=24050.0,
+            level_label="Round Number 24100.00",
+            level_price=24100.0,
             sweep_index=1,
             reclaim_index=1,
             trigger_index=1,
-            sweep_price=24070.0,
-            defended_level=24050.0,
-            trigger_price=24070.0,
-            invalidation_level=24070.0,
+            sweep_price=24120.0,
+            defended_level=24100.0,
+            trigger_price=24120.0,
+            invalidation_level=24120.0,
             primary=True,
             quality="tradable",
-            notes=["Round Number 24050.00 swept.", "Sweep and reclaim happened on the same candle."],
+            notes=["Round Number 24100.00 swept.", "Sweep and reclaim happened on the same candle."],
         )
 
         candidate = self.test_engine.heuristic_engine.build_candidate_from_event(
@@ -5559,6 +5559,26 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertTrue(any("Round Number" in label for label in zone_labels))
         self.assertTrue(any("Equal High Cluster" in label or "Equal Low Cluster" in label for label in zone_labels))
 
+    def test_nifty_round_number_liquidity_uses_100_point_strikes_and_front_run_zones(self) -> None:
+        candles = [
+            Candle(timestamp="2026-05-13T09:15:00", open=23960, high=24040, low=23910, close=23980, volume=1000),
+            Candle(timestamp="2026-05-14T09:15:00", open=23940, high=23970, low=23920, close=23955, volume=1100),
+            Candle(timestamp="2026-05-14T09:16:00", open=23955, high=23982, low=23940, close=23946, volume=1200),
+            Candle(timestamp="2026-05-14T09:17:00", open=23946, high=23960, low=23918, close=23935, volume=1300),
+            Candle(timestamp="2026-05-14T09:18:00", open=23935, high=23958, low=23924, close=23950, volume=1250),
+        ]
+        self.test_engine.reset_with_candles(candles)
+        self.test_engine.current_index = len(candles) - 1
+
+        observation = self.test_engine.heuristic_engine.observe(self.test_engine.build_context())
+        buy_labels = [label for label, _, _ in observation.mapped_buy_liquidity]
+        sell_labels = [label for label, _, _ in observation.mapped_sell_liquidity]
+        all_round_labels = [label for label in buy_labels + sell_labels if "Round Number" in label]
+
+        self.assertTrue(any("Round Number 24000.00 Premature Reversal Zone" in label for label in buy_labels))
+        self.assertTrue(any("Round Number 23900.00 Premature Reversal Zone" in label for label in sell_labels))
+        self.assertFalse(any("23950" in label or "24050" in label for label in all_round_labels))
+
     def test_heuristic_scores_equal_high_round_number_sweep_more_aggressively(self) -> None:
         self.test_engine.set_instrument_mode("stock")
         candles = [
@@ -5590,6 +5610,7 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertTrue(any("equal-high" in note.lower() for note in bearish_candidate.notes))
 
     def test_heuristic_regime_filter_downgrades_candidate_score_without_delaying_entry(self) -> None:
+        self.test_engine.set_instrument_mode("stock")
         candles = [
             Candle(timestamp="2026-05-13T09:15:00", open=23710, high=23820, low=23688, close=23720, volume=1000),
             Candle(timestamp="2026-05-14T09:15:00", open=23720, high=23734, low=23718, close=23730, volume=1100),

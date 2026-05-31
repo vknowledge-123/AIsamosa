@@ -192,6 +192,7 @@ class HeuristicDecisionEngine:
             previous,
             current.close,
             atr,
+            index_round_numbers=self._is_nifty_mode(context),
         )
         allowed_liquidity_families = self._allowed_liquidity_families_for_context(context)
         mapped_buy_liquidity = self._filter_liquidity_levels(mapped_buy_liquidity, allowed_liquidity_families)
@@ -581,6 +582,8 @@ class HeuristicDecisionEngine:
         previous_day,
         current_close: float,
         atr: float,
+        *,
+        index_round_numbers: bool = False,
     ) -> tuple[list[tuple[str, float, bool]], list[tuple[str, float, bool]]]:
         if not session:
             return [], []
@@ -634,8 +637,8 @@ class HeuristicDecisionEngine:
                 tolerance=tolerance,
             )
 
-        round_step = self._round_number_step(current_close)
-        round_tolerance = max(round_step * 0.16, atr * 0.4, 0.25)
+        round_step = self._round_number_step(current_close, index_round_numbers=index_round_numbers)
+        round_tolerance = self._round_number_tolerance(round_step, atr)
         buy_round_sources = [max(candle.high for candle in session)]
         buy_round_sources.extend(price for _, price in swing_highs[-5:])
         sell_round_sources = [min(candle.low for candle in session)]
@@ -643,20 +646,22 @@ class HeuristicDecisionEngine:
 
         for price in buy_round_sources:
             round_level = round(price / round_step) * round_step
-            if abs(price - round_level) <= round_tolerance:
+            round_distance = abs(price - round_level)
+            if round_distance <= round_tolerance:
                 self._append_liquidity_level(
                     buy_levels,
-                    label=f"Round Number {round(round_level, 2):.2f}",
+                    label=self._round_number_liquidity_label(round_level, round_distance, round_step),
                     price=round_level,
                     primary=True,
                     tolerance=max(tolerance, round_tolerance * 0.6),
                 )
         for price in sell_round_sources:
             round_level = round(price / round_step) * round_step
-            if abs(price - round_level) <= round_tolerance:
+            round_distance = abs(price - round_level)
+            if round_distance <= round_tolerance:
                 self._append_liquidity_level(
                     sell_levels,
-                    label=f"Round Number {round(round_level, 2):.2f}",
+                    label=self._round_number_liquidity_label(round_level, round_distance, round_step),
                     price=round_level,
                     primary=True,
                     tolerance=max(tolerance, round_tolerance * 0.6),
@@ -832,13 +837,26 @@ class HeuristicDecisionEngine:
         parts = label.split()
         return " ".join(parts[:2]).lower() if len(parts) >= 2 else lowered
 
-    def _round_number_step(self, reference_price: float) -> float:
+    def _round_number_step(self, reference_price: float, *, index_round_numbers: bool = False) -> float:
         absolute = abs(reference_price)
+        if index_round_numbers and absolute >= 10000:
+            return 100.0
         if absolute >= 500:
             return 50.0
         if absolute >= 100:
             return 10.0
         return 5.0
+
+    def _round_number_tolerance(self, round_step: float, atr: float) -> float:
+        if round_step >= 100:
+            return 20.0
+        return max(round_step * 0.16, atr * 0.4, 0.25)
+
+    def _round_number_liquidity_label(self, round_level: float, distance: float, round_step: float) -> str:
+        label = f"Round Number {round(round_level, 2):.2f}"
+        if round_step >= 100 and 6.0 < distance <= 20.0:
+            return f"{label} Premature Reversal Zone"
+        return label
 
     def _is_nifty_mode(self, context: StrategyContext) -> bool:
         return context.instrument.symbol == "NIFTY" and context.instrument.supports_options
@@ -936,7 +954,7 @@ class HeuristicDecisionEngine:
         nearest_lower = max(lower_levels)
         nearest_upper = min(upper_levels)
         pocket_width = nearest_upper - nearest_lower
-        low_atr = atr <= max(self._round_number_step(current_close) * 0.36, 18.0)
+        low_atr = atr <= max(self._round_number_step(current_close, index_round_numbers=True) * 0.36, 18.0)
         pinned_between_liquidity = (
             current_close - nearest_lower <= max(atr * 0.85, 12.0)
             and nearest_upper - current_close <= max(atr * 0.85, 12.0)
@@ -1153,6 +1171,7 @@ class HeuristicDecisionEngine:
             previous,
             current.close,
             companion_atr,
+            index_round_numbers=True,
         )
         buy_sweeps = self.detect_sweeps(
             companion_session,
@@ -2316,14 +2335,16 @@ class HeuristicDecisionEngine:
         if "round number" not in level_label.lower():
             return 0.0, None
         distance = abs(sweep_price - level_price)
+        if "premature" in level_label.lower() and distance <= 20:
+            return 6.0, "Nifty front-ran the 100-point round number within 20 points, which can mark an operator-style premature reversal."
         if distance <= 6:
             return 7.0, "Sweep tagged the round number very tightly, which strengthens the Nifty reversal read."
         if distance <= 10:
             return 5.0, "Sweep stayed very close to the round number, which still gives strong liquidity relevance."
         if distance <= 15:
-            return 2.0, "Sweep was near the round number, but not perfectly tight."
+            return 4.0, "Sweep front-ran the round number inside the operator reversal band."
         if distance <= 20:
-            return -2.0, "Sweep front-ran the round number a bit, so conviction is slightly reduced."
+            return 3.0, "Sweep front-ran the round number near the edge of the operator reversal band."
         return -6.0, "Sweep missed the round number by too much, so the liquidity read is less precise."
 
     def _nifty_retest_quality_adjustment(
@@ -2827,12 +2848,12 @@ class HeuristicDecisionEngine:
 
         bank_recent = bank_session[-5:]
         nifty_recent = nifty_session[-5:]
-        nifty_step = self._round_number_step(current.close)
-        bank_step = self._round_number_step(bank_current.close)
+        nifty_step = self._round_number_step(current.close, index_round_numbers=True)
+        bank_step = self._round_number_step(bank_current.close, index_round_numbers=True)
         bank_ranges = [max(candle.high - candle.low, 0.01) for candle in bank_session[-20:]] or [1.0]
         bank_atr = median(bank_ranges)
-        nifty_near_tolerance = max(nifty_step * 0.4, observation.atr * 0.9, 8.0)
-        bank_round_tolerance = max(bank_step * 0.16, bank_atr * 0.4, 5.0)
+        nifty_near_tolerance = 20.0 if nifty_step >= 100 else max(nifty_step * 0.4, observation.atr * 0.9, 8.0)
+        bank_round_tolerance = self._round_number_tolerance(bank_step, bank_atr)
         if not self._nifty_higher_timeframe_allows(context, observation, option_type):
             return None
 
