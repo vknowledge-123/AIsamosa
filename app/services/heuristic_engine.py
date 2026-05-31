@@ -647,6 +647,8 @@ class HeuristicDecisionEngine:
         for price in buy_round_sources:
             round_level = round(price / round_step) * round_step
             round_distance = abs(price - round_level)
+            if self._ignore_opening_candle_round_number(session, round_level, index_round_numbers):
+                continue
             if round_distance <= round_tolerance:
                 self._append_liquidity_level(
                     buy_levels,
@@ -658,6 +660,8 @@ class HeuristicDecisionEngine:
         for price in sell_round_sources:
             round_level = round(price / round_step) * round_step
             round_distance = abs(price - round_level)
+            if self._ignore_opening_candle_round_number(session, round_level, index_round_numbers):
+                continue
             if round_distance <= round_tolerance:
                 self._append_liquidity_level(
                     sell_levels,
@@ -858,6 +862,78 @@ class HeuristicDecisionEngine:
             return f"{label} Premature Reversal Zone"
         return label
 
+    def _ignore_opening_candle_round_number(self, session: list[Candle], round_level: float, index_round_numbers: bool) -> bool:
+        if not index_round_numbers or not session:
+            return False
+        first_candle = session[0]
+        return first_candle.low <= round_level <= first_candle.high
+
+    def _nifty_next_round_profit_band(self, entry_spot: float, bullish_trade: bool) -> tuple[float, float]:
+        round_step = 100.0
+        if bullish_trade:
+            round_level = math.ceil(entry_spot / round_step) * round_step
+            if round_level <= entry_spot:
+                round_level += round_step
+            return round(round_level, 2), round(round_level - 20.0, 2)
+        round_level = math.floor(entry_spot / round_step) * round_step
+        if round_level >= entry_spot:
+            round_level -= round_step
+        return round(round_level, 2), round(round_level + 20.0, 2)
+
+    def _nifty_late_entry_round_band_note(self, context: StrategyContext, option_type: str, spot_price: float) -> str | None:
+        if not self._is_nifty_mode(context):
+            return None
+        if abs(spot_price) < 10000:
+            return None
+        bullish_trade = option_type == "CE"
+        round_level, band_price = self._nifty_next_round_profit_band(spot_price, bullish_trade)
+        if bullish_trade and spot_price >= band_price:
+            return (
+                f"Nifty is already inside the 20-point profit-booking band before the next 100-point round shelf "
+                f"{round_level:.2f}; avoid a late long entry into likely resistance."
+            )
+        if (not bullish_trade) and spot_price <= band_price:
+            return (
+                f"Nifty is already inside the 20-point profit-booking band before the next 100-point round shelf "
+                f"{round_level:.2f}; avoid a late short entry into likely support."
+            )
+        return None
+
+    def _nifty_next_round_square_off_decision(
+        self,
+        context: StrategyContext,
+        trade: SimulatedTrade,
+        observation: Observation,
+        bullish_trade: bool,
+    ) -> TradeDecision | None:
+        if not self._is_nifty_mode(context):
+            return None
+        if abs(trade.entry_spot_price) < 10000:
+            return None
+        round_level, band_price = self._nifty_next_round_profit_band(trade.entry_spot_price, bullish_trade)
+        exit_trigger = band_price
+        if bullish_trade and exit_trigger <= trade.entry_spot_price:
+            return None
+        if (not bullish_trade) and exit_trigger >= trade.entry_spot_price:
+            return None
+        tagged = context.current_candle.high >= exit_trigger if bullish_trade else context.current_candle.low <= exit_trigger
+        if not tagged:
+            return None
+        return TradeDecision(
+            action=TradeAction.exit,
+            confidence=0.9,
+            reason=(
+                f"Nifty moved from entry toward the next 100-point round shelf {round_level:.2f} and tagged "
+                f"the square-off band at {exit_trigger:.2f}; book the position before round-number resistance/support can reverse it."
+            ),
+            decision_source="heuristic",
+            option_type=trade.option_type,
+            target_spot_price=exit_trigger,
+            market_state=observation.day_type,
+            setup_type=trade.setup_type,
+            rule_ids_used=["R2", "R41", "R42", "R44", "R74", "R78", "R99"],
+        )
+
     def _is_nifty_mode(self, context: StrategyContext) -> bool:
         return context.instrument.symbol == "NIFTY" and context.instrument.supports_options
 
@@ -980,7 +1056,8 @@ class HeuristicDecisionEngine:
         current: Candle,
         reclaim_strength: float,
     ) -> bool:
-        if not self._is_nifty_mode(context) or not event.primary or observation.weak_intent:
+        important_liquidity = event.primary or self._is_obvious_stop_pool_label(event.level_label)
+        if not self._is_nifty_mode(context) or not important_liquidity or observation.weak_intent:
             return False
         if event.reclaim_index != len(context.session_candles) - 1:
             return False
@@ -2467,7 +2544,31 @@ class HeuristicDecisionEngine:
 
     def _allowed_liquidity_families_for_context(self, context: StrategyContext) -> tuple[str, ...] | None:
         if context.instrument.symbol == "NIFTY" and context.instrument.supports_options:
-            return ("previous day high", "previous day low", "round number", "session extreme")
+            return (
+                "previous day high",
+                "previous day low",
+                "opening range high",
+                "opening range low",
+                "first 15m high",
+                "first 15m low",
+                "prior hour high",
+                "prior hour low",
+                "session extreme",
+                "equal high cluster",
+                "equal low cluster",
+                "same-day swing high",
+                "same-day swing low",
+                "previous-day swing high",
+                "previous-day swing low",
+                "previous-day resistance shelf",
+                "previous-day support shelf",
+                "pivot point",
+                "pivot r1",
+                "pivot r2",
+                "pivot s1",
+                "pivot s2",
+                "round number",
+            )
         return None
 
     def _filter_liquidity_levels(
@@ -3695,6 +3796,11 @@ class HeuristicDecisionEngine:
         if target_adjusted:
             notes.append("Nifty target is normalized to at least 3R from the entry/invalidation risk.")
             rule_ids.append("R142")
+        late_round_band_note = self._nifty_late_entry_round_band_note(context, option_type, current.close)
+        if late_round_band_note:
+            notes.append(late_round_band_note)
+            rule_ids.extend(["R2", "R44", "R51", "R74", "R78", "R101"])
+            return None
         if stock_early_entry:
             score += 12
             notes.append(
@@ -3953,6 +4059,10 @@ class HeuristicDecisionEngine:
                     setup_type=trade.setup_type,
                     rule_ids_used=["R41", "R42", "R44", "R74", "R99"],
                 )
+
+        next_round_exit = self._nifty_next_round_square_off_decision(context, trade, observation, bullish_trade)
+        if next_round_exit is not None:
+            return next_round_exit
 
         if trade.invalidation_level is not None:
             invalidation_tagged = (

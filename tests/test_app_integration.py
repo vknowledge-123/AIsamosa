@@ -3694,6 +3694,54 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertIsNone(self.test_engine.active_trade)
         self.assertIn("Hard LTP stop triggered", self.test_engine.trade_history[-1].exit_notes or "")
 
+    def test_nifty_live_ltp_square_offs_near_next_round_shelf(self) -> None:
+        trade = SimulatedTrade(
+            trade_id="nifty-round-exit",
+            status="OPEN",
+            direction="SHORT_PUT",
+            instrument_mode=InstrumentMode.nifty,
+            instrument_label="Nifty 50",
+            price_mode="option",
+            trade_security_id="13",
+            quote_exchange_segment="NSE_FNO",
+            option_type="PE",
+            strike=24200,
+            symbol="NIFTY 24200 PE",
+            option_security_id="opt-24200-pe",
+            quantity=65,
+            open_quantity=65,
+            entry_time=datetime(2026, 5, 29, 10, 0),
+            entry_price=100.0,
+            entry_spot_price=24252.0,
+            entry_option_price=100.0,
+            current_price=100.0,
+            current_option_price=100.0,
+            stop_price=70.0,
+            stop_option_price=70.0,
+            target_price=30.0,
+            target_option_price=30.0,
+            invalidation_level=24220.0,
+            target_spot_price=24500.0,
+        )
+        self.test_engine.active_trade = trade
+        self.test_engine.trade_history = [trade]
+        self.test_engine.live_trading_enabled = True
+        self.test_engine.operating_mode = OperatingMode.heuristic
+        self.test_engine.live_feed_adapter = Mock()
+        self.temp_store.save(client_id="cid", access_token=self._make_dhan_token("cid"))
+
+        with patch.object(
+            self.test_engine.execution_service,
+            "place_market_order",
+            return_value=BrokerOrderResult(ok=True, order_id="exit-round", order_status="PENDING", message="ok", raw={}),
+        ) as place_order:
+            with patch.object(self.test_engine.option_quote_service, "fetch_quote", side_effect=DhanOptionQuoteError("offline")):
+                self.test_engine._handle_live_packet_now({"security_id": "13", "LTP": 24280.0, "LTT": "10:03:01", "volume": 1000})
+
+        self.assertEqual(place_order.call_args.kwargs["transaction_type"], "BUY")
+        self.assertIsNone(self.test_engine.active_trade)
+        self.assertIn("next 100-point round shelf 24300.00", self.test_engine.trade_history[-1].exit_notes or "")
+
     def test_stock_live_ltp_crossing_invalidation_closes_paper_trade_immediately(self) -> None:
         self.test_engine.set_instrument_mode("stock")
         trade = SimulatedTrade(
@@ -3734,9 +3782,9 @@ class AppIntegrationTests(unittest.TestCase):
 
     def test_nifty_option_trade_trails_stop_after_one_r(self) -> None:
         session = [
-            self._make_candle(0, 23500, 23520, 23490, 23500),
-            self._make_candle(1, 23500, 23580, 23495, 23570),
-            self._make_candle(2, 23570, 23620, 23560, 23610),
+            self._make_candle(0, 23525, 23545, 23515, 23525),
+            self._make_candle(1, 23525, 23560, 23520, 23550),
+            self._make_candle(2, 23550, 23575, 23545, 23570),
         ]
         trade = SimulatedTrade(
             trade_id="nifty-short-put",
@@ -3749,7 +3797,7 @@ class AppIntegrationTests(unittest.TestCase):
             open_quantity=65,
             entry_time=session[0].timestamp,
             entry_price=100.0,
-            entry_spot_price=23500.0,
+            entry_spot_price=23525.0,
             entry_option_price=100.0,
             current_price=75.0,
             current_option_price=75.0,
@@ -3757,16 +3805,16 @@ class AppIntegrationTests(unittest.TestCase):
             stop_option_price=130.0,
             target_price=50.0,
             target_option_price=50.0,
-            invalidation_level=23400.0,
+            invalidation_level=23495.0,
             target_spot_price=23720.0,
             setup_type="bullish_reclaim_watch",
         )
         context = self._build_context(session, active_trade=trade)
         observation = self._build_observation(
             atr=50.0,
-            vwap=23520.0,
-            session_high=23620.0,
-            session_low=23490.0,
+            vwap=23535.0,
+            session_high=23575.0,
+            session_low=23515.0,
             day_type="trend-day",
             range_state="expanding",
             participation_state="directional",
@@ -5338,6 +5386,32 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertEqual(decision.target_spot_price, 23282.0)
         self.assertIn("fixed target", decision.reason.lower())
 
+    def test_nifty_square_offs_near_next_100_point_round_shelf(self) -> None:
+        candles = [
+            Candle(timestamp="2026-05-13T09:15:00", open=24120, high=24170, low=24100, close=24150, volume=1000),
+            Candle(timestamp="2026-05-14T09:15:00", open=24240, high=24260, low=24230, close=24252, volume=1200),
+            Candle(timestamp="2026-05-14T09:16:00", open=24252, high=24282, low=24248, close=24262, volume=1400),
+        ]
+        trade = self._build_trade(
+            entry_time=candles[1].timestamp,
+            entry_spot_price=24252.0,
+            invalidation_level=24220.0,
+            setup_type="bullish_reclaim_watch",
+        )
+        context = self._build_context(candles, active_trade=trade).model_copy(
+            update={
+                "nifty_heuristic_early_exit_enabled": False,
+                "nifty_target_enabled": False,
+            }
+        )
+        observation = self._build_observation(atr=25.0)
+
+        decision = self.test_engine.heuristic_engine.manage_active_trade(context, observation, current_trade_price=12.0)
+
+        self.assertEqual(decision.action, TradeAction.exit)
+        self.assertEqual(decision.target_spot_price, 24280.0)
+        self.assertIn("next 100-point round shelf 24300.00", decision.reason)
+
     def test_heuristic_v2_skips_nifty_opposite_setup_exit_when_setting_disabled(self) -> None:
         candles = [
             self._make_candle(0, 100, 101, 99, 100),
@@ -5578,6 +5652,47 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertTrue(any("Round Number 24000.00 Premature Reversal Zone" in label for label in buy_labels))
         self.assertTrue(any("Round Number 23900.00 Premature Reversal Zone" in label for label in sell_labels))
         self.assertFalse(any("23950" in label or "24050" in label for label in all_round_labels))
+
+    def test_nifty_ignores_round_number_inside_first_session_candle(self) -> None:
+        candles = [
+            Candle(timestamp="2026-05-13T09:15:00", open=23120, high=23170, low=23100, close=23150, volume=1000),
+            Candle(timestamp="2026-05-14T09:15:00", open=23192, high=23250, low=23192, close=23230, volume=1100),
+            Candle(timestamp="2026-05-14T09:16:00", open=23230, high=23245, low=23205, close=23210, volume=1200),
+            Candle(timestamp="2026-05-14T09:17:00", open=23210, high=23235, low=23202, close=23228, volume=1300),
+        ]
+        self.test_engine.reset_with_candles(candles)
+        self.test_engine.current_index = len(candles) - 1
+
+        observation = self.test_engine.heuristic_engine.observe(self.test_engine.build_context())
+        all_round_labels = [
+            label
+            for label, _, _ in observation.mapped_buy_liquidity + observation.mapped_sell_liquidity
+            if "Round Number" in label
+        ]
+
+        self.assertFalse(any("23200" in label for label in all_round_labels))
+
+    def test_nifty_liquidity_filter_keeps_intraday_and_pivot_levels(self) -> None:
+        context = self._build_context(
+            [
+                Candle(timestamp="2026-05-14T09:15:00", open=24000, high=24030, low=23970, close=24010, volume=1000),
+                Candle(timestamp="2026-05-14T09:16:00", open=24010, high=24040, low=23990, close=24020, volume=1200),
+            ],
+            previous_close=24000.0,
+        )
+        allowed = self.test_engine.heuristic_engine._allowed_liquidity_families_for_context(context)
+        levels = [
+            ("Opening Range High", 24030.0, True),
+            ("First 15m Low", 23970.0, True),
+            ("Prior Hour High", 24040.0, False),
+            ("Same-Day Swing High 09:16", 24040.0, False),
+            ("Pivot R1", 24100.0, True),
+            ("Previous-Day Swing Low 15:12", 23900.0, False),
+        ]
+
+        filtered = self.test_engine.heuristic_engine._filter_liquidity_levels(levels, allowed)
+
+        self.assertEqual([label for label, _, _ in filtered], [label for label, _, _ in levels])
 
     def test_heuristic_scores_equal_high_round_number_sweep_more_aggressively(self) -> None:
         self.test_engine.set_instrument_mode("stock")

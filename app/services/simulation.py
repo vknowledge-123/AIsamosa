@@ -3532,6 +3532,7 @@ class SimulationEngine:
             previous_day,
             candles[-1].close,
             atr,
+            index_round_numbers=self.instrument_mode == InstrumentMode.nifty,
         )
         extra_levels = mapped_buy + mapped_sell
         seen_labels = {zone.label for zone in zones}
@@ -4261,6 +4262,38 @@ class SimulationEngine:
             and self.instrument_spec.symbol == "NIFTY"
         )
 
+    def _nifty_next_round_profit_exit_note(self, trade: SimulatedTrade, ltp: float, bullish_trade: bool) -> tuple[str, float] | None:
+        if abs(trade.entry_spot_price) < 10000:
+            return None
+        round_step = 100.0
+        if bullish_trade:
+            round_level = math.ceil(trade.entry_spot_price / round_step) * round_step
+            if round_level <= trade.entry_spot_price:
+                round_level += round_step
+            exit_trigger = round_level - 20.0
+            if exit_trigger <= trade.entry_spot_price:
+                return None
+            if ltp >= exit_trigger:
+                return (
+                    f"Nifty moved from entry toward the next 100-point round shelf {round_level:.2f}; "
+                    f"live spot tagged the square-off band at {exit_trigger:.2f}, so exit before round-number resistance can reverse it.",
+                    round(exit_trigger, 2),
+                )
+            return None
+        round_level = math.floor(trade.entry_spot_price / round_step) * round_step
+        if round_level >= trade.entry_spot_price:
+            round_level -= round_step
+        exit_trigger = round_level + 20.0
+        if exit_trigger >= trade.entry_spot_price:
+            return None
+        if ltp <= exit_trigger:
+            return (
+                f"Nifty moved from entry toward the next 100-point round shelf {round_level:.2f}; "
+                f"live spot tagged the square-off band at {exit_trigger:.2f}, so exit before round-number support can reverse it.",
+                round(exit_trigger, 2),
+            )
+        return None
+
     def _apply_live_ltp_trade_controls(self, ltp: float, tick_time: datetime) -> bool:
         with self.lock:
             trade = self.active_trade
@@ -4278,6 +4311,10 @@ class SimulationEngine:
                         f"Nifty fixed target control booked profit: live spot {ltp:.2f} reached "
                         f"{target_spot:.2f}, {target_points:.2f} points from entry."
                     )
+            if exit_note is None and nifty_trade:
+                round_exit = self._nifty_next_round_profit_exit_note(trade, ltp, bullish_trade)
+                if round_exit is not None:
+                    exit_note, _ = round_exit
             if exit_note is None and self._live_ltp_crossed_invalidation(trade, ltp):
                 invalidation = trade.invalidation_level or ltp
                 exit_note = (
@@ -5063,7 +5100,18 @@ class SimulationEngine:
             if self._should_send_live_orders(source):
                 self._exit_live_trade(current_candle, decision.reason)
             else:
-                self.close_active_trade(current_candle, decision.reason)
+                exit_candle = current_candle
+                if decision.target_spot_price is not None:
+                    exit_spot = round(decision.target_spot_price, 2)
+                    exit_candle = Candle(
+                        timestamp=current_candle.timestamp,
+                        open=exit_spot,
+                        high=max(current_candle.high, exit_spot),
+                        low=min(current_candle.low, exit_spot),
+                        close=exit_spot,
+                        volume=current_candle.volume,
+                    )
+                self.close_active_trade(exit_candle, decision.reason)
 
     def close_active_trade(self, candle: Candle, note: str) -> None:
         if not self.active_trade:
