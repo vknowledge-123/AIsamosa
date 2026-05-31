@@ -1159,6 +1159,78 @@ class HeuristicDecisionEngine:
             return htf not in {"bearish_trend"}
         return htf not in {"bullish_trend"}
 
+    def _nifty_priority_reclaim_label(self, label: str) -> bool:
+        lowered = label.lower()
+        priority_families = (
+            "opening range high",
+            "opening range low",
+            "first 15m high",
+            "first 15m low",
+            "session high",
+            "session low",
+            "previous day high",
+            "previous day low",
+            "previous-day swing high",
+            "previous-day swing low",
+            "previous-day resistance shelf",
+            "previous-day support shelf",
+            "pivot point",
+            "pivot r1",
+            "pivot r2",
+            "pivot s1",
+            "pivot s2",
+        )
+        return lowered.startswith(priority_families)
+
+    def _nifty_priority_immediate_reclaim(
+        self,
+        context: StrategyContext,
+        event: SweepEvent,
+        observation: Observation,
+        *,
+        option_type: str,
+        current: Candle,
+        reclaim_strength: float,
+    ) -> bool:
+        if not self._is_nifty_mode(context):
+            return False
+        if event.reclaim_index != len(context.session_candles) - 1:
+            return False
+        if not event.primary or event.quality not in {"tradable", "explosive"}:
+            return False
+        if not self._nifty_priority_reclaim_label(event.level_label):
+            return False
+        strong_reclaim = reclaim_strength >= 0.45 or self._candle_range(current) >= observation.atr * 1.35
+        if not strong_reclaim:
+            return False
+        if option_type == "CE":
+            return current.low < event.level_price and current.close > event.defended_level and current.close > current.open
+        return current.high > event.level_price and current.close < event.defended_level and current.close < current.open
+
+    def _nifty_priority_candidate(
+        self,
+        context: StrategyContext,
+        observation: Observation,
+        candidate: SetupCandidate | None,
+    ) -> bool:
+        if candidate is None or candidate.event is None:
+            return False
+        if not candidate.ready_to_enter:
+            return False
+        current = context.current_candle
+        reclaim_index = candidate.event.reclaim_index
+        if reclaim_index is None or not 0 <= reclaim_index < len(context.session_candles):
+            return False
+        reclaim_candle = context.session_candles[reclaim_index]
+        return self._nifty_priority_immediate_reclaim(
+            context,
+            candidate.event,
+            observation,
+            option_type=candidate.option_type,
+            current=current,
+            reclaim_strength=self.candle_strength(reclaim_candle),
+        )
+
     def _nifty_immediate_sweep_reclaim(
         self,
         context: StrategyContext,
@@ -1170,11 +1242,21 @@ class HeuristicDecisionEngine:
         reclaim_strength: float,
     ) -> bool:
         important_liquidity = event.primary or self._is_obvious_stop_pool_label(event.level_label)
-        if not self._is_nifty_mode(context) or not important_liquidity or observation.weak_intent:
+        if not self._is_nifty_mode(context) or not important_liquidity:
             return False
         if event.reclaim_index != len(context.session_candles) - 1:
             return False
         if reclaim_strength < 0.05:
+            return False
+        priority_reclaim = self._nifty_priority_immediate_reclaim(
+            context,
+            event,
+            observation,
+            option_type=option_type,
+            current=current,
+            reclaim_strength=reclaim_strength,
+        )
+        if observation.weak_intent and not priority_reclaim:
             return False
         if option_type == "CE":
             return current.close > event.defended_level and current.close > current.open
@@ -2908,20 +2990,23 @@ class HeuristicDecisionEngine:
             pending_decision = self.evaluate_pending_setup(context, observation, candidates)
             if pending_decision is not None:
                 return pending_decision
+        priority_best = self.select_best_candidate(
+            [candidate for candidate in candidates if self._nifty_priority_candidate(context, observation, candidate)]
+        )
+        best = priority_best or self.select_best_candidate(candidates)
         if self._is_nifty_mode(context) and observation.nifty_mid_noise:
-            return TradeDecision(
-                action=TradeAction.no_trade,
-                confidence=0.44,
-                reason=(
-                    "Nifty is stuck in low-ATR overlapping noise between nearby liquidity, "
-                    "so heuristic mode skips fresh entries until a cleaner displacement appears."
-                ),
-                decision_source="heuristic",
-                market_state=observation.day_type,
-                rule_ids_used=["R21", "R29", "R50", "R55", "R56", "R95"],
-            )
-
-        best = self.select_best_candidate(candidates)
+            if priority_best is None:
+                return TradeDecision(
+                    action=TradeAction.no_trade,
+                    confidence=0.44,
+                    reason=(
+                        "Nifty is stuck in low-ATR overlapping noise between nearby liquidity, "
+                        "so heuristic mode skips fresh entries until a cleaner displacement appears."
+                    ),
+                    decision_source="heuristic",
+                    market_state=observation.day_type,
+                    rule_ids_used=["R21", "R29", "R50", "R55", "R56", "R95"],
+                )
         enter_threshold, arm_threshold, allow_only_exceptional = self._effective_entry_thresholds(
             context,
             observation,
@@ -3458,6 +3543,14 @@ class HeuristicDecisionEngine:
             current=current,
             reclaim_strength=reclaim_strength,
         )
+        nifty_priority_reclaim = self._nifty_priority_immediate_reclaim(
+            context,
+            event,
+            observation,
+            option_type=option_type,
+            current=current,
+            reclaim_strength=reclaim_strength,
+        )
         continuation_count = 0
         hold_count = 0
         follow_through = False
@@ -3956,6 +4049,12 @@ class HeuristicDecisionEngine:
             rule_ids.extend(["R105", "R106"])
         if nifty_immediate_reclaim:
             score += 8
+            if nifty_priority_reclaim:
+                score += 24
+                notes.append(
+                    "Fresh Nifty priority liquidity was swept and reclaimed on the current candle, so entry does not wait for an equal-level cluster or later expansion."
+                )
+                rule_ids.extend(["R2", "R25", "R27", "R58", "R63", "R79"])
         elif (
             not context.instrument.supports_options
             and setup_type in {"bullish_reclaim_watch", "bearish_rejection_watch"}

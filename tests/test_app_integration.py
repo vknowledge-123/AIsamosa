@@ -5759,6 +5759,65 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertEqual(decision.pending_setup_trigger_price, 24162.7)
         self.assertIn("opposite liquidity sweep", decision.reason.lower())
 
+    def test_nifty_enters_immediately_on_strong_opening_low_reclaim_despite_noise(self) -> None:
+        candles = [
+            Candle(timestamp="2026-04-15T09:15:00", open=24163.8, high=24280.9, low=24162.7, close=24232.9, volume=12307017),
+            Candle(timestamp="2026-04-15T09:16:00", open=24225.5, high=24238.8, low=24205.2, close=24232.0, volume=6597189),
+            Candle(timestamp="2026-04-15T09:17:00", open=24231.05, high=24237.7, low=24214.4, close=24228.8, volume=4617894),
+            Candle(timestamp="2026-04-15T09:18:00", open=24227.6, high=24241.9, low=24222.6, close=24231.45, volume=3684318),
+            Candle(timestamp="2026-04-15T09:19:00", open=24230.3, high=24235.3, low=24224.6, close=24230.85, volume=3014809),
+            Candle(timestamp="2026-04-15T09:20:00", open=24231.6, high=24234.7, low=24226.55, close=24231.25, volume=3128109),
+            Candle(timestamp="2026-04-15T09:21:00", open=24231.85, high=24233.3, low=24214.9, close=24219.65, volume=3053227),
+            Candle(timestamp="2026-04-15T09:22:00", open=24217.7, high=24228.7, low=24211.5, close=24218.45, volume=3387949),
+            Candle(timestamp="2026-04-15T09:23:00", open=24217.0, high=24225.75, low=24216.25, close=24222.95, volume=2825884),
+            Candle(timestamp="2026-04-15T09:24:00", open=24222.8, high=24223.75, low=24206.75, close=24208.85, volume=2696511),
+            Candle(timestamp="2026-04-15T09:25:00", open=24209.2, high=24212.9, low=24203.15, close=24212.65, volume=2661550),
+            Candle(timestamp="2026-04-15T09:26:00", open=24212.75, high=24212.75, low=24204.85, close=24207.05, volume=2438865),
+            Candle(timestamp="2026-04-15T09:27:00", open=24207.85, high=24210.85, low=24190.05, close=24190.05, volume=2449469),
+            Candle(timestamp="2026-04-15T09:28:00", open=24190.05, high=24194.95, low=24184.1, close=24191.85, volume=2432314),
+            Candle(timestamp="2026-04-15T09:29:00", open=24191.3, high=24195.45, low=24186.05, close=24192.45, volume=1776017),
+            Candle(timestamp="2026-04-15T09:30:00", open=24193.5, high=24194.7, low=24176.35, close=24183.25, volume=2131653),
+            Candle(timestamp="2026-04-15T09:31:00", open=24182.55, high=24183.2, low=24174.65, close=24179.05, volume=1563013),
+            Candle(timestamp="2026-04-15T09:32:00", open=24178.9, high=24183.35, low=24172.8, close=24182.85, volume=1730147),
+            Candle(timestamp="2026-04-15T09:33:00", open=24182.75, high=24187.15, low=24171.55, close=24175.85, volume=1535037),
+            Candle(timestamp="2026-04-15T09:34:00", open=24177.1, high=24177.4, low=24164.15, close=24168.9, volume=1843517),
+            Candle(timestamp="2026-04-15T09:35:00", open=24168.05, high=24174.05, low=24167.35, close=24171.5, volume=1557958),
+            Candle(timestamp="2026-04-15T09:36:00", open=24170.0, high=24179.85, low=24170.0, close=24173.25, volume=1608519),
+            Candle(timestamp="2026-04-15T09:37:00", open=24172.5, high=24176.7, low=24170.7, close=24173.15, volume=1485846),
+            Candle(timestamp="2026-04-15T09:38:00", open=24171.8, high=24175.75, low=24147.5, close=24147.95, volume=1706733),
+            Candle(timestamp="2026-04-15T09:39:00", open=24147.7, high=24158.2, low=24145.8, close=24151.35, volume=1651319),
+            Candle(timestamp="2026-04-15T09:40:00", open=24151.05, high=24175.4, low=24149.7, close=24174.85, volume=1376109),
+        ]
+        context = StrategyContext(
+            instrument=InstrumentState(),
+            current_candle=candles[-1],
+            recent_candles=candles[-10:],
+            session_candles=candles,
+            previous_day_candles=[
+                Candle(timestamp="2026-04-14T15:28:00", open=24100, high=24200, low=24000, close=24120, volume=1000),
+            ],
+            previous_day=PreviousDayLevels(high=24200, low=24000, close=24120),
+            liquidity_zones=[],
+            operator_zones=[],
+            signal_events=[],
+            market_structure="",
+            pending_setup=None,
+            active_trade=None,
+            recent_closed_trades=[],
+            rulebook_markdown="",
+        )
+
+        observation = self.test_engine.heuristic_engine.observe(context)
+        candidates = self.test_engine.heuristic_engine.build_candidates(context, observation)
+        decision = self.test_engine.heuristic_engine.decide_entry(context, observation, candidates)
+
+        self.assertTrue(observation.nifty_mid_noise)
+        self.assertEqual(decision.action, TradeAction.enter_call)
+        self.assertEqual(decision.option_type, "CE")
+        self.assertEqual(decision.setup_type, "bullish_reclaim_watch")
+        self.assertGreaterEqual(decision.setup_score or 0, 80)
+        self.assertIn("Opening Range Low", decision.reason)
+
     def test_reversal_exit_can_enter_opposite_pending_setup_after_square_off(self) -> None:
         exit_candle = Candle(timestamp="2026-05-14T09:42:00", open=24105, high=24108, low=24062, close=24070, volume=1600)
         old_trade = self._build_trade(
