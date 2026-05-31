@@ -3415,6 +3415,40 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertEqual(self.test_engine.active_trade.first_target_price, 23740.0)
         self.assertEqual(self.test_engine.active_trade.target_price, 23710.0)
 
+    def test_nifty_pending_setup_trigger_invalidates_when_refreshed_score_is_weak(self) -> None:
+        candles = [
+            Candle(timestamp="2026-05-18T10:29:00", open=23379.8, high=23385.05, low=23379.8, close=23379.85, volume=663621),
+            Candle(timestamp="2026-05-18T10:30:00", open=23379.75, high=23382.65, low=23371.5, close=23372.65, volume=798743),
+        ]
+        self.test_engine.reset_with_candles(candles)
+        self.test_engine.current_index = 1
+        arm_decision = TradeDecision(
+            action=TradeAction.no_trade,
+            confidence=0.57,
+            reason="Weak equal-high short should not be allowed to fire mechanically.",
+            market_state="gap-and-go",
+            setup_score=57.4,
+            setup_type="bearish_rejection_watch",
+            pending_setup_action="ARM",
+            pending_setup_type="bearish_rejection_watch",
+            pending_setup_direction="LONG_PUT",
+            pending_setup_option_type="PE",
+            pending_setup_trigger_price=23380.25,
+            pending_setup_invalidation_level=23392.65,
+            pending_setup_trigger_basis="close_below",
+            pending_setup_strike=23400,
+            pending_setup_notes="Setup should stay armed because score is only 57.4/100.",
+        )
+        self.test_engine.apply_pending_setup_decision(candles[0], arm_decision)
+
+        triggered = self.test_engine.evaluate_pending_setup_trigger(candles[1])
+
+        assert triggered is not None
+        self.assertEqual(triggered.action, TradeAction.no_trade)
+        self.assertEqual(triggered.pending_setup_action, "INVALIDATE")
+        self.assertIn("below Nifty entry threshold", triggered.reason)
+        self.assertIsNone(self.test_engine.active_trade)
+
     def test_ai_entry_decision_normalizes_call_option_type_before_trade_creation(self) -> None:
         self.test_engine.reset_with_candles(
             [
@@ -3834,6 +3868,77 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertEqual(place_order.call_args.kwargs["transaction_type"], "BUY")
         self.assertIsNone(self.test_engine.active_trade)
         self.assertIn("Hard LTP stop triggered", self.test_engine.trade_history[-1].exit_notes or "")
+
+    def test_nifty_replay_invalidation_exit_books_at_stop_level_not_candle_close(self) -> None:
+        candles = [
+            Candle(timestamp="2026-05-18T14:34:00", open=23609.05, high=23611.5, low=23595.9, close=23597.4, volume=1000),
+            Candle(timestamp="2026-05-18T15:00:00", open=23591.0, high=23666.3, low=23590.25, close=23665.8, volume=1200),
+        ]
+        trade = self._build_trade(
+            entry_time=candles[0].timestamp,
+            entry_spot_price=23597.4,
+            invalidation_level=23617.4,
+            setup_type="bearish_rejection_watch",
+        ).model_copy(
+            update={
+                "direction": "SHORT_STOCK",
+                "option_type": "PE",
+                "price_mode": "cash",
+                "entry_price": 23597.4,
+                "current_price": 23597.4,
+            }
+        )
+        self.test_engine.active_trade = trade
+        self.test_engine.trade_history = [trade]
+        context = self._build_context(candles, active_trade=trade)
+        observation = self._build_observation(atr=20.0)
+
+        decision = self.test_engine.heuristic_engine.manage_active_trade(context, observation, current_trade_price=23665.8)
+        self.test_engine.apply_trade_logic(candles[1], decision, source="replay")
+
+        self.assertEqual(decision.action, TradeAction.exit)
+        self.assertEqual(decision.target_spot_price, 23617.4)
+        self.assertEqual(trade.exit_price, 23617.4)
+        self.assertEqual(trade.booked_pnl, -20.0)
+
+    def test_nifty_late_session_blocks_equal_cluster_only_entry(self) -> None:
+        engine = HeuristicDecisionEngine()
+        candles = [
+            Candle(timestamp="2026-05-18T14:31:00", open=23605.35, high=23621.9, low=23604.2, close=23619.9, volume=1000),
+            Candle(timestamp="2026-05-18T14:32:00", open=23619.9, high=23624.25, low=23614.05, close=23614.3, volume=1000),
+            Candle(timestamp="2026-05-18T14:33:00", open=23614.5, high=23616.05, low=23606.95, close=23609.95, volume=1000),
+            Candle(timestamp="2026-05-18T14:34:00", open=23609.05, high=23611.5, low=23595.9, close=23597.4, volume=1000),
+        ]
+        context = self._build_context(candles, previous_close=23500.0)
+        observation = self._build_observation(
+            atr=12.0,
+            day_type="gap-and-go",
+            range_state="balanced",
+            participation_state="two_sided_active",
+            value_state="fair",
+        )
+        event = SweepEvent(
+            side="buy",
+            level_label="Equal High Cluster (13 touches)",
+            level_price=23610.0,
+            sweep_index=3,
+            reclaim_index=3,
+            trigger_index=3,
+            sweep_price=23611.5,
+            defended_level=23610.0,
+            trigger_price=23597.4,
+            invalidation_level=23617.4,
+            primary=True,
+            quality="tradable",
+            notes=["Equal High Cluster (13 touches) swept.", "Sweep and reclaim happened on the same candle."],
+        )
+
+        candidate = engine.build_candidate_from_event(context, observation, event, option_type="PE", direction="LONG_PUT")
+
+        assert candidate is not None
+        self.assertFalse(candidate.ready_to_enter)
+        self.assertLessEqual(candidate.score, 62.0)
+        self.assertTrue(any("Late-session Nifty equal-high/equal-low" in note for note in candidate.notes))
 
     def test_nifty_live_ltp_square_offs_near_next_round_shelf(self) -> None:
         trade = SimulatedTrade(

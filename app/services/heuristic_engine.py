@@ -4068,6 +4068,18 @@ class HeuristicDecisionEngine:
             score += 4
             notes.append("Retest held after the break, so continuation entry is acceptable without chasing the breakout candle.")
             rule_ids.extend(["R63", "R100"])
+        if (
+            self._is_nifty_mode(context)
+            and current.timestamp.time() >= dt_time(14, 30)
+            and ("equal high cluster" in level_label or "equal low cluster" in level_label)
+            and not nifty_priority_reclaim
+        ):
+            score = min(score, 62.0)
+            ready_to_enter = False
+            notes.append(
+                "Late-session Nifty equal-high/equal-low cluster trades are blocked unless a priority liquidity sweep also confirms."
+            )
+            rule_ids.extend(["R60", "R91"])
         retest_adjustment, retest_note = self._nifty_retest_quality_adjustment(
             context,
             observation,
@@ -4091,6 +4103,13 @@ class HeuristicDecisionEngine:
         else:
             score -= 10
             notes.append("Reward-to-risk is weak to the next liquidity.")
+        if (
+            self._is_nifty_mode(context)
+            and current.timestamp.time() >= dt_time(14, 30)
+            and ("equal high cluster" in level_label or "equal low cluster" in level_label)
+            and not nifty_priority_reclaim
+        ):
+            score = min(score, 62.0)
 
         return SetupCandidate(
             setup_type=setup_type,
@@ -4326,6 +4345,7 @@ class HeuristicDecisionEngine:
                     ),
                     decision_source="heuristic",
                     option_type=trade.option_type,
+                    target_spot_price=round(trade.invalidation_level, 2),
                     market_state=observation.day_type,
                     setup_type=trade.setup_type,
                     rule_ids_used=["R41", "R42", "R45", "R66", "R99"],

@@ -4057,6 +4057,16 @@ class SimulationEngine:
             if action == "KEEP":
                 existing.updated_at = current_candle.timestamp
                 existing.confidence = decision.confidence
+                if decision.setup_score is not None:
+                    existing.setup_score = decision.setup_score
+                if decision.market_state:
+                    existing.market_state = decision.market_state
+                if decision.pending_setup_invalidation_level is not None:
+                    existing.invalidation_level = round(decision.pending_setup_invalidation_level, 2)
+                if decision.target_spot_price is not None:
+                    existing.target_spot_price = round(decision.target_spot_price, 2)
+                if decision.first_target_price is not None:
+                    existing.first_target_price = round(decision.first_target_price, 2)
                 if existing.status != "consumed":
                     existing.status = "armed"
             return
@@ -4130,6 +4140,39 @@ class SimulationEngine:
         if not self.pending_setup_triggered(current_candle, setup):
             setup.last_evaluated_at = current_candle.timestamp
             return None
+        if (
+            self.instrument_mode == InstrumentMode.nifty
+            and self.instrument_spec.supports_options
+            and setup.setup_score is not None
+            and setup.setup_score < self.heuristic_engine.enter_threshold
+        ):
+            setup.status = "invalidated"
+            setup.invalidated_at = current_candle.timestamp
+            setup.updated_at = current_candle.timestamp
+            setup.last_evaluated_at = current_candle.timestamp
+            setup.status_reason = (
+                f"Pending {setup.option_type} trigger was rejected because refreshed setup score "
+                f"{setup.setup_score:.1f} is below Nifty entry threshold {self.heuristic_engine.enter_threshold:.1f}."
+            )
+            return TradeDecision(
+                action=TradeAction.no_trade,
+                confidence=0.76,
+                reason=setup.status_reason,
+                decision_source="pending-setup-trigger",
+                market_state=setup.market_state,
+                setup_score=setup.setup_score,
+                setup_type=setup.setup_type,
+                pending_setup_action="INVALIDATE",
+                pending_setup_type=setup.setup_type,
+                pending_setup_direction=setup.direction,
+                pending_setup_trigger_price=setup.trigger_price,
+                pending_setup_invalidation_level=setup.invalidation_level,
+                pending_setup_trigger_basis=setup.trigger_basis,
+                pending_setup_notes=setup.status_reason,
+                pending_setup_strike=setup.strike,
+                pending_setup_option_type=setup.option_type,
+                rule_ids_used=["R37", "R38", "R39", "R56", "R87"],
+            )
 
         setup.status = "triggered"
         setup.triggered_at = current_candle.timestamp
