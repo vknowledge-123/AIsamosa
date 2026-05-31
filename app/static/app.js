@@ -931,14 +931,33 @@ function renderState(state) {
   renderStockSearchResults(state);
   renderStockWatchlist(state);
 
-  renderList(elements.liquidityZones, state.liquidity_zones, (zone) => `
-    <div class="list-item">
-      <strong>${zone.label}</strong>
-      <span class="pill">${zone.zone_type}</span>
-      <p>Price ${money(zone.price)} | Upper ${money(zone.upper)} | Lower ${money(zone.lower)}</p>
-      <p>${zone.notes}</p>
-    </div>
-  `);
+  const liquidityItems = [
+    ...(state.liquidity_zones || []).map((zone) => ({ kind: "zone", ...zone })),
+    ...(state.liquidity_ledger || [])
+      .filter((entry) => entry.status !== "untouched")
+      .slice(0, 8)
+      .map((entry) => ({ kind: "ledger", ...entry })),
+  ];
+  renderList(elements.liquidityZones, liquidityItems, (item) => {
+    if (item.kind === "ledger") {
+      return `
+        <div class="list-item">
+          <strong>${item.level_label}</strong>
+          <span class="pill">${item.status}</span>
+          <p>${item.window_label} | ${item.side} | Level ${money(item.level)} | Strength ${Math.round((item.strength || 0) * 100)}%</p>
+          <p>${item.notes}</p>
+        </div>
+      `;
+    }
+    return `
+      <div class="list-item">
+        <strong>${item.label}</strong>
+        <span class="pill">${item.zone_type}</span>
+        <p>Price ${money(item.price)} | Upper ${money(item.upper)} | Lower ${money(item.lower)}</p>
+        <p>${item.notes}</p>
+      </div>
+    `;
+  });
 
   renderList(elements.operatorZones, state.operator_zones, (zone) => `
     <div class="list-item">

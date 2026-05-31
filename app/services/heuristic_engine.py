@@ -90,6 +90,9 @@ class Observation:
     stock_dow_state: str = "mixed"
     stock_nifty_bias: str = "neutral"
     stock_nifty_state: str = "unavailable"
+    layered_bullish_trap_score: float = 0.0
+    layered_bearish_trap_score: float = 0.0
+    liquidity_ledger_summary: str = ""
 
 
 class HeuristicDecisionEngine:
@@ -223,6 +226,7 @@ class HeuristicDecisionEngine:
         nifty_mid_noise = self.is_nifty_mid_noise(context, atr, overlap_ratio, mapped_buy_liquidity, mapped_sell_liquidity)
         stock_dow_bias, stock_dow_state = self._classify_stock_dow_structure(session, atr)
         stock_nifty_bias, stock_nifty_state = self._classify_stock_nifty_context(context, atr)
+        layered_bullish_trap_score, layered_bearish_trap_score, liquidity_ledger_summary = self._liquidity_ledger_scores(context)
 
         return Observation(
             session_phase=session_phase,
@@ -270,7 +274,63 @@ class HeuristicDecisionEngine:
             stock_dow_state=stock_dow_state,
             stock_nifty_bias=stock_nifty_bias,
             stock_nifty_state=stock_nifty_state,
+            layered_bullish_trap_score=layered_bullish_trap_score,
+            layered_bearish_trap_score=layered_bearish_trap_score,
+            liquidity_ledger_summary=liquidity_ledger_summary,
         )
+
+    def _liquidity_ledger_scores(self, context: StrategyContext) -> tuple[float, float, str]:
+        bullish = 0.0
+        bearish = 0.0
+        important: list[str] = []
+        status_weight = {"reclaimed": 1.0, "swept": 0.42, "accepted": 0.58}
+        for entry in context.liquidity_ledger:
+            weight = status_weight.get(entry.status, 0.0)
+            if weight <= 0.0:
+                continue
+            strength_points = entry.strength * weight * 10.0
+            if entry.side == "sell-side":
+                if entry.status == "reclaimed":
+                    bullish += strength_points
+                elif entry.status == "accepted":
+                    bearish += strength_points * 0.65
+                elif entry.status == "swept":
+                    bullish += strength_points * 0.45
+            elif entry.side == "buy-side":
+                if entry.status == "reclaimed":
+                    bearish += strength_points
+                elif entry.status == "accepted":
+                    bullish += strength_points * 0.65
+                elif entry.status == "swept":
+                    bearish += strength_points * 0.45
+            if len(important) < 4:
+                important.append(f"{entry.window_label} {entry.side} {entry.status}")
+        return min(bullish, 14.0), min(bearish, 14.0), "; ".join(important)
+
+    def _liquidity_ledger_score_adjustment(
+        self,
+        observation: Observation,
+        *,
+        option_type: str,
+    ) -> tuple[float, str | None, list[str]]:
+        same_score = observation.layered_bullish_trap_score if option_type == "CE" else observation.layered_bearish_trap_score
+        opposite_score = observation.layered_bearish_trap_score if option_type == "CE" else observation.layered_bullish_trap_score
+        adjustment = min(same_score, 10.0) - min(opposite_score * 0.45, 6.0)
+        if adjustment >= 3.0:
+            side_text = "bullish" if option_type == "CE" else "bearish"
+            return (
+                adjustment,
+                f"Multi-window liquidity memory supports the {side_text} trap/reclaim context: {observation.liquidity_ledger_summary}.",
+                ["R77", "R78", "R79", "R93", "R94"],
+            )
+        if adjustment <= -3.0:
+            side_text = "bullish" if option_type == "CE" else "bearish"
+            return (
+                adjustment,
+                f"Multi-window liquidity memory warns against the {side_text} side because opposite trap pressure is active.",
+                ["R50", "R77", "R93", "R94"],
+            )
+        return adjustment, None, []
 
     def classify_session_phase(self, candle_count: int) -> str:
         if candle_count <= 5:
@@ -1713,6 +1773,14 @@ class HeuristicDecisionEngine:
             notes.append("Trend-day context supports faster pullback timing.")
         if observation.two_sided_participation:
             score += 3
+        ledger_adjustment, ledger_note, ledger_rules = self._liquidity_ledger_score_adjustment(
+            observation,
+            option_type=option_type,
+        )
+        score += ledger_adjustment
+        if ledger_note:
+            notes.append(ledger_note)
+            rule_ids.extend(ledger_rules)
         return max(0.0, min(score, 100.0)), notes, rule_ids, defended_level, invalidation
 
     def _build_stock_early_retracement_reclaim_candidate(
@@ -1962,6 +2030,14 @@ class HeuristicDecisionEngine:
             notes.append("Inflated pricing is acceptable here because stock mode prioritizes trend continuation over fade logic on strong gainers.")
         if observation.two_sided_participation:
             score += 3
+        ledger_adjustment, ledger_note, ledger_rules = self._liquidity_ledger_score_adjustment(
+            observation,
+            option_type=option_type,
+        )
+        score += ledger_adjustment
+        if ledger_note:
+            notes.append(ledger_note)
+            rule_ids.extend(ledger_rules)
         room = abs(target_spot - current.close)
         if room >= risk * 1.45:
             score += 6
@@ -2062,6 +2138,14 @@ class HeuristicDecisionEngine:
             if observation.value_state == "inflated":
                 score += 4
                 notes.append("Inflated pricing is acceptable because the trend is still acting cleanly and stock mode allows momentum continuation.")
+            ledger_adjustment, ledger_note, ledger_rules = self._liquidity_ledger_score_adjustment(
+                observation,
+                option_type="CE",
+            )
+            score += ledger_adjustment
+            if ledger_note:
+                notes.append(ledger_note)
+                rule_ids.extend(ledger_rules)
             risk = max(current.close - recent_pullback_low, observation.atr * 0.75)
             target_spot = self.next_upside_target(context, current.close, risk)
             room = target_spot - current.close
@@ -2141,6 +2225,14 @@ class HeuristicDecisionEngine:
             if observation.value_state == "discount":
                 score += 4
                 notes.append("Discount pricing is acceptable because the trend is still acting cleanly and stock mode allows momentum continuation.")
+            ledger_adjustment, ledger_note, ledger_rules = self._liquidity_ledger_score_adjustment(
+                observation,
+                option_type="PE",
+            )
+            score += ledger_adjustment
+            if ledger_note:
+                notes.append(ledger_note)
+                rule_ids.extend(ledger_rules)
             risk = max(recent_pullback_high - current.close, observation.atr * 0.75)
             target_spot = self.next_downside_target(context, current.close, risk)
             room = current.close - target_spot
@@ -3401,6 +3493,14 @@ class HeuristicDecisionEngine:
         score += htf_adjustment
         if htf_note:
             notes.append(htf_note)
+        ledger_adjustment, ledger_note, ledger_rules = self._liquidity_ledger_score_adjustment(
+            observation,
+            option_type=option_type,
+        )
+        score += ledger_adjustment
+        if ledger_note:
+            notes.append(ledger_note)
+            rule_ids.extend(ledger_rules)
         slight_gap = abs(observation.gap) <= max(observation.atr * 0.45, 0.4)
         if observation.previous_day_bias.startswith("bullish") and slight_gap and observation.gap >= 0 and option_type == "CE" and observation.session_phase in {"opening-map", "primary-trap-window"}:
             score += 5

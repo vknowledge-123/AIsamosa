@@ -20,6 +20,7 @@ from app.schemas import (
     IntegratedPnlState,
     InstrumentMode,
     LiveFeedState,
+    LiquidityLedgerEntry,
     OperationJobState,
     OperatingMode,
     PendingSetup,
@@ -545,6 +546,7 @@ class SimulationEngine:
         recent_candles = session_candles[-20:]
         previous_day = calculate_previous_day_levels(self.candles, evaluation_index)
         liquidity_zones = self.find_liquidity_zones(session_candles, previous_day, previous_day_candles)
+        liquidity_ledger = self.build_liquidity_ledger(session_candles, previous_day, previous_day_candles)
         operator_zones = self.find_operator_zones(session_candles)
         signal_events = self.detect_signal_events(current_candle, liquidity_zones, previous_day)
         recent_closed_trades = [
@@ -566,6 +568,7 @@ class SimulationEngine:
             previous_day_candles=previous_day_candles,
             previous_day=previous_day,
             liquidity_zones=liquidity_zones,
+            liquidity_ledger=liquidity_ledger,
             operator_zones=operator_zones,
             signal_events=signal_events,
             market_structure=self.describe_market_structure(
@@ -573,6 +576,7 @@ class SimulationEngine:
                 previous_day_candles=previous_day_candles,
                 previous_day=previous_day,
                 live_current_candle=None,
+                liquidity_ledger=liquidity_ledger,
             ),
             companion_symbol=self.companion_instrument_spec.symbol if companion_session_candles else None,
             companion_current_candle=companion_current_candle,
@@ -2861,6 +2865,7 @@ class SimulationEngine:
         recent_candles = session_candles[-20:]
         previous_day = calculate_previous_day_levels(self.candles, self.current_index)
         liquidity_zones = self.find_liquidity_zones(session_candles, previous_day, previous_day_candles)
+        liquidity_ledger = self.build_liquidity_ledger(session_candles, previous_day, previous_day_candles)
         operator_zones = self.find_operator_zones(session_candles)
         signal_events = self.detect_signal_events(current_candle, liquidity_zones, previous_day)
         recent_closed_trades = [
@@ -2882,6 +2887,7 @@ class SimulationEngine:
             previous_day_candles=previous_day_candles,
             previous_day=previous_day,
             liquidity_zones=liquidity_zones,
+            liquidity_ledger=liquidity_ledger,
             operator_zones=operator_zones,
             signal_events=signal_events,
             market_structure=self.describe_market_structure(
@@ -2889,6 +2895,7 @@ class SimulationEngine:
                 previous_day_candles=previous_day_candles,
                 previous_day=previous_day,
                 live_current_candle=self.live_current_candle,
+                liquidity_ledger=liquidity_ledger,
             ),
             companion_symbol=self.companion_instrument_spec.symbol if companion_session_candles else None,
             companion_current_candle=companion_current_candle,
@@ -2971,6 +2978,7 @@ class SimulationEngine:
         )
         previous_day_candles = get_previous_day_candles(candles, current_index) if latest_closed else []
         liquidity_zones = self.find_liquidity_zones(state_context_candles, previous_day, previous_day_candles) if latest_candle else []
+        liquidity_ledger = self.build_liquidity_ledger(state_context_candles, previous_day, previous_day_candles) if latest_candle else []
         operator_zones = self.find_operator_zones(state_context_candles) if latest_candle else []
         signal_events = self.detect_signal_events(latest_candle, liquidity_zones, previous_day) if latest_candle else []
         unrealized_pnl = active_trade.pnl if active_trade else 0.0
@@ -3005,6 +3013,7 @@ class SimulationEngine:
             recent_candles=recent_candles,
             previous_day=previous_day,
             liquidity_zones=liquidity_zones,
+            liquidity_ledger=liquidity_ledger,
             operator_zones=operator_zones,
             signal_events=signal_events,
             signal_history=signal_history,
@@ -3535,6 +3544,158 @@ class SimulationEngine:
             seen_price_families.append((label_family, price))
         return zones
 
+    def build_liquidity_ledger(
+        self,
+        candles: list[Candle],
+        previous_day: PreviousDayLevels,
+        previous_day_candles: list[Candle] | None = None,
+    ) -> list[LiquidityLedgerEntry]:
+        if len(candles) < 3:
+            return []
+        previous_day_candles = previous_day_candles or []
+        ordered = sorted(candles, key=lambda candle: candle.timestamp)
+        latest = ordered[-1]
+        span_minutes = 1
+        if len(ordered) >= 2:
+            delta_seconds = (ordered[-1].timestamp - ordered[-2].timestamp).total_seconds()
+            span_minutes = max(1, int(round(delta_seconds / 60.0)) or 1)
+        ranges = [max(candle.high - candle.low, 0.01) for candle in ordered[-20:]]
+        atr = sum(ranges) / max(len(ranges), 1)
+        price_tolerance = max(atr * 0.06, 0.03 if latest.close < 500 else 0.2)
+        windows: list[tuple[str, int | None, list[Candle], float]] = []
+        for minutes, base_strength in ((5, 0.55), (10, 0.6), (15, 0.66), (30, 0.72), (60, 0.78)):
+            count = max(3, math.ceil(minutes / span_minutes))
+            if len(ordered) >= count:
+                windows.append((f"last {minutes}m", minutes, ordered[-count:], base_strength))
+        windows.append(("session", None, ordered, 0.86))
+
+        entries: list[LiquidityLedgerEntry] = []
+        seen: set[tuple[str, str, float]] = set()
+
+        def clamp_strength(value: float) -> float:
+            return max(0.0, min(value, 1.0))
+
+        def append_window_entries(
+            *,
+            label: str,
+            minutes: int | None,
+            window: list[Candle],
+            base_strength: float,
+        ) -> None:
+            if len(window) < 3:
+                return
+            reference = window[:-1]
+            window_latest = window[-1]
+            buy_level = max(candle.high for candle in reference)
+            sell_level = min(candle.low for candle in reference)
+            levels = (
+                ("buy-side", f"{label} buy stops", buy_level),
+                ("sell-side", f"{label} sell stops", sell_level),
+            )
+            for side, level_label, level in levels:
+                status = "untouched"
+                trap_side = "none"
+                status_bonus = 0.0
+                if side == "buy-side" and window_latest.high > level + price_tolerance:
+                    if window_latest.close < level:
+                        status = "reclaimed"
+                        trap_side = "buyers"
+                        status_bonus = 0.1
+                    elif window_latest.close > level + price_tolerance:
+                        status = "accepted"
+                        trap_side = "sellers"
+                        status_bonus = 0.08
+                    else:
+                        status = "swept"
+                        trap_side = "buyers"
+                        status_bonus = 0.04
+                elif side == "sell-side" and window_latest.low < level - price_tolerance:
+                    if window_latest.close > level:
+                        status = "reclaimed"
+                        trap_side = "sellers"
+                        status_bonus = 0.1
+                    elif window_latest.close < level - price_tolerance:
+                        status = "accepted"
+                        trap_side = "buyers"
+                        status_bonus = 0.08
+                    else:
+                        status = "swept"
+                        trap_side = "sellers"
+                        status_bonus = 0.04
+                key = (label, side, round(level, 2))
+                if key in seen:
+                    continue
+                seen.add(key)
+                if status == "reclaimed":
+                    direction_note = (
+                        "buyers are trapped after a failed upside break"
+                        if side == "buy-side"
+                        else "sellers are trapped after a failed downside break"
+                    )
+                elif status == "accepted":
+                    direction_note = (
+                        "price is accepting above buy-side liquidity"
+                        if side == "buy-side"
+                        else "price is accepting below sell-side liquidity"
+                    )
+                elif status == "swept":
+                    direction_note = f"{trap_side} may be trapped but reclaim is still incomplete"
+                else:
+                    direction_note = "liquidity remains available"
+                entries.append(
+                    LiquidityLedgerEntry(
+                        window_label=label,
+                        window_minutes=minutes,
+                        side=side,
+                        level_label=level_label,
+                        level=round(level, 2),
+                        status=status,
+                        trap_side=trap_side,
+                        strength=round(clamp_strength(base_strength + status_bonus), 2),
+                        candle_count=len(window),
+                        created_at=window[0].timestamp,
+                        updated_at=window_latest.timestamp,
+                        notes=f"{level_label} at {level:.2f}: {direction_note}.",
+                    )
+                )
+
+        for label, minutes, window, base_strength in windows:
+            append_window_entries(label=label, minutes=minutes, window=window, base_strength=base_strength)
+
+        if previous_day.high:
+            entries.append(
+                LiquidityLedgerEntry(
+                    window_label="previous day",
+                    side="buy-side",
+                    level_label="previous day high buy stops",
+                    level=round(previous_day.high, 2),
+                    status="accepted" if latest.close > previous_day.high + price_tolerance else "reclaimed" if latest.high > previous_day.high + price_tolerance and latest.close < previous_day.high else "untouched",
+                    trap_side="sellers" if latest.close > previous_day.high + price_tolerance else "buyers" if latest.high > previous_day.high + price_tolerance and latest.close < previous_day.high else "none",
+                    strength=0.9,
+                    candle_count=len(previous_day_candles),
+                    created_at=previous_day_candles[0].timestamp if previous_day_candles else None,
+                    updated_at=latest.timestamp,
+                    notes="Previous day high remains a primary buy-side liquidity reference.",
+                )
+            )
+        if previous_day.low:
+            entries.append(
+                LiquidityLedgerEntry(
+                    window_label="previous day",
+                    side="sell-side",
+                    level_label="previous day low sell stops",
+                    level=round(previous_day.low, 2),
+                    status="accepted" if latest.close < previous_day.low - price_tolerance else "reclaimed" if latest.low < previous_day.low - price_tolerance and latest.close > previous_day.low else "untouched",
+                    trap_side="buyers" if latest.close < previous_day.low - price_tolerance else "sellers" if latest.low < previous_day.low - price_tolerance and latest.close > previous_day.low else "none",
+                    strength=0.9,
+                    candle_count=len(previous_day_candles),
+                    created_at=previous_day_candles[0].timestamp if previous_day_candles else None,
+                    updated_at=latest.timestamp,
+                    notes="Previous day low remains a primary sell-side liquidity reference.",
+                )
+            )
+        return entries
+
     def describe_market_structure(
         self,
         *,
@@ -3542,6 +3703,7 @@ class SimulationEngine:
         previous_day_candles: list[Candle],
         previous_day: PreviousDayLevels,
         live_current_candle: Candle | None,
+        liquidity_ledger: list[LiquidityLedgerEntry] | None = None,
     ) -> str:
         if not session_candles:
             return "No closed session candles are loaded yet."
@@ -3617,6 +3779,17 @@ class SimulationEngine:
                     f"low={live_current_candle.low:.2f}, close={live_current_candle.close:.2f}."
                 )
             )
+        active_ledger = [
+            entry
+            for entry in (liquidity_ledger or [])
+            if entry.status in {"swept", "reclaimed", "accepted"}
+        ][:6]
+        if active_ledger:
+            ledger_text = "; ".join(
+                f"{entry.window_label} {entry.side} {entry.status} at {entry.level:.2f}"
+                for entry in active_ledger
+            )
+            lines.append(f"Liquidity memory: {ledger_text}.")
         return "\n".join(lines)
 
     def find_operator_zones(self, candles: list[Candle]) -> list[Zone]:

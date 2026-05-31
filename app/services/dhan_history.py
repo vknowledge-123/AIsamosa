@@ -254,6 +254,7 @@ class DhanChartService:
         market_now: datetime,
         exchange_segment: str,
         instrument_type: str,
+        interval: int = 1,
     ) -> tuple[list[Candle], Candle | None]:
         session_start = datetime.combine(session_day, self.session_open, tzinfo=self.market_timezone)
         request_start = self._intraday_request_start(session_day).replace(tzinfo=self.market_timezone)
@@ -270,11 +271,13 @@ class DhanChartService:
             window_end=request_end.replace(tzinfo=None),
             exchange_segment=exchange_segment,
             instrument_type=instrument_type,
+            interval=interval,
         )
         if not candles:
             return [], None
 
-        current_bucket = market_now.replace(second=0, microsecond=0, tzinfo=None)
+        bucket_minute = (market_now.minute // interval) * interval
+        current_bucket = market_now.replace(minute=bucket_minute, second=0, microsecond=0, tzinfo=None)
         if market_now < session_end and candles[-1].timestamp == current_bucket:
             return candles[:-1], candles[-1]
         return candles, None
@@ -293,12 +296,15 @@ class DhanChartService:
         window_end: datetime,
         exchange_segment: str,
         instrument_type: str,
+        interval: int = 1,
     ) -> list[Candle]:
+        if interval not in {1, 5, 15, 25, 60}:
+            raise DhanChartError(f"Dhan intraday chart interval {interval} is not supported.")
         payload = {
             "securityId": str(security_id),
             "exchangeSegment": exchange_segment,
             "instrument": instrument_type,
-            "interval": 1,
+            "interval": interval,
             "oi": False,
             "fromDate": window_start.strftime("%Y-%m-%d %H:%M:%S"),
             "toDate": window_end.strftime("%Y-%m-%d %H:%M:%S"),

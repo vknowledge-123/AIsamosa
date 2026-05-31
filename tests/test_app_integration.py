@@ -13,7 +13,7 @@ from fastapi.testclient import TestClient
 
 import app.main as main_module
 from app.config import get_settings
-from app.schemas import Candle, InstrumentMode, InstrumentState, LiveFeedState, OperatingMode, PendingSetup, PreviousDayLevels, SimulatedTrade, StrategyContext, TradeAction, TradeDecision
+from app.schemas import Candle, InstrumentMode, InstrumentState, LiquidityLedgerEntry, LiveFeedState, OperatingMode, PendingSetup, PreviousDayLevels, SimulatedTrade, StrategyContext, TradeAction, TradeDecision
 from app.services.credential_store import CredentialStore
 from app.services.dhan_execution import BrokerOrderResult
 from app.services.dhan_history import DhanChartEmptyDataError, DhanChartError, DhanChartRateLimitError, DhanChartService, DhanSessionBundle
@@ -4702,6 +4702,72 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertEqual(candles, returned_candles[:-1])
         self.assertEqual(live_open_candle, returned_candles[-1])
         self.assertEqual(intraday_mock.call_args.kwargs["window_start"], datetime(2026, 5, 14, 9, 14))
+
+    def test_dhan_intraday_window_accepts_direct_five_minute_interval(self) -> None:
+        service = DhanChartService()
+        with patch.object(service, "_request_candles", return_value=[]) as request_mock:
+            candles = service._request_intraday_window(
+                client_id="cid",
+                access_token="tok",
+                security_id="1333",
+                window_start=datetime(2026, 5, 31, 9, 15),
+                window_end=datetime(2026, 5, 31, 15, 30),
+                exchange_segment="NSE_EQ",
+                instrument_type="EQUITY",
+                interval=5,
+            )
+
+        self.assertEqual(candles, [])
+        payload = request_mock.call_args.kwargs["payload"]
+        self.assertEqual(payload["interval"], 5)
+        self.assertEqual(payload["fromDate"], "2026-05-31 09:15:00")
+        self.assertEqual(payload["toDate"], "2026-05-31 15:30:00")
+
+    def test_liquidity_ledger_tracks_multi_window_sell_side_reclaim(self) -> None:
+        candles = [
+            self._make_candle(0, 100, 101, 99.0, 100.5),
+            self._make_candle(1, 100.5, 101.2, 99.4, 100.8),
+            self._make_candle(2, 100.8, 101.0, 99.6, 100.2),
+            self._make_candle(3, 100.2, 100.7, 99.2, 99.8),
+            self._make_candle(4, 99.8, 100.6, 98.6, 100.4),
+        ]
+
+        ledger = self.test_engine.build_liquidity_ledger(candles, PreviousDayLevels())
+
+        sell_reclaims = [
+            entry
+            for entry in ledger
+            if entry.window_label == "last 5m" and entry.side == "sell-side" and entry.status == "reclaimed"
+        ]
+        self.assertTrue(sell_reclaims)
+        self.assertEqual(sell_reclaims[0].trap_side, "sellers")
+
+    def test_heuristic_observation_uses_liquidity_memory_scores(self) -> None:
+        candles = [
+            self._make_candle(0, 100, 101, 99, 100.5),
+            self._make_candle(1, 100.5, 101.2, 99.5, 101.0),
+            self._make_candle(2, 101.0, 101.4, 100.2, 100.8),
+            self._make_candle(3, 100.8, 101.0, 100.0, 100.3),
+            self._make_candle(4, 100.3, 100.7, 98.8, 100.6),
+        ]
+        context = self._build_context(candles)
+        context.liquidity_ledger = [
+            LiquidityLedgerEntry(
+                window_label="last 5m",
+                window_minutes=5,
+                side="sell-side",
+                level_label="last 5m sell stops",
+                level=99.0,
+                status="reclaimed",
+                trap_side="sellers",
+                strength=0.65,
+            )
+        ]
+
+        observation = self.test_engine.heuristic_engine.observe(context)
+
+        self.assertGreater(observation.layered_bullish_trap_score, 0)
+        self.assertIn("last 5m", observation.liquidity_ledger_summary)
 
     def test_heuristic_v2_enters_stock_long_after_multi_candle_reclaim(self) -> None:
         self.test_engine.set_instrument_mode("stock")

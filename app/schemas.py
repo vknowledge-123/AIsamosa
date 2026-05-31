@@ -65,6 +65,21 @@ class Zone(BaseModel):
     notes: str = ""
 
 
+class LiquidityLedgerEntry(BaseModel):
+    window_label: str
+    window_minutes: int | None = None
+    side: str
+    level_label: str
+    level: float
+    status: str
+    trap_side: str = "none"
+    strength: float = Field(ge=0.0, le=1.0, default=0.5)
+    candle_count: int = 0
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+    notes: str = ""
+
+
 class SignalEvent(BaseModel):
     timestamp: datetime
     title: str
@@ -159,6 +174,7 @@ class StrategyContext(BaseModel):
     previous_day_candles: list[Candle] = Field(default_factory=list)
     previous_day: PreviousDayLevels
     liquidity_zones: list[Zone]
+    liquidity_ledger: list[LiquidityLedgerEntry] = Field(default_factory=list)
     operator_zones: list[Zone]
     signal_events: list[SignalEvent]
     market_structure: str = ""
@@ -440,6 +456,7 @@ class DashboardState(BaseModel):
     recent_candles: list[Candle] = Field(default_factory=list)
     previous_day: PreviousDayLevels
     liquidity_zones: list[Zone]
+    liquidity_ledger: list[LiquidityLedgerEntry] = Field(default_factory=list)
     operator_zones: list[Zone]
     signal_events: list[SignalEvent]
     signal_history: list[SignalEvent] = Field(default_factory=list)
