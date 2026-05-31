@@ -247,7 +247,11 @@ class AppIntegrationTests(unittest.TestCase):
                 "stock_partial_profit_enabled": "false",
                 "stock_trailing_stop_enabled": "false",
                 "stock_heuristic_early_exit_enabled": "false",
+                "nifty_trailing_stop_enabled": "false",
+                "nifty_heuristic_early_exit_enabled": "false",
                 "pyramiding_enabled": "true",
+                "intelligent_pyramiding_enabled": "true",
+                "nifty_option_trade_mode": "buying",
             },
         )
 
@@ -267,7 +271,11 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertFalse(summary["stock_partial_profit_enabled"])
         self.assertFalse(summary["stock_trailing_stop_enabled"])
         self.assertFalse(summary["stock_heuristic_early_exit_enabled"])
+        self.assertFalse(summary["nifty_trailing_stop_enabled"])
+        self.assertFalse(summary["nifty_heuristic_early_exit_enabled"])
         self.assertTrue(summary["pyramiding_enabled"])
+        self.assertTrue(summary["intelligent_pyramiding_enabled"])
+        self.assertEqual(summary["nifty_option_trade_mode"], "buying")
         self.assertTrue(Path(summary["storage_path"]).exists())
 
     def test_extract_bulk_stock_symbols_from_nse_style_table(self) -> None:
@@ -3379,10 +3387,32 @@ class AppIntegrationTests(unittest.TestCase):
 
         self.assertEqual(bullish_trade.direction, "SHORT_PUT")
         self.assertEqual(bullish_trade.option_type, "PE")
-        self.assertEqual(bullish_trade.strike, 23400)
+        self.assertEqual(bullish_trade.strike, 23500)
         self.assertEqual(bearish_trade.direction, "SHORT_CALL")
         self.assertEqual(bearish_trade.option_type, "CE")
-        self.assertEqual(bearish_trade.strike, 23700)
+        self.assertEqual(bearish_trade.strike, 23600)
+
+    def test_nifty_live_mode_can_buy_one_strike_itm_option(self) -> None:
+        self.temp_store.save(nifty_option_trade_mode="buying")
+        candle = Candle(timestamp="2026-05-14T11:27:00", open=23180, high=23210, low=23170, close=23192, volume=1000)
+
+        bullish_trade = self.test_engine._build_entry_trade(
+            candle,
+            TradeDecision(action=TradeAction.enter_call, option_type="CE", invalidation_level=23140, target_spot_price=23300),
+            source="live",
+        )
+        bearish_trade = self.test_engine._build_entry_trade(
+            candle,
+            TradeDecision(action=TradeAction.enter_put, option_type="PE", invalidation_level=23240, target_spot_price=23080),
+            source="live",
+        )
+
+        self.assertEqual(bullish_trade.direction, "LONG_CALL")
+        self.assertEqual(bullish_trade.option_type, "CE")
+        self.assertEqual(bullish_trade.strike, 23100)
+        self.assertEqual(bearish_trade.direction, "LONG_PUT")
+        self.assertEqual(bearish_trade.option_type, "PE")
+        self.assertEqual(bearish_trade.strike, 23200)
 
     def test_short_option_pnl_and_live_order_sides_are_reversed(self) -> None:
         candle = Candle(timestamp="2026-05-14T11:27:00", open=23510, high=23542, low=23502, close=23534, volume=1000)
@@ -3536,6 +3566,85 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertNotEqual(disabled.action, TradeAction.add_position)
         self.assertEqual(enabled.action, TradeAction.add_position)
         self.assertEqual(enabled.add_quantity, 1)
+
+    def test_intelligent_pyramiding_uses_add_leg_risk_without_protected_main_stop(self) -> None:
+        candles = [
+            self._make_candle(0, 100, 101, 99, 100),
+            self._make_candle(1, 100, 102.4, 99.8, 102),
+        ]
+        trade = self._build_trade(
+            entry_time=candles[0].timestamp,
+            entry_spot_price=100.0,
+            invalidation_level=98.0,
+            setup_type="bullish_reclaim_watch",
+        )
+        trade.quantity = 100
+        trade.base_quantity = 100
+        trade.open_quantity = 100
+        context = self._build_context(candles, active_trade=trade).model_copy(
+            update={"intelligent_pyramiding_enabled": True}
+        )
+        observation = self._build_observation(atr=2.0, day_type="gap-and-go")
+        candidate = SetupCandidate(
+            setup_type="bullish_pullback_continuation",
+            direction="LONG_CALL",
+            option_type="CE",
+            trigger_basis="close_above",
+            trigger_price=101.8,
+            invalidation_level=101.3,
+            defended_level=101.4,
+            target_spot_price=106.0,
+            first_target_price=103.0,
+            score=84.0,
+            ready_to_enter=True,
+            notes=["Fresh continuation add with tight defended pullback stop."],
+            rule_ids=["R25", "R27", "R63"],
+            event=SweepEvent(
+                side="sell",
+                level_label="pullback-low",
+                level_price=101.4,
+                sweep_index=1,
+                reclaim_index=1,
+                trigger_index=1,
+                sweep_price=101.3,
+                defended_level=101.4,
+                trigger_price=101.8,
+                invalidation_level=101.3,
+                primary=True,
+                quality="tradable",
+            ),
+        )
+
+        with patch.object(self.test_engine.heuristic_engine, "build_candidates", return_value=[candidate]):
+            decision = self.test_engine.heuristic_engine.manage_active_trade(context, observation, current_trade_price=12.0)
+
+        self.assertEqual(decision.action, TradeAction.add_position)
+        self.assertEqual(decision.add_quantity, 100)
+        self.assertEqual(decision.invalidation_level, 101.3)
+
+        self.test_engine.active_trade = trade
+        self.test_engine.trade_history = [trade]
+        self.test_engine.apply_trade_logic(candles[-1], decision, source="replay")
+
+        self.assertEqual(trade.open_quantity, 200)
+        self.assertEqual(len(trade.pyramid_legs), 1)
+        self.assertEqual(trade.pyramid_legs[0].invalidation_level, 101.3)
+
+        stop_candle = self._make_candle(2, 102, 102.1, 101.0, 101.2)
+        stop_context = self._build_context(candles + [stop_candle], active_trade=trade).model_copy(
+            update={"intelligent_pyramiding_enabled": True}
+        )
+        with patch.object(self.test_engine.heuristic_engine, "build_candidates", return_value=[]):
+            exit_decision = self.test_engine.heuristic_engine.manage_active_trade(stop_context, observation, current_trade_price=11.0)
+
+        self.assertEqual(exit_decision.action, TradeAction.exit_pyramid_leg)
+        self.assertEqual(exit_decision.partial_exit_quantity, 100)
+
+        self.test_engine.apply_trade_logic(stop_candle, exit_decision, source="replay")
+
+        self.assertEqual(trade.open_quantity, 100)
+        self.assertEqual(trade.closed_quantity, 100)
+        self.assertEqual(trade.pyramid_legs[0].status, "CLOSED")
 
     def test_nifty_live_ltp_crossing_invalidation_sends_immediate_exit(self) -> None:
         trade = SimulatedTrade(
@@ -5102,6 +5211,63 @@ class AppIntegrationTests(unittest.TestCase):
 
         self.assertEqual(decision.action, TradeAction.update_stop)
         self.assertGreaterEqual(decision.invalidation_level or 0, 23500)
+
+        self.temp_store.save(nifty_trailing_stop_enabled=False)
+        disabled_decision = self.test_engine.heuristic_decision(self.test_engine.build_context())
+
+        self.assertNotEqual(disabled_decision.action, TradeAction.update_stop)
+
+    def test_heuristic_v2_skips_nifty_opposite_setup_exit_when_setting_disabled(self) -> None:
+        candles = [
+            self._make_candle(0, 100, 101, 99, 100),
+            self._make_candle(1, 100, 102, 99.5, 101),
+            self._make_candle(2, 101, 101.5, 100.5, 101.2),
+        ]
+        trade = self._build_trade(
+            entry_time=candles[0].timestamp,
+            entry_spot_price=100.0,
+            invalidation_level=95.0,
+            setup_type="bullish_reclaim_watch",
+        )
+        context = self._build_context(candles, active_trade=trade)
+        observation = self._build_observation(atr=2.0)
+        opposite_candidate = SetupCandidate(
+            setup_type="bearish_rejection_watch",
+            direction="LONG_PUT",
+            option_type="PE",
+            trigger_basis="close_below",
+            trigger_price=100.8,
+            invalidation_level=102.0,
+            defended_level=101.5,
+            target_spot_price=96.0,
+            first_target_price=99.0,
+            score=82.0,
+            ready_to_enter=True,
+            notes=["Strong opposite Nifty setup"],
+            rule_ids=["R26", "R45"],
+            event=SweepEvent(
+                side="buy",
+                level_label="Round Number 100",
+                level_price=100.0,
+                sweep_index=1,
+                reclaim_index=2,
+                trigger_index=2,
+                sweep_price=101.5,
+                defended_level=101.5,
+                trigger_price=100.8,
+                invalidation_level=102.0,
+                primary=True,
+                quality="tradable",
+            ),
+        )
+
+        with patch.object(self.test_engine.heuristic_engine, "build_candidates", return_value=[opposite_candidate]):
+            enabled = self.test_engine.heuristic_engine.manage_active_trade(context, observation, current_trade_price=12.0)
+            disabled_context = context.model_copy(update={"nifty_heuristic_early_exit_enabled": False})
+            disabled = self.test_engine.heuristic_engine.manage_active_trade(disabled_context, observation, current_trade_price=12.0)
+
+        self.assertEqual(enabled.action, TradeAction.exit)
+        self.assertNotEqual(disabled.action, TradeAction.exit)
 
     def test_heuristic_replaces_stale_long_setup_with_short_when_market_keeps_falling(self) -> None:
         candles = [

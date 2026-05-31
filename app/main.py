@@ -391,12 +391,19 @@ async def save_credentials(
     stock_partial_profit_enabled: str = Form(default="true"),
     stock_trailing_stop_enabled: str = Form(default="true"),
     stock_heuristic_early_exit_enabled: str = Form(default="true"),
+    nifty_trailing_stop_enabled: str = Form(default="true"),
+    nifty_heuristic_early_exit_enabled: str = Form(default="true"),
     pyramiding_enabled: str = Form(default="false"),
+    intelligent_pyramiding_enabled: str = Form(default="false"),
+    nifty_option_trade_mode: str = Form(default="selling"),
 ):
     partial_profit_enabled = stock_partial_profit_enabled.strip().lower() in {"1", "true", "yes", "on"}
     trailing_stop_enabled = stock_trailing_stop_enabled.strip().lower() in {"1", "true", "yes", "on"}
     heuristic_early_exit_enabled = stock_heuristic_early_exit_enabled.strip().lower() in {"1", "true", "yes", "on"}
+    nifty_trailing_enabled = nifty_trailing_stop_enabled.strip().lower() in {"1", "true", "yes", "on"}
+    nifty_early_exit_enabled = nifty_heuristic_early_exit_enabled.strip().lower() in {"1", "true", "yes", "on"}
     pyramid_enabled = pyramiding_enabled.strip().lower() in {"1", "true", "yes", "on"}
+    intelligent_pyramid_enabled = intelligent_pyramiding_enabled.strip().lower() in {"1", "true", "yes", "on"}
     state = await run_in_threadpool(
         engine.save_credentials,
         client_id=client_id,
@@ -413,6 +420,10 @@ async def save_credentials(
         stock_partial_profit_enabled=partial_profit_enabled,
         stock_trailing_stop_enabled=trailing_stop_enabled,
         stock_heuristic_early_exit_enabled=heuristic_early_exit_enabled,
+        nifty_trailing_stop_enabled=nifty_trailing_enabled,
+        nifty_heuristic_early_exit_enabled=nifty_early_exit_enabled,
         pyramiding_enabled=pyramid_enabled,
+        intelligent_pyramiding_enabled=intelligent_pyramid_enabled,
+        nifty_option_trade_mode=nifty_option_trade_mode,
     )
     return {"message": "Dhan, AI, sizing, expiry, and trading-mode settings saved locally for reuse.", "state": state}

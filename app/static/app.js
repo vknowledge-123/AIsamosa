@@ -52,10 +52,14 @@ const elements = {
   savedNiftyLotsValue: document.getElementById("savedNiftyLotsValue"),
   savedStockCapitalValue: document.getElementById("savedStockCapitalValue"),
   savedExpiryPreferenceValue: document.getElementById("savedExpiryPreferenceValue"),
+  savedNiftyOptionTradeModeValue: document.getElementById("savedNiftyOptionTradeModeValue"),
   savedStockPartialProfitValue: document.getElementById("savedStockPartialProfitValue"),
   savedStockTrailingStopValue: document.getElementById("savedStockTrailingStopValue"),
   savedStockHeuristicExitValue: document.getElementById("savedStockHeuristicExitValue"),
+  savedNiftyTrailingStopValue: document.getElementById("savedNiftyTrailingStopValue"),
+  savedNiftyHeuristicExitValue: document.getElementById("savedNiftyHeuristicExitValue"),
   savedPyramidingValue: document.getElementById("savedPyramidingValue"),
+  savedIntelligentPyramidingValue: document.getElementById("savedIntelligentPyramidingValue"),
   savedPathValue: document.getElementById("savedPathValue"),
   savedUpdatedValue: document.getElementById("savedUpdatedValue"),
   credentialSaveStatus: document.getElementById("credentialSaveStatus"),
@@ -357,7 +361,11 @@ function buildCredentialPayload(form) {
     stock_partial_profit_enabled: form.elements.stock_partial_profit_enabled?.checked ? "true" : "false",
     stock_trailing_stop_enabled: form.elements.stock_trailing_stop_enabled?.checked ? "true" : "false",
     stock_heuristic_early_exit_enabled: form.elements.stock_heuristic_early_exit_enabled?.checked ? "true" : "false",
+    nifty_trailing_stop_enabled: form.elements.nifty_trailing_stop_enabled?.checked ? "true" : "false",
+    nifty_heuristic_early_exit_enabled: form.elements.nifty_heuristic_early_exit_enabled?.checked ? "true" : "false",
     pyramiding_enabled: form.elements.pyramiding_enabled?.checked ? "true" : "false",
+    intelligent_pyramiding_enabled: form.elements.intelligent_pyramiding_enabled?.checked ? "true" : "false",
+    nifty_option_trade_mode: (form.elements.nifty_option_trade_mode?.value || "selling").trim(),
   };
   return Object.values(payload).some((value) => value) ? payload : null;
 }
@@ -381,7 +389,11 @@ function serializeCredentialPayload(payload) {
     stock_partial_profit_enabled: payload.stock_partial_profit_enabled,
     stock_trailing_stop_enabled: payload.stock_trailing_stop_enabled,
     stock_heuristic_early_exit_enabled: payload.stock_heuristic_early_exit_enabled,
+    nifty_trailing_stop_enabled: payload.nifty_trailing_stop_enabled,
+    nifty_heuristic_early_exit_enabled: payload.nifty_heuristic_early_exit_enabled,
     pyramiding_enabled: payload.pyramiding_enabled,
+    intelligent_pyramiding_enabled: payload.intelligent_pyramiding_enabled,
+    nifty_option_trade_mode: payload.nifty_option_trade_mode,
   });
 }
 
@@ -631,11 +643,16 @@ function renderTrade(trade) {
   const stopLabel = trade.price_mode === "cash" ? "Spot Stop" : "Stop";
   const targetLabel = trade.price_mode === "cash" ? "Spot Target" : "Target";
   const openQty = trade.open_quantity ?? trade.quantity;
+  const openPyramidLegs = (trade.pyramid_legs || []).filter((leg) => leg.status === "OPEN" && (leg.open_quantity || 0) > 0);
+  const pyramidLegText = openPyramidLegs.length
+    ? openPyramidLegs.map((leg) => `#${leg.add_number}: qty ${leg.open_quantity}, stop ${money(leg.invalidation_level)}`).join(" | ")
+    : "No open add legs";
   elements.activeTrade.className = "trade-card";
   elements.activeTrade.innerHTML = `
     <strong>${trade.symbol}</strong>
     <p>${trade.status} | ${trade.direction} | ${trade.price_mode === "cash" ? "Cash" : "Option"} | Qty ${trade.quantity} | Open ${openQty} | Closed ${trade.closed_quantity || 0}</p>
     <p>Base Qty ${trade.base_quantity || trade.quantity} | Pyramid Adds ${trade.pyramid_count || 0}/2 | Last Add ${formatIstDateTime(trade.last_pyramid_time)} @ ${money(trade.last_pyramid_price)}</p>
+    <p>Add Legs ${pyramidLegText}</p>
     <p>Entry ${money(trade.entry_price)} | Current ${money(trade.current_price)} | ${targetLabel} ${money(trade.target_price)} | ${stopLabel} ${money(trade.stop_price)}</p>
     <p>Spot Entry ${money(trade.entry_spot_price)} | Invalidation ${money(trade.invalidation_level)} | Target Spot ${money(trade.target_spot_price)} | First Target ${money(trade.first_target_price)}</p>
     <p>Setup ${trade.setup_type || "-"} | Score ${trade.setup_score != null ? trade.setup_score.toFixed(1) : "-"} | State ${trade.market_state || "-"}</p>
@@ -846,10 +863,14 @@ function renderState(state) {
   elements.savedNiftyLotsValue.textContent = state.credentials.nifty_order_lots || 1;
   elements.savedStockCapitalValue.textContent = money(state.credentials.stock_trade_capital);
   elements.savedExpiryPreferenceValue.textContent = state.credentials.nifty_expiry_preference || "current-weekly";
+  elements.savedNiftyOptionTradeModeValue.textContent = state.credentials.nifty_option_trade_mode || "selling";
   elements.savedStockPartialProfitValue.textContent = state.credentials.stock_partial_profit_enabled ? "Enabled" : "Disabled";
   elements.savedStockTrailingStopValue.textContent = state.credentials.stock_trailing_stop_enabled ? "Enabled" : "Disabled";
   elements.savedStockHeuristicExitValue.textContent = state.credentials.stock_heuristic_early_exit_enabled ? "Enabled" : "Disabled";
+  elements.savedNiftyTrailingStopValue.textContent = state.credentials.nifty_trailing_stop_enabled ? "Enabled" : "Disabled";
+  elements.savedNiftyHeuristicExitValue.textContent = state.credentials.nifty_heuristic_early_exit_enabled ? "Enabled" : "Disabled";
   elements.savedPyramidingValue.textContent = state.credentials.pyramiding_enabled ? "Enabled" : "Disabled";
+  elements.savedIntelligentPyramidingValue.textContent = state.credentials.intelligent_pyramiding_enabled ? "Enabled" : "Disabled";
   elements.savedPathValue.textContent = state.credentials.storage_path || "-";
   elements.savedUpdatedValue.textContent = state.credentials.last_updated
     ? new Date(state.credentials.last_updated).toLocaleString()
@@ -945,6 +966,7 @@ function renderState(state) {
       <p>${trade.status} | ${trade.direction} | ${trade.price_mode === "cash" ? "Cash" : "Option"} | Entry ${money(trade.entry_price)} | Exit ${money(trade.exit_price)}</p>
       <p>Setup ${trade.setup_type || "-"} | Score ${trade.setup_score != null ? trade.setup_score.toFixed(1) : "-"} | State ${trade.market_state || "-"}</p>
       <p>Total Qty ${trade.quantity} | Base Qty ${trade.base_quantity || trade.quantity} | Open Qty ${trade.open_quantity ?? 0} | Closed Qty ${trade.closed_quantity || 0} | Pyramid Adds ${trade.pyramid_count || 0}/2 | Booked P&amp;L ${money(trade.booked_pnl)}</p>
+      <p>Add Legs ${(trade.pyramid_legs || []).map((leg) => `#${leg.add_number} ${leg.status} qty ${leg.open_quantity}/${leg.quantity} stop ${money(leg.invalidation_level)}`).join(" | ") || "No add legs"}</p>
       <p>Target ${money(trade.target_price)} | Stop ${money(trade.stop_price)} | Invalidation ${money(trade.invalidation_level)} | First Target ${money(trade.first_target_price)}</p>
       <p>Broker ${trade.broker_status || "-"} | Entry Order ${trade.broker_order_id || "-"} | Exit Order ${trade.broker_exit_order_id || "-"} | Product ${trade.broker_product_type || "-"}</p>
       <p>Entry Time ${formatIstDateTime(trade.entry_time)} | Exit Time ${formatIstDateTime(trade.exit_time)} | Latest Quote ${formatIstDateTime(trade.current_quote_time)}</p>
@@ -1005,10 +1027,14 @@ function renderState(state) {
     syncCredentialField(credentialSaveForm, "nifty_order_lots", String(state.credentials.nifty_order_lots || 1));
     syncCredentialField(credentialSaveForm, "stock_trade_capital", String(state.credentials.stock_trade_capital || 25000));
     syncCredentialField(credentialSaveForm, "nifty_expiry_preference", state.credentials.nifty_expiry_preference || "current-weekly");
+    syncCredentialField(credentialSaveForm, "nifty_option_trade_mode", state.credentials.nifty_option_trade_mode || "selling");
     syncCredentialField(credentialSaveForm, "stock_partial_profit_enabled", state.credentials.stock_partial_profit_enabled !== false);
     syncCredentialField(credentialSaveForm, "stock_trailing_stop_enabled", state.credentials.stock_trailing_stop_enabled !== false);
     syncCredentialField(credentialSaveForm, "stock_heuristic_early_exit_enabled", state.credentials.stock_heuristic_early_exit_enabled !== false);
+    syncCredentialField(credentialSaveForm, "nifty_trailing_stop_enabled", state.credentials.nifty_trailing_stop_enabled !== false);
+    syncCredentialField(credentialSaveForm, "nifty_heuristic_early_exit_enabled", state.credentials.nifty_heuristic_early_exit_enabled !== false);
     syncCredentialField(credentialSaveForm, "pyramiding_enabled", state.credentials.pyramiding_enabled === true);
+    syncCredentialField(credentialSaveForm, "intelligent_pyramiding_enabled", state.credentials.intelligent_pyramiding_enabled === true);
     if (!settingsUiState.dirtyFields.size && !settingsUiState.saveInFlight) {
       setCredentialSaveStatus("Saved locally. Autosave is active.", "saved");
     }

@@ -40,7 +40,11 @@ class CredentialStore:
         stock_partial_profit_enabled: bool | None = None,
         stock_trailing_stop_enabled: bool | None = None,
         stock_heuristic_early_exit_enabled: bool | None = None,
+        nifty_trailing_stop_enabled: bool | None = None,
+        nifty_heuristic_early_exit_enabled: bool | None = None,
         pyramiding_enabled: bool | None = None,
+        intelligent_pyramiding_enabled: bool | None = None,
+        nifty_option_trade_mode: str | None = None,
     ) -> None:
         payload = self.load()
         updated = False
@@ -119,10 +123,30 @@ class CredentialStore:
             if payload.get("stock_heuristic_early_exit_enabled") != normalized:
                 payload["stock_heuristic_early_exit_enabled"] = normalized
                 updated = True
+        if nifty_trailing_stop_enabled is not None:
+            normalized = bool(nifty_trailing_stop_enabled)
+            if payload.get("nifty_trailing_stop_enabled") != normalized:
+                payload["nifty_trailing_stop_enabled"] = normalized
+                updated = True
+        if nifty_heuristic_early_exit_enabled is not None:
+            normalized = bool(nifty_heuristic_early_exit_enabled)
+            if payload.get("nifty_heuristic_early_exit_enabled") != normalized:
+                payload["nifty_heuristic_early_exit_enabled"] = normalized
+                updated = True
         if pyramiding_enabled is not None:
             normalized = bool(pyramiding_enabled)
             if payload.get("pyramiding_enabled") != normalized:
                 payload["pyramiding_enabled"] = normalized
+                updated = True
+        if intelligent_pyramiding_enabled is not None:
+            normalized = bool(intelligent_pyramiding_enabled)
+            if payload.get("intelligent_pyramiding_enabled") != normalized:
+                payload["intelligent_pyramiding_enabled"] = normalized
+                updated = True
+        if nifty_option_trade_mode and nifty_option_trade_mode.strip():
+            normalized = self._normalize_nifty_option_trade_mode(nifty_option_trade_mode)
+            if payload.get("nifty_option_trade_mode") != normalized:
+                payload["nifty_option_trade_mode"] = normalized
                 updated = True
 
         if not updated:
@@ -261,9 +285,31 @@ class CredentialStore:
         payload = self.load()
         return self._coerce_bool(payload.get("stock_heuristic_early_exit_enabled"), True)
 
+    def get_nifty_trailing_stop_enabled(self, settings: Settings) -> bool:
+        payload = self.load()
+        return self._coerce_bool(payload.get("nifty_trailing_stop_enabled"), bool(settings.nifty_trailing_stop_enabled))
+
+    def get_nifty_heuristic_early_exit_enabled(self, settings: Settings) -> bool:
+        payload = self.load()
+        return self._coerce_bool(
+            payload.get("nifty_heuristic_early_exit_enabled"),
+            bool(settings.nifty_heuristic_early_exit_enabled),
+        )
+
     def get_pyramiding_enabled(self, settings: Settings) -> bool:
         payload = self.load()
         return self._coerce_bool(payload.get("pyramiding_enabled"), bool(settings.pyramiding_enabled))
+
+    def get_intelligent_pyramiding_enabled(self, settings: Settings) -> bool:
+        payload = self.load()
+        return self._coerce_bool(
+            payload.get("intelligent_pyramiding_enabled"),
+            bool(settings.intelligent_pyramiding_enabled),
+        )
+
+    def get_nifty_option_trade_mode(self, settings: Settings) -> str:
+        payload = self.load()
+        return self._normalize_nifty_option_trade_mode(payload.get("nifty_option_trade_mode") or settings.nifty_option_trade_mode)
 
     def get_ui_preferences(self) -> tuple[InstrumentMode, str | None, list[str]]:
         payload = self.load()
@@ -309,7 +355,11 @@ class CredentialStore:
             stock_partial_profit_enabled=self.get_stock_partial_profit_enabled(settings),
             stock_trailing_stop_enabled=self.get_stock_trailing_stop_enabled(settings),
             stock_heuristic_early_exit_enabled=self.get_stock_heuristic_early_exit_enabled(settings),
+            nifty_trailing_stop_enabled=self.get_nifty_trailing_stop_enabled(settings),
+            nifty_heuristic_early_exit_enabled=self.get_nifty_heuristic_early_exit_enabled(settings),
             pyramiding_enabled=self.get_pyramiding_enabled(settings),
+            intelligent_pyramiding_enabled=self.get_intelligent_pyramiding_enabled(settings),
+            nifty_option_trade_mode=self.get_nifty_option_trade_mode(settings),
             dhan_credential_message=self.resolve_dhan_credentials(
                 payload.get("client_id") or settings.dhan_client_id,
                 payload.get("access_token") or settings.dhan_access_token,
@@ -334,6 +384,13 @@ class CredentialStore:
             return None
         client_id = str(data.get("dhanClientId") or "").strip()
         return client_id or None
+
+    @staticmethod
+    def _normalize_nifty_option_trade_mode(value: object) -> str:
+        normalized = str(value or "selling").strip().lower()
+        if normalized in {"buy", "buying", "option-buying"}:
+            return "buying"
+        return "selling"
 
     @staticmethod
     def _coerce_bool(value: object, default: bool) -> bool:

@@ -241,13 +241,30 @@
             <span>Allow Stock Heuristic Early Exits</span>
           </label>
           <label class="checkbox-row">
+            <input type="checkbox" name="nifty_trailing_stop_enabled" checked />
+            <span>Enable Nifty SL Trailing</span>
+          </label>
+          <label class="checkbox-row">
+            <input type="checkbox" name="nifty_heuristic_early_exit_enabled" checked />
+            <span>Allow Nifty Heuristic Early Exits</span>
+          </label>
+          <label class="checkbox-row">
             <input type="checkbox" name="pyramiding_enabled" />
             <span>Enable Heuristic Pyramiding</span>
+          </label>
+          <label class="checkbox-row">
+            <input type="checkbox" name="intelligent_pyramiding_enabled" />
+            <span>Enable Intelligent Pyramiding</span>
           </label>
           <label>Nifty Expiry Preference</label>
           <select name="nifty_expiry_preference">
             <option value="current-weekly">Current Weekly</option>
             <option value="next-weekly">Next Weekly</option>
+          </select>
+          <label>Nifty Live Option Execution</label>
+          <select name="nifty_option_trade_mode">
+            <option value="selling">Option Selling</option>
+            <option value="buying">Option Buying</option>
           </select>
           <button type="submit">Save Now</button>
           <p id="credentialSaveStatus" class="caption">Autosave idle. Changes save automatically.</p>
@@ -299,6 +316,10 @@
             <p id="savedExpiryPreferenceValue">current-weekly</p>
           </div>
           <div class="list-item">
+            <strong>Nifty Live Option Execution</strong>
+            <p id="savedNiftyOptionTradeModeValue">selling</p>
+          </div>
+          <div class="list-item">
             <strong>Stock Partial Profit Booking</strong>
             <p id="savedStockPartialProfitValue">Enabled</p>
           </div>
@@ -311,8 +332,20 @@
             <p id="savedStockHeuristicExitValue">Enabled</p>
           </div>
           <div class="list-item">
+            <strong>Nifty SL Trailing</strong>
+            <p id="savedNiftyTrailingStopValue">Enabled</p>
+          </div>
+          <div class="list-item">
+            <strong>Nifty Heuristic Early Exits</strong>
+            <p id="savedNiftyHeuristicExitValue">Enabled</p>
+          </div>
+          <div class="list-item">
             <strong>Heuristic Pyramiding</strong>
             <p id="savedPyramidingValue">Disabled</p>
+          </div>
+          <div class="list-item">
+            <strong>Intelligent Pyramiding</strong>
+            <p id="savedIntelligentPyramidingValue">Disabled</p>
           </div>
           <div class="list-item">
             <strong>Storage Path</strong>

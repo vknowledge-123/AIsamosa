@@ -3781,13 +3781,20 @@ class HeuristicDecisionEngine:
         bullish_trade = trade.direction in {"LONG_CALL", "LONG_STOCK", "SHORT_PUT"}
         stock_mode_trade = not context.instrument.supports_options and trade.price_mode == "cash"
         nifty_mode_trade = context.instrument.symbol == "NIFTY" and context.instrument.supports_options and trade.price_mode == "option"
-        heuristic_early_exit_enabled = (not stock_mode_trade) or context.stock_heuristic_early_exit_enabled
+        heuristic_early_exit_enabled = (
+            (stock_mode_trade and context.stock_heuristic_early_exit_enabled)
+            or (nifty_mode_trade and context.nifty_heuristic_early_exit_enabled)
+            or ((not stock_mode_trade) and (not nifty_mode_trade))
+        )
         progress_r = (
             (current_spot - trade.entry_spot_price) / max(risk, 0.01)
             if bullish_trade
             else (trade.entry_spot_price - current_spot) / max(risk, 0.01)
         )
-        trailing_stop_enabled = (stock_mode_trade and context.stock_trailing_stop_enabled) or nifty_mode_trade
+        trailing_stop_enabled = (
+            (stock_mode_trade and context.stock_trailing_stop_enabled)
+            or (nifty_mode_trade and context.nifty_trailing_stop_enabled)
+        )
         bars_since_entry = sum(1 for candle in context.session_candles if candle.timestamp >= trade.entry_time)
         setup_is_previous_close = trade.setup_type in {"previous_close_reclaim_long", "previous_close_rejection_short"}
         regime_deteriorated = observation.participation_state in {"fair_value_churn", "post_trend_balance"} and (
@@ -3905,8 +3912,127 @@ class HeuristicDecisionEngine:
                     rule_ids_used=["R41", "R42", "R45", "R66"],
                 )
 
+        if context.intelligent_pyramiding_enabled:
+            breached_legs = [
+                leg
+                for leg in trade.pyramid_legs
+                if leg.status == "OPEN"
+                and leg.open_quantity > 0
+                and (
+                    (bullish_trade and current_spot <= leg.invalidation_level)
+                    or ((not bullish_trade) and current_spot >= leg.invalidation_level)
+                )
+            ]
+            if breached_legs:
+                exit_quantity = sum(max(int(leg.open_quantity or 0), 0) for leg in breached_legs)
+                return TradeDecision(
+                    action=TradeAction.exit_pyramid_leg,
+                    confidence=0.88,
+                    reason=(
+                        "Intelligent pyramiding add-stop was hit, so remove only the failed add leg quantity "
+                        "and keep the original thesis alive until the main invalidation breaks."
+                    ),
+                    decision_source="heuristic",
+                    option_type=trade.option_type,
+                    partial_exit_quantity=exit_quantity,
+                    pyramid_leg_ids=[leg.leg_id for leg in breached_legs],
+                    market_state=observation.day_type,
+                    setup_type=trade.setup_type,
+                    rule_ids_used=["R41", "R42", "R45", "R66", "R99"],
+                )
+
         pyramid_count = max(int(trade.pyramid_count or 0), 0)
-        if context.pyramiding_enabled and pyramid_count < 2:
+        if context.intelligent_pyramiding_enabled and pyramid_count < 2:
+            base_quantity = max(int(trade.base_quantity or trade.quantity or 1), 1)
+            same_side = self.select_best_candidate(
+                [candidate for candidate in candidates if (candidate.option_type == "CE") == bullish_trade]
+            )
+            if same_side is not None:
+                enter_threshold, _, allow_only_exceptional = self._effective_entry_thresholds(context, observation, same_side)
+                proposed_stop = same_side.invalidation_level
+                target_room = (
+                    same_side.target_spot_price - current_spot
+                    if bullish_trade
+                    else current_spot - same_side.target_spot_price
+                )
+                initial_unit_risk = max(
+                    (
+                        trade.entry_spot_price - (trade.invalidation_level or trade.entry_spot_price)
+                        if bullish_trade
+                        else (trade.invalidation_level or trade.entry_spot_price) - trade.entry_spot_price
+                    ),
+                    observation.atr * 0.6,
+                    0.01,
+                )
+                add_unit_risk = (
+                    current_spot - proposed_stop
+                    if bullish_trade
+                    else proposed_stop - current_spot
+                )
+                main_open_quantity = max(
+                    (trade.open_quantity if trade.open_quantity is not None else trade.quantity)
+                    - sum(max(int(leg.open_quantity or 0), 0) for leg in trade.pyramid_legs if leg.status == "OPEN"),
+                    0,
+                )
+                main_risk = initial_unit_risk * main_open_quantity
+                existing_add_risk = sum(
+                    max(
+                        (
+                            leg.entry_spot_price - leg.invalidation_level
+                            if bullish_trade
+                            else leg.invalidation_level - leg.entry_spot_price
+                        ),
+                        0.0,
+                    )
+                    * max(int(leg.open_quantity or 0), 0)
+                    for leg in trade.pyramid_legs
+                    if leg.status == "OPEN"
+                )
+                proposed_add_risk = max(add_unit_risk, 0.0) * base_quantity
+                initial_budget = initial_unit_risk * max(int(trade.base_quantity or base_quantity), 1)
+                risk_budget = max(initial_budget * 1.5, initial_budget + (observation.atr * base_quantity * 0.25))
+                total_risk_after_add = main_risk + existing_add_risk + proposed_add_risk
+                required_progress = 0.6 + (pyramid_count * 0.5)
+                opposite_pressure = strongest_opposite.score if strongest_opposite is not None else 0.0
+                already_added_this_candle = trade.last_pyramid_time == context.current_candle.timestamp
+                late_session_exception = (
+                    same_side.event.primary
+                    and same_side.event.quality == "explosive"
+                    and same_side.score >= enter_threshold + 5
+                )
+                if (
+                    same_side.ready_to_enter
+                    and same_side.score >= max(enter_threshold, 68.0)
+                    and progress_r >= required_progress
+                    and add_unit_risk > 0
+                    and add_unit_risk <= initial_unit_risk * 0.8
+                    and target_room >= add_unit_risk * 2.0
+                    and total_risk_after_add <= risk_budget
+                    and opposite_pressure < 72
+                    and not already_added_this_candle
+                    and (not allow_only_exceptional or late_session_exception)
+                ):
+                    return TradeDecision(
+                        action=TradeAction.add_position,
+                        confidence=min(0.92, same_side.score / 100),
+                        reason=(
+                            f"Intelligent pyramiding add {pyramid_count + 1}/2 is allowed because the add has its "
+                            f"own structural stop at {proposed_stop:.2f}, add risk is {add_unit_risk:.2f} per unit, "
+                            f"and total open risk after adding stays inside the budget "
+                            f"{total_risk_after_add:.2f}/{risk_budget:.2f}."
+                        ),
+                        decision_source="heuristic",
+                        option_type=trade.option_type,
+                        add_quantity=base_quantity,
+                        invalidation_level=round(proposed_stop, 2),
+                        target_spot_price=round(same_side.target_spot_price, 2),
+                        market_state=observation.day_type,
+                        setup_score=round(same_side.score, 2),
+                        setup_type=same_side.setup_type,
+                        rule_ids_used=list(dict.fromkeys(same_side.rule_ids + ["R41", "R42", "R63", "R74", "R98", "R99"])),
+                    )
+
+        elif context.pyramiding_enabled and pyramid_count < 2:
             base_quantity = max(int(trade.base_quantity or trade.quantity or 1), 1)
             required_progress = 1.0 + (pyramid_count * 0.6)
             stop_is_protected = (
@@ -4123,7 +4249,7 @@ class HeuristicDecisionEngine:
         block_reason = None
         if decision.action in {TradeAction.enter_call, TradeAction.enter_put}:
             status = "trade_entered"
-        elif decision.action in {TradeAction.exit, TradeAction.partial_exit, TradeAction.add_position, TradeAction.update_stop, TradeAction.update_target, TradeAction.hold}:
+        elif decision.action in {TradeAction.exit, TradeAction.partial_exit, TradeAction.add_position, TradeAction.exit_pyramid_leg, TradeAction.update_stop, TradeAction.update_target, TradeAction.hold}:
             status = "active_trade_management"
         elif decision.pending_setup_action == "ARM":
             status = "setup_armed"
@@ -4153,7 +4279,7 @@ class HeuristicDecisionEngine:
 
         is_important = (
             decision.pending_setup_action != "NONE"
-            or decision.action in {TradeAction.enter_call, TradeAction.enter_put, TradeAction.exit, TradeAction.partial_exit, TradeAction.add_position, TradeAction.update_stop, TradeAction.update_target}
+            or decision.action in {TradeAction.enter_call, TradeAction.enter_put, TradeAction.exit, TradeAction.partial_exit, TradeAction.add_position, TradeAction.exit_pyramid_leg, TradeAction.update_stop, TradeAction.update_target}
             or best is not None
             or context.active_trade is not None
             or bool(observation.buy_sweeps or observation.sell_sweeps or observation.previous_close_touched)
@@ -4268,7 +4394,7 @@ class HeuristicDecisionEngine:
                 detail=decision.reason,
             )
 
-        if decision.action in {TradeAction.enter_call, TradeAction.enter_put, TradeAction.partial_exit, TradeAction.add_position, TradeAction.exit}:
+        if decision.action in {TradeAction.enter_call, TradeAction.enter_put, TradeAction.partial_exit, TradeAction.add_position, TradeAction.exit_pyramid_leg, TradeAction.exit}:
             self._push_narrative(
                 timestamp=current.timestamp,
                 event_type="trade-action",

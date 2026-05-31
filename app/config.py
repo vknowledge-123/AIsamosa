@@ -18,7 +18,11 @@ class Settings(BaseSettings):
     nifty_order_lots: int = 1
     stock_trade_capital: float = 25000.0
     nifty_expiry_preference: str = "current-weekly"
+    nifty_trailing_stop_enabled: bool = True
+    nifty_heuristic_early_exit_enabled: bool = True
     pyramiding_enabled: bool = False
+    intelligent_pyramiding_enabled: bool = False
+    nifty_option_trade_mode: str = "selling"
     simulation_starting_balance: float = 250000.0
     simulation_max_risk_per_trade: float = 0.01
     simulation_max_open_trades: int = 1

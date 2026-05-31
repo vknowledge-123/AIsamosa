@@ -14,6 +14,7 @@ class TradeAction(str, Enum):
     exit = "EXIT"
     partial_exit = "PARTIAL_EXIT"
     add_position = "ADD_POSITION"
+    exit_pyramid_leg = "EXIT_PYRAMID_LEG"
     update_target = "UPDATE_TARGET"
     update_stop = "UPDATE_STOP"
 
@@ -175,7 +176,11 @@ class StrategyContext(BaseModel):
     stock_partial_profit_enabled: bool = True
     stock_trailing_stop_enabled: bool = True
     stock_heuristic_early_exit_enabled: bool = True
+    nifty_trailing_stop_enabled: bool = True
+    nifty_heuristic_early_exit_enabled: bool = True
     pyramiding_enabled: bool = False
+    intelligent_pyramiding_enabled: bool = False
+    nifty_option_trade_mode: str = "selling"
     stock_trade_bias: str = "both"
 
 
@@ -221,6 +226,7 @@ class TradeDecision(BaseModel):
     first_target_price: float | None = None
     partial_exit_quantity: int | None = None
     add_quantity: int | None = None
+    pyramid_leg_ids: list[str] = Field(default_factory=list)
     market_state: str | None = None
     setup_score: float | None = None
     setup_type: str | None = None
@@ -234,6 +240,27 @@ class TradeDecision(BaseModel):
     pending_setup_notes: str | None = None
     pending_setup_strike: int | None = None
     pending_setup_option_type: str | None = None
+
+
+class PyramidLeg(BaseModel):
+    leg_id: str
+    add_number: int
+    status: str = "OPEN"
+    quantity: int
+    open_quantity: int
+    entry_time: datetime
+    entry_price: float
+    entry_spot_price: float
+    invalidation_level: float
+    exit_time: datetime | None = None
+    exit_price: float | None = None
+    exit_spot_price: float | None = None
+    broker_order_id: str | None = None
+    broker_exit_order_id: str | None = None
+    broker_entry_correlation_id: str | None = None
+    broker_exit_correlation_id: str | None = None
+    broker_status: str | None = None
+    broker_status_message: str | None = None
 
 
 class SimulatedTrade(BaseModel):
@@ -284,6 +311,7 @@ class SimulatedTrade(BaseModel):
     pyramid_count: int = 0
     last_pyramid_time: datetime | None = None
     last_pyramid_price: float | None = None
+    pyramid_legs: list[PyramidLeg] = Field(default_factory=list)
     pnl: float = 0.0
     entry_notes: str = ""
     exit_notes: str | None = None
@@ -337,7 +365,11 @@ class CredentialSummary(BaseModel):
     stock_partial_profit_enabled: bool = True
     stock_trailing_stop_enabled: bool = True
     stock_heuristic_early_exit_enabled: bool = True
+    nifty_trailing_stop_enabled: bool = True
+    nifty_heuristic_early_exit_enabled: bool = True
     pyramiding_enabled: bool = False
+    intelligent_pyramiding_enabled: bool = False
+    nifty_option_trade_mode: str = "selling"
     dhan_credential_message: str | None = None
     storage_path: str
     last_updated: datetime | None = None

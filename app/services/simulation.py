@@ -24,6 +24,7 @@ from app.schemas import (
     OperatingMode,
     PendingSetup,
     PreviousDayLevels,
+    PyramidLeg,
     RulebookJobState,
     SignalEvent,
     SimulatedTrade,
@@ -587,7 +588,11 @@ class SimulationEngine:
             stock_partial_profit_enabled=self.credential_store.get_stock_partial_profit_enabled(self.settings),
             stock_trailing_stop_enabled=self.credential_store.get_stock_trailing_stop_enabled(self.settings),
             stock_heuristic_early_exit_enabled=self.credential_store.get_stock_heuristic_early_exit_enabled(self.settings),
+            nifty_trailing_stop_enabled=self.credential_store.get_nifty_trailing_stop_enabled(self.settings),
+            nifty_heuristic_early_exit_enabled=self.credential_store.get_nifty_heuristic_early_exit_enabled(self.settings),
             pyramiding_enabled=self.credential_store.get_pyramiding_enabled(self.settings),
+            intelligent_pyramiding_enabled=self.credential_store.get_intelligent_pyramiding_enabled(self.settings),
+            nifty_option_trade_mode=self.credential_store.get_nifty_option_trade_mode(self.settings),
             stock_trade_bias=self.stock_watch_meta.get(self.instrument_spec.symbol, {}).get("trade_bias", "both"),
         )
 
@@ -2042,6 +2047,40 @@ class SimulationEngine:
         if not order_id:
             return
         if order_id not in {trade.broker_order_id, trade.broker_exit_order_id}:
+            matched_leg = next(
+                (
+                    leg
+                    for leg in trade.pyramid_legs
+                    if order_id in {leg.broker_order_id, leg.broker_exit_order_id}
+                ),
+                None,
+            )
+            if matched_leg is None:
+                return
+            matched_leg.broker_status = str(payload.get("Status") or payload.get("status") or payload.get("orderStatus") or "").strip() or matched_leg.broker_status
+            matched_leg.broker_status_message = self._format_order_update_message(payload)
+            trade.broker_status = matched_leg.broker_status
+            trade.broker_status_message = matched_leg.broker_status_message
+            avg_traded_price = payload.get("AvgTradedPrice") or payload.get("averageTradedPrice")
+            if avg_traded_price not in (None, ""):
+                try:
+                    traded_price = round(float(avg_traded_price), 2)
+                except (TypeError, ValueError):
+                    return
+                if order_id == matched_leg.broker_order_id and matched_leg.status == "OPEN":
+                    old_price = matched_leg.entry_price
+                    matched_leg.entry_price = traded_price
+                    if (trade.open_quantity or 0) > 0:
+                        trade.entry_price = round(
+                            trade.entry_price + ((traded_price - old_price) * matched_leg.open_quantity / (trade.open_quantity or 1)),
+                            2,
+                        )
+                        trade.entry_option_price = trade.entry_price
+                    trade.current_price = traded_price
+                    trade.current_option_price = traded_price
+                    trade.current_quote_source = "dhan-order-update"
+                elif order_id == matched_leg.broker_exit_order_id:
+                    matched_leg.exit_price = traded_price
             return
         trade.broker_status = str(payload.get("Status") or payload.get("status") or payload.get("orderStatus") or "").strip() or trade.broker_status
         trade.broker_status_message = self._format_order_update_message(payload)
@@ -2675,7 +2714,11 @@ class SimulationEngine:
         stock_partial_profit_enabled: bool | None = None,
         stock_trailing_stop_enabled: bool | None = None,
         stock_heuristic_early_exit_enabled: bool | None = None,
+        nifty_trailing_stop_enabled: bool | None = None,
+        nifty_heuristic_early_exit_enabled: bool | None = None,
         pyramiding_enabled: bool | None = None,
+        intelligent_pyramiding_enabled: bool | None = None,
+        nifty_option_trade_mode: str | None = None,
     ) -> DashboardState:
         with self.lock:
             self.credential_store.save(
@@ -2693,7 +2736,11 @@ class SimulationEngine:
                 stock_partial_profit_enabled=stock_partial_profit_enabled,
                 stock_trailing_stop_enabled=stock_trailing_stop_enabled,
                 stock_heuristic_early_exit_enabled=stock_heuristic_early_exit_enabled,
+                nifty_trailing_stop_enabled=nifty_trailing_stop_enabled,
+                nifty_heuristic_early_exit_enabled=nifty_heuristic_early_exit_enabled,
                 pyramiding_enabled=pyramiding_enabled,
+                intelligent_pyramiding_enabled=intelligent_pyramiding_enabled,
+                nifty_option_trade_mode=nifty_option_trade_mode,
             )
             self._credential_summary_cache = self.credential_store.summary(self.settings)
             self._configure_ai_service()
@@ -2857,7 +2904,11 @@ class SimulationEngine:
             stock_partial_profit_enabled=self.credential_store.get_stock_partial_profit_enabled(self.settings),
             stock_trailing_stop_enabled=self.credential_store.get_stock_trailing_stop_enabled(self.settings),
             stock_heuristic_early_exit_enabled=self.credential_store.get_stock_heuristic_early_exit_enabled(self.settings),
+            nifty_trailing_stop_enabled=self.credential_store.get_nifty_trailing_stop_enabled(self.settings),
+            nifty_heuristic_early_exit_enabled=self.credential_store.get_nifty_heuristic_early_exit_enabled(self.settings),
             pyramiding_enabled=self.credential_store.get_pyramiding_enabled(self.settings),
+            intelligent_pyramiding_enabled=self.credential_store.get_intelligent_pyramiding_enabled(self.settings),
+            nifty_option_trade_mode=self.credential_store.get_nifty_option_trade_mode(self.settings),
         )
 
     def get_state(self) -> DashboardState:
@@ -3692,6 +3743,7 @@ class SimulationEngine:
             TradeAction.exit,
             TradeAction.partial_exit,
             TradeAction.add_position,
+            TradeAction.exit_pyramid_leg,
             TradeAction.update_stop,
             TradeAction.update_target,
         }:
@@ -3711,6 +3763,7 @@ class SimulationEngine:
             TradeAction.exit,
             TradeAction.partial_exit,
             TradeAction.add_position,
+            TradeAction.exit_pyramid_leg,
             TradeAction.update_stop,
             TradeAction.update_target,
         }:
@@ -4150,6 +4203,16 @@ class SimulationEngine:
             and self.instrument_mode == InstrumentMode.nifty
             and self.instrument_spec.symbol == "NIFTY"
             and self.instrument_spec.supports_options
+            and self.credential_store.get_nifty_option_trade_mode(self.settings) == "selling"
+        )
+
+    def _use_nifty_live_option_buying(self, source: str) -> bool:
+        return (
+            source == "live"
+            and self.instrument_mode == InstrumentMode.nifty
+            and self.instrument_spec.symbol == "NIFTY"
+            and self.instrument_spec.supports_options
+            and self.credential_store.get_nifty_option_trade_mode(self.settings) == "buying"
         )
 
     def _nifty_sell_option_type_for_signal(self, signal_option_type: str) -> str:
@@ -4190,9 +4253,12 @@ class SimulationEngine:
         option_type = signal_option_type
         is_option_trade = self.instrument_spec.supports_options and not self._use_spot_pricing_for_source(source)
         use_option_selling = is_option_trade and self._use_nifty_live_option_selling(source)
+        use_nifty_live_buying = is_option_trade and self._use_nifty_live_option_buying(source)
         if use_option_selling:
             option_type = self._nifty_sell_option_type_for_signal(signal_option_type)
             strike = self.select_nifty_live_sell_strike(current_candle.close, option_type)
+        elif use_nifty_live_buying:
+            strike = self.select_nifty_live_buy_strike(current_candle.close, option_type)
         else:
             strike = decision.strike or (self.select_itm_strike(current_candle.close, option_type) if is_option_trade else 0)
         contract = None
@@ -4337,7 +4403,14 @@ class SimulationEngine:
         self.rulebook_service.learning_log.insert(0, success_message)
         self._finalize_open_trade(current_candle, trade, decision.reason)
 
-    def _exit_live_trade(self, current_candle: Candle, note: str, quantity: int | None = None) -> bool:
+    def _exit_live_trade(
+        self,
+        current_candle: Candle,
+        note: str,
+        quantity: int | None = None,
+        *,
+        pyramid_leg_ids: list[str] | None = None,
+    ) -> bool:
         if not self.active_trade:
             return False
         trade = self.active_trade
@@ -4357,7 +4430,11 @@ class SimulationEngine:
             self.rulebook_service.learning_log.insert(0, message)
             return False
         transaction_type = "SELL" if self._is_long_trade_direction(trade.direction) else "BUY"
-        correlation_id = f"exit-{trade.trade_id}-{trade.partial_exit_count + 1}"
+        correlation_id = (
+            f"pyramid-exit-{trade.trade_id}-{trade.partial_exit_count + 1}"
+            if pyramid_leg_ids
+            else f"exit-{trade.trade_id}-{trade.partial_exit_count + 1}"
+        )
         try:
             result = self.execution_service.place_market_order(
                 client_id=client_id,
@@ -4394,13 +4471,34 @@ class SimulationEngine:
         self._record_execution_feedback_locked(symbol=trade.symbol, message=success_message)
         self.rulebook_service.learning_log.insert(0, success_message)
         self._mark_state_dirty_locked()
-        if exit_quantity >= open_quantity:
+        if pyramid_leg_ids:
+            self._close_pyramid_legs(
+                current_candle,
+                note,
+                pyramid_leg_ids,
+                broker_exit_order_id=result.order_id,
+                broker_exit_correlation_id=correlation_id,
+                broker_status=result.order_status or "PENDING",
+                broker_status_message=result.message,
+            )
+        elif exit_quantity >= open_quantity:
             self.close_active_trade(current_candle, note)
         else:
             self.partial_exit_active_trade(current_candle, note, quantity=exit_quantity)
         return True
 
-    def _add_to_active_trade(self, current_candle: Candle, note: str, quantity: int | None = None) -> bool:
+    def _add_to_active_trade(
+        self,
+        current_candle: Candle,
+        note: str,
+        quantity: int | None = None,
+        *,
+        add_invalidation_level: float | None = None,
+        broker_order_id: str | None = None,
+        broker_entry_correlation_id: str | None = None,
+        broker_status: str | None = None,
+        broker_status_message: str | None = None,
+    ) -> bool:
         if not self.active_trade:
             return False
         trade = self.active_trade
@@ -4423,6 +4521,22 @@ class SimulationEngine:
         trade.pyramid_count += 1
         trade.last_pyramid_time = current_candle.timestamp
         trade.last_pyramid_price = add_price
+        trade.pyramid_legs.append(
+            PyramidLeg(
+                leg_id=uuid.uuid4().hex[:10],
+                add_number=trade.pyramid_count,
+                quantity=add_quantity,
+                open_quantity=add_quantity,
+                entry_time=current_candle.timestamp,
+                entry_price=add_price,
+                entry_spot_price=current_candle.close,
+                invalidation_level=round(add_invalidation_level if add_invalidation_level is not None else (trade.invalidation_level or current_candle.close), 2),
+                broker_order_id=broker_order_id,
+                broker_entry_correlation_id=broker_entry_correlation_id,
+                broker_status=broker_status,
+                broker_status_message=broker_status_message,
+            )
+        )
         trade.current_price = add_price
         trade.current_option_price = add_price
         trade.current_quote_time = current_candle.timestamp
@@ -4430,6 +4544,70 @@ class SimulationEngine:
         trade.notes = note
         if note:
             trade.entry_notes = f"{trade.entry_notes} Pyramiding add {trade.pyramid_count}: {note}".strip()
+        self._mark_state_dirty_locked()
+        return True
+
+    def _close_pyramid_legs(
+        self,
+        candle: Candle,
+        note: str,
+        leg_ids: list[str],
+        *,
+        broker_exit_order_id: str | None = None,
+        broker_exit_correlation_id: str | None = None,
+        broker_status: str | None = None,
+        broker_status_message: str | None = None,
+    ) -> bool:
+        if not self.active_trade:
+            return False
+        trade = self.active_trade
+        requested = set(leg_ids)
+        legs = [
+            leg
+            for leg in trade.pyramid_legs
+            if leg.leg_id in requested and leg.status == "OPEN" and leg.open_quantity > 0
+        ]
+        if not legs:
+            return False
+        exit_price = self.current_trade_market_price(candle.close, trade)
+        old_open_quantity = trade.open_quantity if trade.open_quantity is not None else trade.quantity
+        exit_quantity = sum(max(int(leg.open_quantity or 0), 0) for leg in legs)
+        if exit_quantity <= 0 or old_open_quantity <= 0:
+            return False
+        removed_value = 0.0
+        booked_increment = 0.0
+        for leg in legs:
+            leg_quantity = max(int(leg.open_quantity or 0), 0)
+            removed_value += leg.entry_price * leg_quantity
+            if self._is_short_trade_direction(trade.direction):
+                booked_increment += (leg.entry_price - exit_price) * leg_quantity
+            else:
+                booked_increment += (exit_price - leg.entry_price) * leg_quantity
+            leg.status = "CLOSED"
+            leg.exit_time = candle.timestamp
+            leg.exit_price = exit_price
+            leg.exit_spot_price = candle.close
+            leg.open_quantity = 0
+            leg.broker_exit_order_id = broker_exit_order_id or leg.broker_exit_order_id
+            leg.broker_exit_correlation_id = broker_exit_correlation_id or leg.broker_exit_correlation_id
+            leg.broker_status = broker_status or leg.broker_status
+            leg.broker_status_message = broker_status_message or leg.broker_status_message
+        new_open_quantity = max(old_open_quantity - exit_quantity, 0)
+        if new_open_quantity > 0:
+            remaining_value = max((trade.entry_price * old_open_quantity) - removed_value, 0.0)
+            trade.entry_price = round(remaining_value / new_open_quantity, 2)
+            trade.entry_option_price = trade.entry_price
+        trade.booked_pnl = round(trade.booked_pnl + booked_increment, 2)
+        trade.open_quantity = new_open_quantity
+        trade.closed_quantity += exit_quantity
+        trade.partial_exit_count += 1
+        trade.last_partial_exit_time = candle.timestamp
+        trade.current_price = exit_price
+        trade.current_option_price = exit_price
+        trade.current_quote_time = candle.timestamp
+        trade.pnl = self.calculate_trade_pnl(trade, exit_price)
+        trade.exit_notes = note
+        trade.notes = note
         self._mark_state_dirty_locked()
         return True
 
@@ -4487,7 +4665,16 @@ class SimulationEngine:
         success_message = f"Live pyramiding add order sent for {trade.symbol} with qty {add_quantity}."
         self._record_execution_feedback_locked(symbol=trade.symbol, message=success_message)
         self.rulebook_service.learning_log.insert(0, success_message)
-        return self._add_to_active_trade(current_candle, decision.reason, quantity=add_quantity)
+        return self._add_to_active_trade(
+            current_candle,
+            decision.reason,
+            quantity=add_quantity,
+            add_invalidation_level=decision.invalidation_level,
+            broker_order_id=result.order_id,
+            broker_entry_correlation_id=correlation_id,
+            broker_status=result.order_status or "PENDING",
+            broker_status_message=result.message,
+        )
 
     def _square_off_active_trade_locked(self, client_id: str, access_token: str, *, reason: str) -> bool:
         if self.active_trade is None:
@@ -4533,7 +4720,24 @@ class SimulationEngine:
             if self._should_send_live_orders(source):
                 self._add_live_trade(current_candle, decision)
             else:
-                self._add_to_active_trade(current_candle, decision.reason, quantity=decision.add_quantity)
+                self._add_to_active_trade(
+                    current_candle,
+                    decision.reason,
+                    quantity=decision.add_quantity,
+                    add_invalidation_level=decision.invalidation_level,
+                )
+            return
+
+        if decision.action == TradeAction.exit_pyramid_leg:
+            if self._should_send_live_orders(source):
+                self._exit_live_trade(
+                    current_candle,
+                    decision.reason,
+                    quantity=decision.partial_exit_quantity,
+                    pyramid_leg_ids=decision.pyramid_leg_ids,
+                )
+            else:
+                self._close_pyramid_legs(current_candle, decision.reason, decision.pyramid_leg_ids)
             return
 
         if decision.action == TradeAction.update_stop:
@@ -4626,6 +4830,13 @@ class SimulationEngine:
             )
         self.active_trade.closed_quantity += remaining_quantity
         self.active_trade.open_quantity = 0
+        for leg in self.active_trade.pyramid_legs:
+            if leg.status == "OPEN":
+                leg.status = "CLOSED"
+                leg.exit_time = self.active_trade.exit_time
+                leg.exit_price = exit_price
+                leg.exit_spot_price = candle.close
+                leg.open_quantity = 0
         self.active_trade.pnl = round(self.active_trade.booked_pnl, 2)
         self.active_trade.status = "CLOSED"
         self.active_trade.exit_notes = note
@@ -4668,8 +4879,13 @@ class SimulationEngine:
 
     def select_nifty_live_sell_strike(self, spot: float, option_type: str) -> int:
         if option_type == "CE":
-            return int(math.ceil(spot / 100.0) * 100 + 100)
-        return int(math.floor(spot / 100.0) * 100 - 100)
+            return int(math.floor(spot / 100.0) * 100 + 100)
+        return int(math.ceil(spot / 100.0) * 100 - 100)
+
+    def select_nifty_live_buy_strike(self, spot: float, option_type: str) -> int:
+        if option_type == "CE":
+            return int(math.ceil(spot / 100.0) * 100 - 100)
+        return int(math.floor(spot / 100.0) * 100 + 100)
 
     def format_option_symbol(self, candle_time: datetime, strike: int, option_type: str) -> str:
         expiry = self.option_expiry_for_preference(candle_time.date(), self._nifty_expiry_preference())
