@@ -1009,6 +1009,44 @@ class HeuristicDecisionEngine:
         )
         return rejection_at_band or consecutive_green or current_reversal
 
+    def _nifty_round_front_run_grace_allowed(self, observation: Observation, option_type: str, current: Candle, session: list[Candle]) -> bool:
+        if observation.range_state != "expanding":
+            return False
+        if not (observation.strong_intent or observation.participation_state == "directional"):
+            return False
+        if not session:
+            return False
+        session_open = session[0].open
+        if option_type == "CE":
+            return current.close < session_open or current.close < observation.vwap
+        return current.close > session_open or current.close > observation.vwap
+
+    def _nifty_round_probe_context(
+        self,
+        probe: float,
+        step: float,
+        *,
+        option_type: str,
+        tolerance: float,
+    ) -> tuple[float, float, bool, bool] | None:
+        lower_round = math.floor(probe / step) * step
+        upper_round = math.ceil(probe / step) * step
+        if option_type == "CE":
+            lower_front_run_distance = probe - lower_round
+            if 0 <= lower_front_run_distance <= tolerance:
+                return lower_round, lower_front_run_distance, True, False
+            upper_sweep_distance = upper_round - probe
+            if 0 <= upper_sweep_distance <= tolerance:
+                return upper_round, upper_sweep_distance, False, True
+        else:
+            lower_sweep_distance = probe - lower_round
+            if 0 <= lower_sweep_distance <= tolerance:
+                return lower_round, lower_sweep_distance, False, True
+            upper_front_run_distance = upper_round - probe
+            if 0 <= upper_front_run_distance <= tolerance:
+                return upper_round, upper_front_run_distance, True, False
+        return None
+
     def _is_nifty_mode(self, context: StrategyContext) -> bool:
         return context.instrument.symbol == "NIFTY" and context.instrument.supports_options
 
@@ -3035,9 +3073,16 @@ class HeuristicDecisionEngine:
 
         if option_type == "CE":
             nifty_probe = min(candle.low for candle in nifty_recent)
-            nifty_round = math.ceil(nifty_probe / nifty_step) * nifty_step
-            nifty_distance = nifty_round - nifty_probe
-            if nifty_distance < 0 or nifty_distance > nifty_near_tolerance:
+            round_probe = self._nifty_round_probe_context(
+                nifty_probe,
+                nifty_step,
+                option_type=option_type,
+                tolerance=nifty_near_tolerance,
+            )
+            if round_probe is None:
+                return None
+            nifty_round, nifty_distance, nifty_front_run, nifty_full_sweep = round_probe
+            if nifty_front_run and not self._nifty_round_front_run_grace_allowed(observation, option_type, current, nifty_session):
                 return None
             probe_index = max(index for index, candle in enumerate(nifty_recent) if candle.low == nifty_probe)
             trigger_reference = nifty_recent[probe_index:-1] or nifty_recent[:-1]
@@ -3051,10 +3096,18 @@ class HeuristicDecisionEngine:
             invalidation = min(nifty_probe, current.low) - observation.atr * 0.18
             target_spot = self.next_upside_target(context, current.close, max(observation.atr * 0.9, abs(current.close - invalidation), 1.0))
             first_target = current.close + max(observation.atr * 0.9, abs(current.close - invalidation), 1.0)
-            ready_to_enter = current.close > trigger_price and current.close > current.open
+            ready_to_enter = (
+                current.close > trigger_price and current.close > current.open
+            ) or (
+                nifty_full_sweep and current.close > nifty_round and current.close > current.open
+            )
             score = 64.0
             notes = [
-                "Nifty front-ran a round-number sell-side sweep without fully tagging it.",
+                (
+                    "Nifty fully swept and reclaimed the round-number sell-side liquidity."
+                    if nifty_full_sweep
+                    else "Nifty front-ran a round-number sell-side sweep inside a directional expansion."
+                ),
                 "Bank Nifty completed the deeper sell-side sweep and reclaimed, so cross-index reversal context is valid.",
             ]
             notes.extend(confirmation_notes)
@@ -3076,9 +3129,16 @@ class HeuristicDecisionEngine:
             )
         else:
             nifty_probe = max(candle.high for candle in nifty_recent)
-            nifty_round = math.floor(nifty_probe / nifty_step) * nifty_step
-            nifty_distance = nifty_probe - nifty_round
-            if nifty_distance < 0 or nifty_distance > nifty_near_tolerance:
+            round_probe = self._nifty_round_probe_context(
+                nifty_probe,
+                nifty_step,
+                option_type=option_type,
+                tolerance=nifty_near_tolerance,
+            )
+            if round_probe is None:
+                return None
+            nifty_round, nifty_distance, nifty_front_run, nifty_full_sweep = round_probe
+            if nifty_front_run and not self._nifty_round_front_run_grace_allowed(observation, option_type, current, nifty_session):
                 return None
             probe_index = max(index for index, candle in enumerate(nifty_recent) if candle.high == nifty_probe)
             trigger_reference = nifty_recent[probe_index:-1] or nifty_recent[:-1]
@@ -3092,10 +3152,18 @@ class HeuristicDecisionEngine:
             invalidation = max(nifty_probe, current.high) + observation.atr * 0.18
             target_spot = self.next_downside_target(context, current.close, max(observation.atr * 0.9, abs(invalidation - current.close), 1.0))
             first_target = current.close - max(observation.atr * 0.9, abs(invalidation - current.close), 1.0)
-            ready_to_enter = current.close < trigger_price and current.close < current.open
+            ready_to_enter = (
+                current.close < trigger_price and current.close < current.open
+            ) or (
+                nifty_full_sweep and current.close < nifty_round and current.close < current.open
+            )
             score = 64.0
             notes = [
-                "Nifty front-ran a round-number buy-side sweep without fully tagging it.",
+                (
+                    "Nifty fully swept and rejected the round-number buy-side liquidity."
+                    if nifty_full_sweep
+                    else "Nifty front-ran a round-number buy-side sweep inside a directional expansion."
+                ),
                 "Bank Nifty completed the deeper buy-side sweep and rejected, so cross-index reversal context is valid.",
             ]
             notes.extend(confirmation_notes)

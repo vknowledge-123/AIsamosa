@@ -2817,6 +2817,80 @@ class AppIntegrationTests(unittest.TestCase):
 
         self.assertFalse(any(candidate.setup_type == "companion_round_reclaim_long" for candidate in candidates))
 
+    def test_nifty_companion_rejects_round_front_run_inside_compressing_range(self) -> None:
+        engine = HeuristicDecisionEngine()
+        session = [
+            Candle(timestamp="2026-02-18T09:15:00", open=24150.0, high=24158.0, low=24142.0, close=24154.0, volume=1000),
+            Candle(timestamp="2026-02-18T09:16:00", open=24154.0, high=24170.0, low=24150.0, close=24166.0, volume=1100),
+            Candle(timestamp="2026-02-18T09:17:00", open=24166.0, high=24183.0, low=24160.0, close=24178.0, volume=1200),
+            Candle(timestamp="2026-02-18T09:18:00", open=24178.0, high=24180.0, low=24160.0, close=24164.0, volume=1250),
+            Candle(timestamp="2026-02-18T09:19:00", open=24164.0, high=24168.0, low=24150.0, close=24156.0, volume=1300),
+        ]
+        context = self._build_context(session, previous_close=24120.0).model_copy(
+            update={
+                "companion_symbol": "BANKNIFTY",
+                "companion_session_candles": [
+                    Candle(timestamp="2026-02-18T09:15:00", open=50620.0, high=50642.0, low=50590.0, close=50610.0, volume=1000),
+                    Candle(timestamp="2026-02-18T09:16:00", open=50610.0, high=50624.0, low=50594.0, close=50605.0, volume=1050),
+                    Candle(timestamp="2026-02-18T09:17:00", open=50605.0, high=50620.0, low=50590.0, close=50612.0, volume=1100),
+                    Candle(timestamp="2026-02-18T09:18:00", open=50612.0, high=50616.0, low=50555.0, close=50570.0, volume=1300),
+                    Candle(timestamp="2026-02-18T09:19:00", open=50570.0, high=50578.0, low=50535.0, close=50542.0, volume=1350),
+                ],
+                "companion_current_candle": Candle(
+                    timestamp="2026-02-18T09:19:00", open=50570.0, high=50578.0, low=50535.0, close=50542.0, volume=1350
+                ),
+            }
+        )
+        observation = self._build_observation(
+            range_state="compressing",
+            participation_state="two_sided_active",
+            strong_intent=False,
+            vwap=24155.0,
+            atr=20.0,
+            higher_timeframe_context="neutral",
+        )
+
+        candidates = engine.build_companion_index_candidates(context, observation)
+
+        self.assertFalse(any(candidate.setup_type == "companion_round_rejection_short" for candidate in candidates))
+
+    def test_nifty_companion_allows_round_front_run_only_in_directional_expansion(self) -> None:
+        engine = HeuristicDecisionEngine()
+        session = [
+            Candle(timestamp="2026-02-18T09:15:00", open=24150.0, high=24158.0, low=24142.0, close=24154.0, volume=1000),
+            Candle(timestamp="2026-02-18T09:16:00", open=24154.0, high=24170.0, low=24150.0, close=24166.0, volume=1100),
+            Candle(timestamp="2026-02-18T09:17:00", open=24166.0, high=24183.0, low=24160.0, close=24178.0, volume=1200),
+            Candle(timestamp="2026-02-18T09:18:00", open=24178.0, high=24180.0, low=24160.0, close=24164.0, volume=1250),
+            Candle(timestamp="2026-02-18T09:19:00", open=24164.0, high=24168.0, low=24150.0, close=24156.0, volume=1300),
+        ]
+        context = self._build_context(session, previous_close=24120.0).model_copy(
+            update={
+                "companion_symbol": "BANKNIFTY",
+                "companion_session_candles": [
+                    Candle(timestamp="2026-02-18T09:15:00", open=50620.0, high=50642.0, low=50590.0, close=50610.0, volume=1000),
+                    Candle(timestamp="2026-02-18T09:16:00", open=50610.0, high=50624.0, low=50594.0, close=50605.0, volume=1050),
+                    Candle(timestamp="2026-02-18T09:17:00", open=50605.0, high=50620.0, low=50590.0, close=50612.0, volume=1100),
+                    Candle(timestamp="2026-02-18T09:18:00", open=50612.0, high=50616.0, low=50555.0, close=50570.0, volume=1300),
+                    Candle(timestamp="2026-02-18T09:19:00", open=50570.0, high=50578.0, low=50535.0, close=50542.0, volume=1350),
+                ],
+                "companion_current_candle": Candle(
+                    timestamp="2026-02-18T09:19:00", open=50570.0, high=50578.0, low=50535.0, close=50542.0, volume=1350
+                ),
+            }
+        )
+        observation = self._build_observation(
+            range_state="expanding",
+            participation_state="directional",
+            strong_intent=True,
+            vwap=24140.0,
+            atr=20.0,
+            higher_timeframe_context="neutral",
+        )
+
+        candidates = engine.build_companion_index_candidates(context, observation)
+
+        self.assertTrue(any(candidate.setup_type == "companion_round_rejection_short" for candidate in candidates))
+
     def test_nifty_mid_noise_filter_skips_fresh_entries(self) -> None:
         engine = HeuristicDecisionEngine()
         session = [
