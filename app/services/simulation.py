@@ -124,6 +124,7 @@ class SimulationEngine:
         self._live_packet_queue: queue.Queue[str | None] = queue.Queue()
         self._pending_live_packets: dict[str, dict] = {}
         self._queued_live_packet_keys: set[str] = set()
+        self._replay_simulation_depth = 0
         self._live_packet_worker = threading.Thread(
             target=self._run_live_packet_worker,
             name="live-packet-worker",
@@ -1277,25 +1278,31 @@ class SimulationEngine:
         replay_decision_duration_minutes: int = 1,
     ) -> None:
         def operation():
-            with self.lock:
-                result = self._load_dhan_bundle(bundle, replay_from_session_start=replay_from_session_start)
             if replay_from_session_start:
-                start_index, end_index = result
-                for evaluation_index in range(start_index, end_index + 1):
-                    self._evaluate_index(
-                        evaluation_index,
-                        source="replay",
-                        replay_decision_duration_minutes=replay_decision_duration_minutes,
-                    )
+                self._begin_replay_simulation()
+            try:
                 with self.lock:
-                    last_candle = self.candles[end_index] if 0 <= end_index < len(self.candles) else None
-                    if self.active_trade and last_candle and bundle.live_open_candle is None:
-                        self.close_active_trade(last_candle, "Replay completed at the final available session candle.")
+                    result = self._load_dhan_bundle(bundle, replay_from_session_start=replay_from_session_start)
+                if replay_from_session_start:
+                    start_index, end_index = result
+                    for evaluation_index in range(start_index, end_index + 1):
+                        self._evaluate_index(
+                            evaluation_index,
+                            source="replay",
+                            replay_decision_duration_minutes=replay_decision_duration_minutes,
+                        )
+                    with self.lock:
+                        last_candle = self.candles[end_index] if 0 <= end_index < len(self.candles) else None
+                        if self.active_trade and last_candle and bundle.live_open_candle is None:
+                            self.close_active_trade(last_candle, "Replay completed at the final available session candle.")
+                    return None
+                evaluation_index = result
+                if evaluation_index is not None:
+                    self._evaluate_index(evaluation_index, source="sync")
                 return None
-            evaluation_index = result
-            if evaluation_index is not None:
-                self._evaluate_index(evaluation_index, source="sync")
-            return None
+            finally:
+                if replay_from_session_start:
+                    self._end_replay_simulation()
 
         self._run_in_stock_session(symbol, operation)
 
@@ -2501,12 +2508,51 @@ class SimulationEngine:
                 client_id=client,
                 access_token=token,
             )
+            self._begin_replay_simulation()
+            try:
+                with self.lock:
+                    intraday_count = len(bundle.intraday_candles)
+                    if intraday_count == 0:
+                        raise ValueError("No closed intraday candles were returned for today yet.")
+                    start_index, end_index = self._load_dhan_bundle(bundle, replay_from_session_start=True)
+                    self._load_companion_bundle_locked(companion_bundle, replay_from_session_start=True)
+                for evaluation_index in range(start_index, end_index + 1):
+                    self._evaluate_index(
+                        evaluation_index,
+                        source="replay",
+                        replay_decision_duration_minutes=replay_decision_duration_minutes,
+                    )
+                with self.lock:
+                    last_candle = self.candles[end_index] if 0 <= end_index < len(self.candles) else None
+                    if self.active_trade and last_candle and bundle.live_open_candle is None:
+                        self.close_active_trade(last_candle, "Replay completed at the final available session candle.")
+                    self.rulebook_service.learning_log.insert(
+                        0,
+                        (
+                            f"Simulated today session for {self.instrument_spec.label} with Bank Nifty confirmation: "
+                            f"{intraday_count} Nifty intraday candles replayed."
+                        ),
+                    )
+                    self._mark_state_dirty_locked()
+            finally:
+                self._end_replay_simulation()
+            return self.get_state()
+
+        bundle = self.chart_service.fetch_market_context(
+            client_id=client,
+            access_token=token,
+            security_id=self.instrument_spec.security_id,
+            exchange_segment=self.instrument_spec.exchange_segment,
+            instrument_type=self.instrument_spec.instrument_type,
+            prefer_last_closed_session_before_open=True,
+        )
+        self._begin_replay_simulation()
+        try:
             with self.lock:
                 intraday_count = len(bundle.intraday_candles)
                 if intraday_count == 0:
                     raise ValueError("No closed intraday candles were returned for today yet.")
                 start_index, end_index = self._load_dhan_bundle(bundle, replay_from_session_start=True)
-                self._load_companion_bundle_locked(companion_bundle, replay_from_session_start=True)
             for evaluation_index in range(start_index, end_index + 1):
                 self._evaluate_index(
                     evaluation_index,
@@ -2520,44 +2566,13 @@ class SimulationEngine:
                 self.rulebook_service.learning_log.insert(
                     0,
                     (
-                        f"Simulated today session for {self.instrument_spec.label} with Bank Nifty confirmation: "
-                        f"{intraday_count} Nifty intraday candles replayed."
+                        f"Simulated today session for {self.instrument_spec.label}: "
+                        f"{intraday_count} intraday candles replayed with quantity {self.settings.simulation_lot_size}."
                     ),
                 )
                 self._mark_state_dirty_locked()
-            return self.get_state()
-
-        bundle = self.chart_service.fetch_market_context(
-            client_id=client,
-            access_token=token,
-            security_id=self.instrument_spec.security_id,
-            exchange_segment=self.instrument_spec.exchange_segment,
-            instrument_type=self.instrument_spec.instrument_type,
-            prefer_last_closed_session_before_open=True,
-        )
-        with self.lock:
-            intraday_count = len(bundle.intraday_candles)
-            if intraday_count == 0:
-                raise ValueError("No closed intraday candles were returned for today yet.")
-            start_index, end_index = self._load_dhan_bundle(bundle, replay_from_session_start=True)
-        for evaluation_index in range(start_index, end_index + 1):
-            self._evaluate_index(
-                evaluation_index,
-                source="replay",
-                replay_decision_duration_minutes=replay_decision_duration_minutes,
-            )
-        with self.lock:
-            last_candle = self.candles[end_index] if 0 <= end_index < len(self.candles) else None
-            if self.active_trade and last_candle and bundle.live_open_candle is None:
-                self.close_active_trade(last_candle, "Replay completed at the final available session candle.")
-            self.rulebook_service.learning_log.insert(
-                0,
-                (
-                    f"Simulated today session for {self.instrument_spec.label}: "
-                    f"{intraday_count} intraday candles replayed with quantity {self.settings.simulation_lot_size}."
-                ),
-            )
-            self._mark_state_dirty_locked()
+        finally:
+            self._end_replay_simulation()
         return self.get_state()
 
     def simulate_historical_session(
@@ -2648,12 +2663,52 @@ class SimulationEngine:
                 replay_session_day=replay_session_day,
                 previous_day=previous_day,
             )
+            self._begin_replay_simulation()
+            try:
+                with self.lock:
+                    intraday_count = len(bundle.intraday_candles)
+                    if intraday_count == 0:
+                        raise ValueError("No candles were returned for the selected historical replay day.")
+                    start_index, end_index = self._load_dhan_bundle(bundle, replay_from_session_start=True)
+                    self._load_companion_bundle_locked(companion_bundle, replay_from_session_start=True)
+                for evaluation_index in range(start_index, end_index + 1):
+                    self._evaluate_index(
+                        evaluation_index,
+                        source="replay",
+                        replay_decision_duration_minutes=replay_decision_duration_minutes,
+                    )
+                with self.lock:
+                    last_candle = self.candles[end_index] if 0 <= end_index < len(self.candles) else None
+                    if self.active_trade and last_candle and bundle.live_open_candle is None:
+                        self.close_active_trade(last_candle, "Replay completed at the final available session candle.")
+                    self.rulebook_service.learning_log.insert(
+                        0,
+                        (
+                            f"Simulated historical session for {self.instrument_spec.label} with Bank Nifty confirmation: replayed "
+                            f"{replay_session_day.isoformat()} with previous-day context from {previous_day.isoformat()}."
+                        ),
+                    )
+                    self._mark_state_dirty_locked()
+            finally:
+                self._end_replay_simulation()
+            return self.get_state()
+
+        bundle = self.chart_service.fetch_market_context_for_days(
+            client_id=client,
+            access_token=token,
+            session_day=replay_session_day,
+            previous_context_day=previous_day,
+            security_id=self.instrument_spec.security_id,
+            exchange_segment=self.instrument_spec.exchange_segment,
+            instrument_type=self.instrument_spec.instrument_type,
+        )
+        self._begin_replay_simulation()
+        try:
             with self.lock:
                 intraday_count = len(bundle.intraday_candles)
                 if intraday_count == 0:
                     raise ValueError("No candles were returned for the selected historical replay day.")
                 start_index, end_index = self._load_dhan_bundle(bundle, replay_from_session_start=True)
-                self._load_companion_bundle_locked(companion_bundle, replay_from_session_start=True)
             for evaluation_index in range(start_index, end_index + 1):
                 self._evaluate_index(
                     evaluation_index,
@@ -2667,45 +2722,13 @@ class SimulationEngine:
                 self.rulebook_service.learning_log.insert(
                     0,
                     (
-                        f"Simulated historical session for {self.instrument_spec.label} with Bank Nifty confirmation: replayed "
+                        f"Simulated historical session for {self.instrument_spec.label}: replayed "
                         f"{replay_session_day.isoformat()} with previous-day context from {previous_day.isoformat()}."
                     ),
                 )
                 self._mark_state_dirty_locked()
-            return self.get_state()
-
-        bundle = self.chart_service.fetch_market_context_for_days(
-            client_id=client,
-            access_token=token,
-            session_day=replay_session_day,
-            previous_context_day=previous_day,
-            security_id=self.instrument_spec.security_id,
-            exchange_segment=self.instrument_spec.exchange_segment,
-            instrument_type=self.instrument_spec.instrument_type,
-        )
-        with self.lock:
-            intraday_count = len(bundle.intraday_candles)
-            if intraday_count == 0:
-                raise ValueError("No candles were returned for the selected historical replay day.")
-            start_index, end_index = self._load_dhan_bundle(bundle, replay_from_session_start=True)
-        for evaluation_index in range(start_index, end_index + 1):
-            self._evaluate_index(
-                evaluation_index,
-                source="replay",
-                replay_decision_duration_minutes=replay_decision_duration_minutes,
-            )
-        with self.lock:
-            last_candle = self.candles[end_index] if 0 <= end_index < len(self.candles) else None
-            if self.active_trade and last_candle and bundle.live_open_candle is None:
-                self.close_active_trade(last_candle, "Replay completed at the final available session candle.")
-            self.rulebook_service.learning_log.insert(
-                0,
-                (
-                    f"Simulated historical session for {self.instrument_spec.label}: replayed "
-                    f"{replay_session_day.isoformat()} with previous-day context from {previous_day.isoformat()}."
-                ),
-            )
-            self._mark_state_dirty_locked()
+        finally:
+            self._end_replay_simulation()
         return self.get_state()
 
     def _parse_replay_date(self, raw_value: str, *, field_name: str) -> date:
@@ -3134,6 +3157,8 @@ class SimulationEngine:
         if not packet_key:
             return
         with self.lock:
+            if self._replay_simulation_active_locked():
+                return
             self._pending_live_packets[packet_key] = packet
             if packet_key in self._queued_live_packet_keys:
                 return
@@ -3175,6 +3200,9 @@ class SimulationEngine:
                 self.handle_live_status("error", str(exc))
 
     def _queue_live_evaluation(self, symbol: str | None, evaluation_index: int) -> None:
+        with self.lock:
+            if self._replay_simulation_active_locked():
+                return
         self._live_evaluation_queue.put((symbol, evaluation_index))
 
     def _handle_live_packet_now(self, packet: dict) -> None:
@@ -3182,6 +3210,8 @@ class SimulationEngine:
         evaluation_symbol: str | None = None
         live_trade_control_check: tuple[float, datetime] | None = None
         with self.lock:
+            if self._replay_simulation_active_locked():
+                return
             security_id = str(packet.get("security_id", ""))
             ltp = self._as_float(packet.get("LTP"))
             if ltp is None:
@@ -3463,6 +3493,30 @@ class SimulationEngine:
                 self._live_packet_queue.get_nowait()
         except queue.Empty:
             return
+
+    def _clear_live_evaluation_queue(self) -> None:
+        try:
+            while True:
+                self._live_evaluation_queue.get_nowait()
+        except queue.Empty:
+            return
+
+    def _begin_replay_simulation(self) -> None:
+        with self.lock:
+            self._replay_simulation_depth += 1
+            self._pending_live_packets.clear()
+            self._queued_live_packet_keys.clear()
+        self._clear_live_packet_queue()
+        self._clear_live_evaluation_queue()
+
+    def _end_replay_simulation(self) -> None:
+        self._clear_live_packet_queue()
+        self._clear_live_evaluation_queue()
+        with self.lock:
+            self._replay_simulation_depth = max(self._replay_simulation_depth - 1, 0)
+
+    def _replay_simulation_active_locked(self) -> bool:
+        return self._replay_simulation_depth > 0
 
     def _packet_timestamp(self, packet: dict) -> datetime:
         ltt = packet.get("LTT")
@@ -4312,9 +4366,27 @@ class SimulationEngine:
             return ltp <= trade.invalidation_level
         return ltp >= trade.invalidation_level
 
+    def _live_ltp_controls_allowed_locked(self, trade: SimulatedTrade | None, tick_time: datetime) -> bool:
+        if trade is None:
+            return False
+        if self._replay_simulation_active_locked():
+            return False
+        execution_source = getattr(trade, "execution_source", "simulated")
+        if execution_source == "replay":
+            return False
+        if (
+            execution_source != "live"
+            and not self._trade_is_broker_backed(trade)
+            and trade.entry_time.date() != tick_time.date()
+        ):
+            return False
+        return True
+
     def _exit_active_trade_on_ltp_invalidation(self, ltp: float, tick_time: datetime) -> bool:
         with self.lock:
             trade = self.active_trade
+            if not self._live_ltp_controls_allowed_locked(trade, tick_time):
+                return False
             if not self._live_ltp_crossed_invalidation(trade, ltp):
                 return False
             assert trade is not None
@@ -4397,6 +4469,8 @@ class SimulationEngine:
         with self.lock:
             trade = self.active_trade
             if trade is None:
+                return False
+            if not self._live_ltp_controls_allowed_locked(trade, tick_time):
                 return False
             bullish_trade = self._is_bullish_spot_trade_direction(trade.direction)
             nifty_trade = self._is_nifty_active_trade(trade)
@@ -4771,6 +4845,7 @@ class SimulationEngine:
             entry_price=entry_price,
             entry_spot_price=current_candle.close,
             entry_option_price=entry_price,
+            execution_source=source,
             entry_quote_source=entry_quote.source if entry_quote else "simulated",
             entry_quote_time=entry_quote.quote_time if entry_quote else current_candle.timestamp,
             current_price=entry_price,

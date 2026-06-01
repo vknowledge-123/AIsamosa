@@ -304,6 +304,7 @@ class SimulatedTrade(BaseModel):
     entry_price: float
     entry_spot_price: float
     entry_option_price: float
+    execution_source: str = "simulated"
     entry_quote_source: str = "simulated"
     entry_quote_time: datetime | None = None
     current_price: float

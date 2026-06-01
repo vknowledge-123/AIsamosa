@@ -3841,6 +3841,7 @@ class AppIntegrationTests(unittest.TestCase):
             entry_price=100.0,
             entry_spot_price=23500.0,
             entry_option_price=100.0,
+            execution_source="live",
             current_price=100.0,
             current_option_price=100.0,
             stop_price=140.0,
@@ -3868,6 +3869,92 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertEqual(place_order.call_args.kwargs["transaction_type"], "BUY")
         self.assertIsNone(self.test_engine.active_trade)
         self.assertIn("Hard LTP stop triggered", self.test_engine.trade_history[-1].exit_notes or "")
+
+    def test_live_ltp_controls_do_not_close_replay_trade_with_current_market_price(self) -> None:
+        trade = SimulatedTrade(
+            trade_id="historical-replay-trade",
+            status="OPEN",
+            direction="LONG_STOCK",
+            instrument_mode=InstrumentMode.nifty,
+            instrument_label="Nifty 50",
+            price_mode="cash",
+            trade_security_id="13",
+            quote_exchange_segment="IDX_I",
+            option_type="CE",
+            strike=0,
+            symbol="NIFTY SPOT",
+            quantity=1,
+            open_quantity=1,
+            entry_time=datetime(2026, 2, 17, 14, 38),
+            entry_price=25715.35,
+            entry_spot_price=25715.35,
+            entry_option_price=25715.35,
+            execution_source="replay",
+            current_price=25715.35,
+            current_option_price=25715.35,
+            stop_price=25695.35,
+            stop_option_price=25695.35,
+            target_price=25765.68,
+            target_option_price=25765.68,
+            invalidation_level=25695.35,
+            target_spot_price=25765.68,
+        )
+        self.test_engine.active_trade = trade
+        self.test_engine.trade_history = [trade]
+
+        changed = self.test_engine._apply_live_ltp_trade_controls(23382.60, datetime(2026, 6, 1, 15, 31, 54))
+
+        self.assertFalse(changed)
+        self.assertIs(self.test_engine.active_trade, trade)
+        self.assertIsNone(trade.exit_time)
+        self.assertEqual(trade.current_price, 25715.35)
+
+    def test_live_packets_are_ignored_while_replay_simulation_is_running(self) -> None:
+        trade = SimulatedTrade(
+            trade_id="running-replay-trade",
+            status="OPEN",
+            direction="SHORT_STOCK",
+            instrument_mode=InstrumentMode.nifty,
+            instrument_label="Nifty 50",
+            price_mode="cash",
+            trade_security_id="13",
+            quote_exchange_segment="IDX_I",
+            option_type="PE",
+            strike=0,
+            symbol="NIFTY SPOT",
+            quantity=1,
+            open_quantity=1,
+            entry_time=datetime(2026, 2, 17, 10, 39),
+            entry_price=25692.80,
+            entry_spot_price=25692.80,
+            entry_option_price=25692.80,
+            execution_source="replay",
+            current_price=25692.80,
+            current_option_price=25692.80,
+            stop_price=25692.80,
+            stop_option_price=25692.80,
+            target_price=25224.02,
+            target_option_price=25224.02,
+            invalidation_level=25692.80,
+            target_spot_price=25224.02,
+        )
+        self.test_engine.active_trade = trade
+        self.test_engine.trade_history = [trade]
+        self.test_engine.candles = [
+            Candle(timestamp=datetime(2026, 2, 17, 10, 39), open=25692.8, high=25700, low=25680, close=25692.8, volume=1000)
+        ]
+        self.test_engine.current_index = 0
+
+        self.test_engine._begin_replay_simulation()
+        try:
+            self.test_engine._handle_live_packet_now({"security_id": "13", "LTP": 23382.60, "LTT": "15:31:54", "volume": 1000})
+        finally:
+            self.test_engine._end_replay_simulation()
+
+        self.assertIs(self.test_engine.active_trade, trade)
+        self.assertIsNone(trade.exit_time)
+        self.assertEqual(len(self.test_engine.candles), 1)
+        self.assertEqual(self.test_engine.candles[-1].close, 25692.8)
 
     def test_nifty_replay_invalidation_exit_books_at_stop_level_not_candle_close(self) -> None:
         candles = [
@@ -3960,6 +4047,7 @@ class AppIntegrationTests(unittest.TestCase):
             entry_price=100.0,
             entry_spot_price=24252.0,
             entry_option_price=100.0,
+            execution_source="live",
             current_price=100.0,
             current_option_price=100.0,
             stop_price=70.0,
@@ -4015,6 +4103,7 @@ class AppIntegrationTests(unittest.TestCase):
             entry_price=100.0,
             entry_spot_price=100.0,
             entry_option_price=100.0,
+            execution_source="live",
             current_price=100.0,
             current_option_price=100.0,
             stop_price=99.0,
