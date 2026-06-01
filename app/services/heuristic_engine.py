@@ -389,31 +389,79 @@ class HeuristicDecisionEngine:
         elif previous_day_profile == "strong_bearish":
             base_bias = "prefer_short"
 
+        extreme_last_2h_selloff = (
+            previous_day_profile == "strong_bearish"
+            and last_2h_flow == "selling_rally"
+            and last_2h_move <= -max(session_atr * 6.0, day_range * 0.30, 100.0)
+        )
+        open_near_prior_seller_low = (
+            abs(session[0].open - day_low) <= max(session_atr * 2.5, 70.0)
+            or abs(session[0].open - last_2h_low) <= max(session_atr * 2.5, 70.0)
+        )
+
         expected_behavior = "wait_for_structure"
         trade_bias = base_bias
         risk_mode = "normal"
-        if "large_gap" in open_type:
+        if (
+            open_type == "large_gap_up"
+            and last_2h_flow == "buying_rally"
+            and previous_day_profile in {"weak_bullish", "strong_bullish"}
+        ):
+            risk_mode = "large_gap_range_farming"
+            expected_behavior = "bullish_large_gap_up_range_farming"
+            trade_bias = "neutral"
+        elif "large_gap" in open_type:
             risk_mode = "wait_for_acceptance"
             expected_behavior = "large_gap_reset_wait_for_new_structure"
             trade_bias = "neutral"
         elif last_2h_flow == "selling_rally":
             if open_type == "flat":
-                expected_behavior = "trap_sellers_first_then_short"
-                trade_bias = "prefer_short"
-                risk_mode = "trap_first"
+                if extreme_last_2h_selloff and open_near_prior_seller_low:
+                    expected_behavior = "strong_bearish_extreme_selling_flat_seller_exhaustion_recovery"
+                    trade_bias = "neutral"
+                    risk_mode = "trap_first"
+                else:
+                    expected_behavior = "trap_sellers_first_then_short"
+                    trade_bias = "prefer_short"
+                    risk_mode = "trap_first"
             elif open_type == "gap_up":
-                expected_behavior = "sellers_already_trapped_watch_rejection"
-                trade_bias = "prefer_short" if previous_day_profile != "strong_bullish" else "neutral"
+                if previous_day_profile in {"weak_bullish", "strong_bullish"}:
+                    expected_behavior = "bullish_selling_gap_up_auction_rejection_or_recovery"
+                    trade_bias = "neutral"
+                else:
+                    expected_behavior = "sellers_already_trapped_watch_rejection"
+                    trade_bias = "prefer_short"
                 risk_mode = "fast_profit"
             elif open_type == "gap_down":
-                expected_behavior = "sellers_in_profit_retrace_then_short"
-                trade_bias = "prefer_short"
-                risk_mode = "fast_profit"
+                if extreme_last_2h_selloff and open_near_prior_seller_low:
+                    expected_behavior = "strong_bearish_extreme_selling_flat_seller_exhaustion_recovery"
+                    trade_bias = "neutral"
+                    risk_mode = "trap_first"
+                elif previous_day_profile == "strong_bearish":
+                    expected_behavior = "strong_bearish_selling_gap_down_seller_profit_recovery"
+                    trade_bias = "neutral"
+                    risk_mode = "fast_profit"
+                else:
+                    expected_behavior = "sellers_in_profit_retrace_then_short"
+                    trade_bias = "prefer_short"
+                    risk_mode = "fast_profit"
         elif last_2h_flow == "buying_rally":
             if open_type == "flat":
                 expected_behavior = "trap_buyers_first_then_long"
                 trade_bias = "prefer_long"
                 risk_mode = "trap_first"
+            elif open_type == "gap_down" and previous_day_profile == "strong_bearish":
+                expected_behavior = "strong_bearish_gap_down_trapped_buyers_sell_drive"
+                trade_bias = "prefer_short"
+                risk_mode = "fast_profit"
+            elif open_type == "gap_down" and previous_day_profile == "strong_bullish":
+                expected_behavior = "strong_bullish_gap_down_sell_sweep_reclaim_long"
+                trade_bias = "prefer_long"
+                risk_mode = "fast_profit"
+            elif open_type == "gap_down" and previous_day_profile == "doji_or_neutral":
+                expected_behavior = "neutral_buying_gap_down_trapped_buyers_sell_drive"
+                trade_bias = "prefer_short"
+                risk_mode = "fast_profit"
             elif open_type == "gap_down":
                 expected_behavior = "buyers_trapped_watch_recovery"
                 trade_bias = "prefer_long" if previous_day_profile != "strong_bearish" else "neutral"
@@ -422,6 +470,10 @@ class HeuristicDecisionEngine:
                 expected_behavior = "buyers_in_profit_pullback_then_long"
                 trade_bias = "prefer_long"
                 risk_mode = "fast_profit"
+        elif previous_day_profile == "strong_bearish" and open_type == "gap_down" and last_2h_move > 0:
+            expected_behavior = "strong_bearish_gap_down_trapped_buyers_sell_drive"
+            trade_bias = "prefer_short"
+            risk_mode = "fast_profit"
         elif previous_day_profile in {"weak_bullish", "weak_bearish", "doji_or_neutral"}:
             risk_mode = "range_farming_risk"
             expected_behavior = "neutral_prior_day_trade_only_clean_liquidity"
@@ -534,13 +586,138 @@ class HeuristicDecisionEngine:
                 adjustment += 4.0
             elif not self._nifty_priority_reclaim_label(event.level_label):
                 adjustment -= 6.0
+        elif expected == "bullish_selling_gap_up_auction_rejection_or_recovery":
+            if bullish:
+                if self._nifty_first_candle_bearish_gap_up(context, observation) and not self._nifty_accepts_above_first_candle_high(context, observation):
+                    adjustment -= 12.0
+                    notes.append("Gap-up auction opened with bearish rejection, so early longs wait for acceptance above the first-candle high.")
+                elif self._nifty_gap_up_morning_sell_drive_reclaimed(context, observation) and event.side == "sell":
+                    adjustment += 8.0
+                    notes.append("Morning sell drive has been reclaimed back through VWAP/opening structure, so recovery longs are valid after sell-side sweep.")
+                else:
+                    adjustment -= 3.0
+                    notes.append("Bullish gap-up with late prior selling needs auction acceptance before trusting longs.")
+            else:
+                if self._nifty_accepts_below_first_fifteen_low(context, observation) or self._nifty_major_upper_rejection_ready(context, observation, event):
+                    adjustment += 6.0
+                    notes.append("Short is aligned only because first-15 low acceptance or major upper-liquidity rejection is visible.")
+                else:
+                    adjustment -= 10.0
+                    notes.append("This profile blocks lower-range shorts until first-15 low acceptance or clean upper-liquidity rejection appears.")
+            rules.extend(["R16", "R18", "R25", "R27", "R60", "R74", "R81", "R91", "R98", "R99"])
         elif expected == "sellers_in_profit_retrace_then_short":
             adjustment += 5.0 if not bullish else -5.0
+        elif expected == "strong_bearish_selling_gap_down_seller_profit_recovery":
+            if bullish and event.side == "sell":
+                adjustment += 10.0
+                notes.append(
+                    "Strong bearish prior-day plus late selling gap-down profile treats the opening sell-side sweep as possible seller profit-booking; reclaimed sell-side liquidity can shift Nifty into recovery."
+                )
+            elif not bullish:
+                if self._nifty_accepts_below_opening_low(context, observation):
+                    adjustment += 5.0
+                    notes.append(
+                        "Short continuation is allowed because Nifty is accepting below the opening sell-side auction low."
+                    )
+                else:
+                    adjustment -= 12.0
+                    notes.append(
+                        "This profile blocks weak gap-down shorts until price accepts below the opening low or rejects from a major upper liquidity shelf."
+                    )
+            else:
+                adjustment -= 4.0
+                notes.append("Recovery longs need a real sell-side sweep/reclaim, not a middle-range chase.")
+            rules.extend(["R15", "R18", "R25", "R27", "R60", "R81", "R87", "R98", "R99"])
+        elif expected == "strong_bearish_extreme_selling_flat_seller_exhaustion_recovery":
+            if bullish:
+                if self._nifty_opening_seller_exhaustion_reclaim(context, observation) and event.side == "sell":
+                    adjustment += 11.0
+                    notes.append(
+                        "Extreme prior-day selloff opened near seller exhaustion liquidity; first-candle PDL/last-2h low reclaim favors recovery longs after confirmation."
+                    )
+                elif event.side == "sell":
+                    adjustment += 3.0
+                    notes.append(
+                        "This profile is watching for seller-exhaustion recovery, but the long still needs higher-low or VWAP/first-15 reclaim."
+                    )
+                else:
+                    adjustment -= 6.0
+                    notes.append("Recovery longs need sell-side liquidity sweep/reclaim, not a middle-range chase.")
+            else:
+                if self._nifty_accepts_below_first_fifteen_low(context, observation):
+                    adjustment += 5.0
+                    notes.append("Short continuation is allowed only because Nifty is accepting below the first-15 low after the selloff.")
+                else:
+                    adjustment -= 14.0
+                    notes.append(
+                        "Extreme prior-day selling near PDL blocks shorts around the opening/day low until the first-15 low is accepted below."
+                    )
+            rules.extend(["R15", "R18", "R25", "R27", "R35", "R60", "R81", "R87", "R91", "R98", "R99"])
         elif expected in {"trap_buyers_first_then_long", "buyers_trapped_watch_recovery", "buyers_in_profit_pullback_then_long"}:
             if bullish:
                 adjustment += 4.0
             elif not self._nifty_priority_reclaim_label(event.level_label):
                 adjustment -= 6.0
+        elif expected == "neutral_buying_gap_down_trapped_buyers_sell_drive":
+            if bullish:
+                if self._nifty_trapped_buyers_recovery_long_ready(context, observation, event):
+                    adjustment += 7.0
+                    notes.append(
+                        "Neutral prior-day gap-down trapped-buyer profile allows recovery longs only after day-low sweep/reclaim or VWAP/first-15 high reclaim."
+                    )
+                else:
+                    adjustment -= 14.0
+                    notes.append(
+                        "Late prior-day buyers are trapped by the gap-down bearish open, so early longs are blocked until recovery acceptance appears."
+                    )
+            else:
+                if self._nifty_trapped_buyers_short_ready(context, observation, event):
+                    adjustment += 8.0
+                    notes.append("Short is aligned with trapped late buyers and a pullback rejection after bearish opening acceptance.")
+                else:
+                    adjustment -= 8.0
+                    notes.append("This profile avoids shorting late near exhaustion lows unless fresh acceptance or pullback rejection appears.")
+            rules.extend(["R15", "R16", "R18", "R25", "R27", "R35", "R60", "R74", "R81", "R87", "R91", "R98", "R99"])
+        elif expected == "strong_bullish_gap_down_sell_sweep_reclaim_long":
+            if bullish and event.side == "sell":
+                adjustment += 12.0
+                notes.append(
+                    "Strong bullish prior-day plus bullish last-2h gap-down profile prefers long only after sell-side liquidity is swept and reclaimed."
+                )
+            elif bullish:
+                adjustment -= 10.0
+                notes.append("This profile will not chase long until the opening sell-side sweep is finished.")
+            else:
+                adjustment -= 12.0
+                notes.append(
+                    "Weak shorts are downgraded in this profile unless Nifty accepts below the opening low."
+                )
+            rules.extend(["R15", "R18", "R25", "R27", "R60", "R81", "R99"])
+        elif expected == "strong_bearish_gap_down_trapped_buyers_sell_drive":
+            if not bullish:
+                adjustment += 8.0
+                notes.append(
+                    "Strong bearish prior-day plus late recovery gap-down profile treats last-2h buyers as trapped and keeps early sell-drive bias bearish."
+                )
+            else:
+                adjustment -= 12.0
+                notes.append(
+                    "This profile blocks early bottom-picking longs until a real day-low sell-side sweep, reclaim, and recovery acceptance appear."
+                )
+            rules.extend(["R15", "R18", "R22", "R25", "R27", "R60", "R81", "R87", "R99"])
+        elif expected == "bullish_large_gap_up_range_farming":
+            if bullish and event.side == "sell" and self._nifty_first_candle_low_sweep_reclaim(context, observation, event):
+                adjustment += 10.0
+                notes.append(
+                    "Large gap-up auction profile treats the first-candle low as sell-side liquidity; sweep and reclaim favors a long over a blind round-number short."
+                )
+            elif not bullish and self._nifty_near_first_candle_low(context, observation, context.current_candle.close):
+                adjustment -= 14.0
+                notes.append("Large gap-up range profile downgrades shorts near the first-candle low unless price accepts below that auction low.")
+            else:
+                adjustment -= 4.0
+                notes.append("Large gap-up range-farming profile requires first-candle range acceptance or a clean boundary sweep before trusting signals.")
+            rules.extend(["R17", "R18", "R25", "R27", "R60", "R64", "R80", "R91", "R99"])
 
         if observation.nifty_risk_mode == "wait_for_acceptance":
             accepted = (
@@ -552,7 +729,7 @@ class HeuristicDecisionEngine:
                 adjustment -= 10.0
                 notes.append("Large-gap mechanics require opening-range acceptance before trusting this side.")
                 rules.extend(["R17", "R64", "R80"])
-        elif observation.nifty_risk_mode == "range_farming_risk":
+        elif observation.nifty_risk_mode in {"range_farming_risk", "large_gap_range_farming"}:
             adjustment -= 5.0
             notes.append("Previous-day and last-2h mechanics are neutral, so Nifty treats this as range-farming risk unless liquidity is very clean.")
             rules.extend(["R61", "R62", "R91"])
@@ -2920,6 +3097,705 @@ class HeuristicDecisionEngine:
                 return -2.0, "Higher timeframe is still range-bound, so this Nifty short needs extra care."
         return 0.0, None
 
+    def _nifty_strong_bullish_gap_down_recovery_profile(self, observation: Observation) -> bool:
+        return observation.nifty_expected_behavior == "strong_bullish_gap_down_sell_sweep_reclaim_long"
+
+    def _nifty_strong_bearish_gap_down_trapped_buyers_profile(self, observation: Observation) -> bool:
+        return observation.nifty_expected_behavior == "strong_bearish_gap_down_trapped_buyers_sell_drive"
+
+    def _nifty_strong_bearish_selling_gap_down_profit_recovery_profile(self, observation: Observation) -> bool:
+        return observation.nifty_expected_behavior == "strong_bearish_selling_gap_down_seller_profit_recovery"
+
+    def _nifty_strong_bearish_extreme_selling_flat_recovery_profile(self, observation: Observation) -> bool:
+        return observation.nifty_expected_behavior == "strong_bearish_extreme_selling_flat_seller_exhaustion_recovery"
+
+    def _nifty_neutral_buying_gap_down_trapped_buyers_profile(self, observation: Observation) -> bool:
+        return observation.nifty_expected_behavior == "neutral_buying_gap_down_trapped_buyers_sell_drive"
+
+    def _nifty_bullish_large_gap_up_range_profile(self, observation: Observation) -> bool:
+        return observation.nifty_expected_behavior == "bullish_large_gap_up_range_farming"
+
+    def _nifty_bullish_selling_gap_up_auction_profile(self, observation: Observation) -> bool:
+        return observation.nifty_expected_behavior == "bullish_selling_gap_up_auction_rejection_or_recovery"
+
+    def _nifty_cost_protection_at_first_target_profile(self, observation: Observation) -> bool:
+        return self._nifty_strong_bullish_gap_down_recovery_profile(
+            observation
+        ) or self._nifty_strong_bearish_gap_down_trapped_buyers_profile(
+            observation
+        ) or self._nifty_strong_bearish_selling_gap_down_profit_recovery_profile(
+            observation
+        ) or self._nifty_strong_bearish_extreme_selling_flat_recovery_profile(
+            observation
+        ) or self._nifty_neutral_buying_gap_down_trapped_buyers_profile(
+            observation
+        ) or self._nifty_bullish_selling_gap_up_auction_profile(
+            observation
+        ) or self._nifty_bullish_large_gap_up_range_profile(observation)
+
+    def _nifty_first_candle_bounds(self, context: StrategyContext) -> tuple[float, float] | None:
+        if not context.session_candles:
+            return None
+        first = context.session_candles[0]
+        return first.high, first.low
+
+    def _nifty_accepts_above_first_candle_high(self, context: StrategyContext, observation: Observation) -> bool:
+        bounds = self._nifty_first_candle_bounds(context)
+        if bounds is None:
+            return False
+        first_high, _ = bounds
+        tolerance = max(observation.atr * 0.08, 1.0)
+        recent = context.session_candles[-min(2, len(context.session_candles)) :]
+        return bool(recent) and all(candle.close >= first_high + tolerance for candle in recent)
+
+    def _nifty_accepts_below_first_candle_low(self, context: StrategyContext, observation: Observation) -> bool:
+        bounds = self._nifty_first_candle_bounds(context)
+        if bounds is None:
+            return False
+        _, first_low = bounds
+        tolerance = max(observation.atr * 0.08, 1.0)
+        recent = context.session_candles[-min(2, len(context.session_candles)) :]
+        return bool(recent) and all(candle.close <= first_low - tolerance for candle in recent)
+
+    def _nifty_accepts_below_first_fifteen_low(self, context: StrategyContext, observation: Observation) -> bool:
+        tolerance = max(observation.atr * 0.08, 1.0)
+        recent = context.session_candles[-min(2, len(context.session_candles)) :]
+        return bool(recent) and all(candle.close <= observation.first_fifteen_low - tolerance for candle in recent)
+
+    def _nifty_first_candle_bearish_gap_up(self, context: StrategyContext, observation: Observation) -> bool:
+        if not context.session_candles:
+            return False
+        first = context.session_candles[0]
+        return observation.gap > max(observation.atr * 0.25, 1.0) and first.close < first.open
+
+    def _nifty_inside_first_candle_range(self, context: StrategyContext, price: float, buffer: float = 0.0) -> bool:
+        bounds = self._nifty_first_candle_bounds(context)
+        if bounds is None:
+            return False
+        first_high, first_low = bounds
+        return first_low - buffer <= price <= first_high + buffer
+
+    def _nifty_near_first_candle_low(self, context: StrategyContext, observation: Observation, price: float) -> bool:
+        bounds = self._nifty_first_candle_bounds(context)
+        if bounds is None:
+            return False
+        _, first_low = bounds
+        return price <= first_low + max(observation.atr * 0.8, 22.0)
+
+    def _nifty_near_first_candle_high(self, context: StrategyContext, observation: Observation, price: float) -> bool:
+        bounds = self._nifty_first_candle_bounds(context)
+        if bounds is None:
+            return False
+        first_high, _ = bounds
+        return price >= first_high - max(observation.atr * 0.8, 22.0)
+
+    def _nifty_first_candle_low_sweep_reclaim(
+        self,
+        context: StrategyContext,
+        observation: Observation,
+        event: SweepEvent,
+    ) -> bool:
+        bounds = self._nifty_first_candle_bounds(context)
+        if bounds is None:
+            return False
+        _, first_low = bounds
+        tolerance = max(observation.atr * 0.06, 0.8)
+        return (
+            event.side == "sell"
+            and event.reclaim_index is not None
+            and event.sweep_price <= first_low - tolerance
+            and context.current_candle.close >= first_low
+        )
+
+    def _nifty_native_target_room(self, context: StrategyContext, option_type: str, entry_price: float) -> float | None:
+        if option_type == "CE":
+            levels = sorted(zone.price for zone in context.liquidity_zones if zone.price > entry_price + 0.2)
+            return levels[0] - entry_price if levels else None
+        levels = sorted((zone.price for zone in context.liquidity_zones if zone.price < entry_price - 0.2), reverse=True)
+        return entry_price - levels[0] if levels else None
+
+    def _nifty_large_gap_up_range_block_reason(
+        self,
+        context: StrategyContext,
+        observation: Observation,
+        event: SweepEvent,
+        *,
+        option_type: str,
+        entry_price: float,
+        native_room: float | None,
+        risk: float,
+    ) -> str | None:
+        if not self._nifty_bullish_large_gap_up_range_profile(observation):
+            return None
+        label = event.level_label.lower()
+        inside_first_range = self._nifty_inside_first_candle_range(context, event.level_price)
+        accepted_above = self._nifty_accepts_above_first_candle_high(context, observation)
+        accepted_below = self._nifty_accepts_below_first_candle_low(context, observation)
+        outside_acceptance = accepted_above or accepted_below
+        if ("equal high cluster" in label or "equal low cluster" in label) and inside_first_range and not outside_acceptance:
+            return "Large gap-up range profile ignores equal-high/equal-low clusters inside the first candle auction range."
+        if option_type == "PE" and self._nifty_near_first_candle_low(context, observation, entry_price) and not accepted_below:
+            return "Large gap-up range profile blocks shorts near first-candle low unless price accepts below that auction low."
+        if option_type == "CE" and self._nifty_near_first_candle_high(context, observation, entry_price) and not accepted_above:
+            return "Large gap-up range profile blocks longs near first-candle high unless price accepts above that auction high."
+        recent_trade_count = self._nifty_recent_closed_trade_count(context)
+        if recent_trade_count >= 2 and not outside_acceptance and not (
+            self._nifty_new_major_liquidity_event(event) and event.quality == "explosive"
+        ):
+            return "Large gap-up range profile caps trades after 1-2 attempts until first-candle range acceptance appears."
+        if native_room is not None and native_room < max(risk * 1.5, 35.0):
+            return "Large gap-up range profile rejects trades with poor target room to the next real liquidity level."
+        return None
+
+    def _nifty_bullish_selling_gap_up_block_reason(
+        self,
+        context: StrategyContext,
+        observation: Observation,
+        event: SweepEvent,
+        *,
+        option_type: str,
+        native_room: float | None,
+        risk: float,
+    ) -> str | None:
+        if not self._nifty_bullish_selling_gap_up_auction_profile(observation):
+            return None
+        target_room = native_room if native_room is not None else None
+        if target_room is not None and target_room < max(risk * 1.5, 35.0):
+            return "Bullish gap-up auction profile rejects trades with poor target room to the next real liquidity level."
+        high_touch_equal_cluster = self._nifty_equal_cluster_touch_count(event.level_label) >= 12
+        inside_opening_auction = self._nifty_inside_opening_auction_range(
+            context,
+            observation,
+            event.level_price,
+            buffer=max(observation.atr * 0.2, 3.0),
+        )
+        if high_touch_equal_cluster and inside_opening_auction:
+            return "Bullish gap-up auction profile ignores high-touch equal clusters inside the opening auction range."
+
+        if option_type == "CE":
+            if self._nifty_first_candle_bearish_gap_up(context, observation) and not self._nifty_accepts_above_first_candle_high(context, observation):
+                return "Bullish gap-up auction opened with bearish first-candle rejection; longs wait for acceptance above first-candle high."
+            if self._nifty_after_morning_sell_drive(context, observation) and not self._nifty_gap_up_morning_sell_drive_reclaimed(context, observation):
+                return "After the morning sell drive, recovery longs wait for VWAP/opening-range reclaim."
+            return None
+
+        accepted_below_first15 = self._nifty_accepts_below_first_fifteen_low(context, observation)
+        major_upper_rejection = self._nifty_major_upper_rejection_ready(context, observation, event)
+        if not accepted_below_first15 and not major_upper_rejection:
+            return "Bullish gap-up auction profile allows shorts only after first-15 low acceptance or a clean upper-liquidity rejection."
+        if self._nifty_short_near_lower_auction_without_bounce(context, observation, event):
+            return "After the morning sell drive, do not short lower auction unless a bounce-rejection creates fresh downside fuel."
+        if self._nifty_gap_up_morning_sell_drive_reclaimed(context, observation) and not major_upper_rejection:
+            return "Morning sell drive has been reclaimed through VWAP/opening structure, so fresh shorts wait for major upper-liquidity rejection."
+        same_thesis_failures = self._nifty_recent_same_thesis_failures(context, option_type)
+        if same_thesis_failures >= 1 and not self._nifty_new_major_liquidity_event(event):
+            return "One Nifty short has already failed in this gap-up auction profile, so more shorts wait for a fresh major liquidity event."
+        recent_trade_count = self._nifty_recent_closed_trade_count(context)
+        if recent_trade_count >= 3 and not self._nifty_new_major_liquidity_event(event):
+            return "Bullish gap-up auction profile caps repeated trades in midday chop until a fresh major liquidity event appears."
+        return None
+
+    def _nifty_selling_gap_down_profit_recovery_block_reason(
+        self,
+        context: StrategyContext,
+        observation: Observation,
+        event: SweepEvent,
+        *,
+        option_type: str,
+        native_room: float | None,
+        risk: float,
+    ) -> str | None:
+        if not self._nifty_strong_bearish_selling_gap_down_profit_recovery_profile(observation):
+            return None
+        target_room = native_room if native_room is not None else None
+        if target_room is not None and target_room < max(risk * 1.5, 35.0):
+            return "Strong-bearish gap-down profit-booking profile rejects trades with poor target room to the next real liquidity level."
+        if option_type == "CE":
+            if not self._nifty_major_sell_side_recovery_ready(context, observation, event):
+                return "Strong-bearish gap-down profit-booking profile allows longs only after opening sell-side sweep/reclaim plus higher-low or VWAP/opening-low recovery."
+            return None
+
+        accepted_below_opening_low = self._nifty_accepts_below_opening_low(context, observation)
+        major_upper_rejection = self._nifty_major_upper_rejection_ready(context, observation, event)
+        if not accepted_below_opening_low and not major_upper_rejection:
+            return "Strong-bearish gap-down profit-booking profile blocks shorts until opening low acceptance or a major upper-liquidity rejection appears."
+        if (
+            ("equal high cluster" in event.level_label.lower() or "equal low cluster" in event.level_label.lower())
+            and not major_upper_rejection
+        ):
+            return "Strong-bearish gap-down profit-booking profile ignores equal-cluster shorts inside recovery unless a major resistance shelf rejects."
+        same_thesis_failures = self._nifty_recent_same_thesis_failures(context, option_type)
+        if same_thesis_failures >= 1 and not self._nifty_new_major_liquidity_event(event):
+            return "One Nifty short has already failed in this seller-profit-booking profile, so more shorts wait for a fresh major liquidity event."
+        return None
+
+    def _nifty_extreme_selling_flat_recovery_block_reason(
+        self,
+        context: StrategyContext,
+        observation: Observation,
+        event: SweepEvent,
+        *,
+        option_type: str,
+        native_room: float | None,
+        risk: float,
+    ) -> str | None:
+        if not self._nifty_strong_bearish_extreme_selling_flat_recovery_profile(observation):
+            return None
+        if native_room is not None and native_room < max(risk * 1.5, 35.0):
+            return "Extreme-selloff flat-open recovery profile rejects trades with poor target room to the next real liquidity level."
+
+        touch_count = self._nifty_equal_cluster_touch_count(event.level_label)
+        label = event.level_label.lower()
+        inside_auction = self._nifty_inside_opening_auction_range(
+            context,
+            observation,
+            event.level_price,
+            buffer=max(observation.atr * 0.25, 4.0),
+        )
+        if touch_count > 20 and inside_auction:
+            return "Extreme-selloff flat-open recovery profile ignores high-touch equal clusters inside the opening auction range."
+
+        if option_type == "CE":
+            if not self._nifty_exhaustion_recovery_long_ready(context, observation, event):
+                return "Extreme-selloff flat-open recovery profile allows longs only after sell-side sweep/reclaim plus higher-low, VWAP reclaim, or first-15 high reclaim."
+            same_thesis_failures = self._nifty_recent_same_thesis_failures(context, option_type)
+            if same_thesis_failures >= 2 and not self._nifty_new_major_liquidity_event(event):
+                return "Two Nifty longs have already failed in this seller-exhaustion profile, so fresh longs wait for a new major liquidity event."
+            return None
+
+        accepted_below_first15 = self._nifty_accepts_below_first_fifteen_low(context, observation)
+        major_upper_rejection = self._nifty_major_upper_rejection_ready(context, observation, event)
+        lower_exhaustion_reference = min(
+            observation.opening_range_low,
+            observation.first_fifteen_low,
+            observation.session_low,
+            observation.prior_session_low,
+        )
+        near_exhaustion_low = context.current_candle.close <= lower_exhaustion_reference + max(observation.atr * 2.0, 45.0)
+        if not accepted_below_first15 and near_exhaustion_low:
+            return "Extreme-selloff flat-open recovery profile blocks shorts near opening/day low unless price accepts below the first-15 low."
+        if not accepted_below_first15 and not major_upper_rejection:
+            return "Extreme-selloff flat-open recovery profile blocks shorts unless price accepts below the first-15 low or rejects from major upper liquidity."
+        if self._nifty_short_near_exhaustion_low_without_bounce(context, observation, event) and not accepted_below_first15:
+            return "After extreme prior selling, do not short near opening/day low without a bounce-rejection first."
+        if "round number" in label and not self._nifty_round_level_acceptance(context, observation, event, option_type):
+            return "Around the 100-point round shelf this profile requires acceptance beyond the level, not only touch/reject."
+        same_thesis_failures = self._nifty_recent_same_thesis_failures(context, option_type)
+        if same_thesis_failures >= 1 and not self._nifty_new_major_liquidity_event(event):
+            return "One Nifty short has already failed in this seller-exhaustion profile, so more shorts wait for fresh major liquidity."
+        recent_trade_count = self._nifty_recent_closed_trade_count(context)
+        if recent_trade_count >= 3 and not self._nifty_new_major_liquidity_event(event):
+            return "Extreme-selloff flat-open recovery profile caps trades after 2-3 attempts until fresh major liquidity breaks."
+        return None
+
+    def _nifty_neutral_buying_gap_down_block_reason(
+        self,
+        context: StrategyContext,
+        observation: Observation,
+        event: SweepEvent,
+        *,
+        option_type: str,
+        native_room: float | None,
+        risk: float,
+    ) -> str | None:
+        if not self._nifty_neutral_buying_gap_down_trapped_buyers_profile(observation):
+            return None
+        if native_room is not None and native_room < max(risk * 1.5, 35.0):
+            return "Neutral late-buying gap-down profile rejects trades with poor target room to the next real liquidity level."
+
+        label = event.level_label.lower()
+        if "round number" in label and not self._nifty_round_level_acceptance(context, observation, event, option_type):
+            return "Neutral late-buying gap-down profile requires real acceptance around the 100-point round shelf, not only touch/reject."
+
+        recent_trade_count = self._nifty_recent_closed_trade_count(context)
+        if recent_trade_count >= 3 and not self._nifty_new_major_liquidity_event(event):
+            return "Neutral late-buying gap-down profile caps trades after 2-3 attempts until a fresh major liquidity break appears."
+
+        if option_type == "CE":
+            if self._nifty_first_candle_bearish_gap_down(context, observation) and not self._nifty_trapped_buyers_recovery_long_ready(context, observation, event):
+                return "Neutral late-buying gap-down profile blocks early longs after bearish first-candle / first-15 downside acceptance until VWAP, first-15 high, or day-low reclaim confirms."
+            return None
+
+        if self._nifty_hard_fall_exhaustion_watch(context, observation):
+            accepted_below_day_low = self._nifty_accepts_below_recent_session_low(context, observation)
+            if (
+                self._nifty_fresh_day_low_sweep_reclaimed(context, observation)
+                or self._nifty_recent_day_low_reclaimed(context, observation)
+            ) and not accepted_below_day_low:
+                return "After a hard fall and fresh day-low reclaim, this profile stops shorting unless price accepts below that low."
+            if not self._nifty_trapped_buyers_short_ready(context, observation, event):
+                return "After a hard fall from open, shorts need a fresh pullback rejection or downside acceptance, not lower-range chasing."
+
+        if not self._nifty_trapped_buyers_short_ready(context, observation, event):
+            return "Neutral late-buying gap-down profile allows shorts only after bearish first-15 acceptance plus pullback rejection."
+        return None
+
+    def _nifty_opening_low_sweep_finished(self, observation: Observation, event: SweepEvent) -> bool:
+        tolerance = max(observation.atr * 0.04, 0.5)
+        return (
+            event.side == "sell"
+            and event.reclaim_index is not None
+            and event.sweep_price <= observation.opening_range_low - tolerance
+            and event.defended_level <= observation.opening_range_low + tolerance
+        )
+
+    def _nifty_opening_seller_exhaustion_reclaim(self, context: StrategyContext, observation: Observation) -> bool:
+        if not context.session_candles:
+            return False
+        first = context.session_candles[0]
+        first_range = max(first.high - first.low, 0.01)
+        tolerance = max(observation.atr * 0.08, 1.0)
+        swept_prior_low = first.low <= min(observation.prior_session_low, observation.opening_range_low) + tolerance
+        strong_green_reclaim = first.close > first.open and (first.close - first.low) / first_range >= 0.60
+        return swept_prior_low and strong_green_reclaim
+
+    def _nifty_first_candle_bearish_gap_down(self, context: StrategyContext, observation: Observation) -> bool:
+        if not context.session_candles:
+            return False
+        first = context.session_candles[0]
+        return observation.gap < -max(observation.atr * 0.25, 1.0) and first.close < first.open
+
+    def _nifty_trapped_buyers_recovery_long_ready(
+        self,
+        context: StrategyContext,
+        observation: Observation,
+        event: SweepEvent,
+    ) -> bool:
+        tolerance = max(observation.atr * 0.08, 1.0)
+        recent = context.session_candles[-min(2, len(context.session_candles)) :]
+        if recent and all(candle.close >= observation.first_fifteen_high + tolerance for candle in recent):
+            return True
+        if recent and all(candle.close >= observation.vwap + tolerance for candle in recent):
+            return True
+        if event.side != "sell" or event.reclaim_index is None:
+            return False
+        sell_side_reclaim = self._nifty_major_sell_side_recovery_ready(context, observation, event)
+        reclaim_candle = context.session_candles[event.reclaim_index] if 0 <= event.reclaim_index < len(context.session_candles) else context.current_candle
+        strong_reclaim = reclaim_candle.close > reclaim_candle.open and self.candle_strength(reclaim_candle) >= 0.50
+        return sell_side_reclaim and strong_reclaim
+
+    def _nifty_trapped_buyers_short_ready(
+        self,
+        context: StrategyContext,
+        observation: Observation,
+        event: SweepEvent,
+    ) -> bool:
+        if not self._nifty_first_candle_bearish_gap_down(context, observation):
+            return False
+        accepted_below_first15 = self._nifty_accepts_below_first_fifteen_low(context, observation)
+        if not accepted_below_first15:
+            return False
+        if self._nifty_pullback_rejection_ready(context, observation, event):
+            return True
+        if event.side == "buy" and not self._nifty_hard_fall_exhaustion_watch(context, observation):
+            return True
+        return self._nifty_accepts_below_recent_session_low(context, observation)
+
+    def _nifty_pullback_rejection_ready(
+        self,
+        context: StrategyContext,
+        observation: Observation,
+        event: SweepEvent,
+    ) -> bool:
+        if event.side != "buy" or event.reclaim_index is None:
+            return False
+        tolerance = max(observation.atr * 0.08, 1.0)
+        bounce_height = event.level_price - observation.session_low
+        enough_bounce = bounce_height >= max(observation.atr * 1.2, 28.0)
+        clean_rejection = context.current_candle.close <= event.defended_level - tolerance
+        return enough_bounce and clean_rejection
+
+    def _nifty_hard_fall_exhaustion_watch(self, context: StrategyContext, observation: Observation) -> bool:
+        if not context.session_candles:
+            return False
+        fall_from_open = context.session_candles[0].open - observation.session_low
+        return fall_from_open >= max(observation.atr * 4.0, 100.0)
+
+    def _nifty_accepts_below_recent_session_low(self, context: StrategyContext, observation: Observation) -> bool:
+        if len(context.session_candles) < 3:
+            return False
+        prior_low = min(candle.low for candle in context.session_candles[:-2])
+        tolerance = max(observation.atr * 0.08, 1.0)
+        recent = context.session_candles[-2:]
+        return all(candle.close <= prior_low - tolerance for candle in recent)
+
+    def _nifty_fresh_day_low_sweep_reclaimed(self, context: StrategyContext, observation: Observation) -> bool:
+        if len(context.session_candles) < 3:
+            return False
+        tolerance = max(observation.atr * 0.08, 1.0)
+        prior_low = min(candle.low for candle in context.session_candles[:-2])
+        recent = context.session_candles[-2:]
+        fresh_sweep = any(candle.low <= prior_low - tolerance for candle in recent)
+        reclaim = context.current_candle.close >= prior_low + tolerance
+        return fresh_sweep and reclaim
+
+    def _nifty_recent_day_low_reclaimed(self, context: StrategyContext, observation: Observation) -> bool:
+        if len(context.session_candles) < 5:
+            return False
+        low_index, low_candle = min(enumerate(context.session_candles), key=lambda item: item[1].low)
+        bars_since_low = len(context.session_candles) - 1 - low_index
+        if bars_since_low > 30:
+            return False
+        reclaim_distance = context.current_candle.close - low_candle.low
+        return reclaim_distance >= max(observation.atr * 0.75, 18.0)
+
+    def _nifty_exhaustion_recovery_long_ready(
+        self,
+        context: StrategyContext,
+        observation: Observation,
+        event: SweepEvent,
+    ) -> bool:
+        if event.side != "sell" or event.reclaim_index is None:
+            return False
+        if not self._nifty_major_sell_side_recovery_ready(context, observation, event):
+            return False
+        if len(context.session_candles) < 2:
+            return False
+        tolerance = max(observation.atr * 0.08, 1.0)
+        post_sweep = context.session_candles[event.sweep_index + 1 :]
+        higher_low = any(candle.low >= event.sweep_price + tolerance for candle in post_sweep)
+        first15_reclaim = context.current_candle.close >= observation.first_fifteen_high + tolerance
+        vwap_reclaim = (
+            context.current_candle.close >= observation.vwap + tolerance
+            and context.current_candle.close >= observation.opening_range_low + tolerance
+        )
+        return higher_low or first15_reclaim or vwap_reclaim
+
+    def _nifty_round_level_acceptance(
+        self,
+        context: StrategyContext,
+        observation: Observation,
+        event: SweepEvent,
+        option_type: str,
+    ) -> bool:
+        tolerance = max(observation.atr * 0.08, 1.0)
+        recent = context.session_candles[-min(2, len(context.session_candles)) :]
+        if not recent:
+            return False
+        if option_type == "CE":
+            return all(candle.close >= event.level_price + tolerance for candle in recent)
+        return all(candle.close <= event.level_price - tolerance for candle in recent)
+
+    def _nifty_accepts_below_opening_low(self, context: StrategyContext, observation: Observation) -> bool:
+        tolerance = max(observation.atr * 0.08, 0.8)
+        recent = context.session_candles[-min(2, len(context.session_candles)) :]
+        if not recent:
+            return False
+        return all(candle.close <= observation.opening_range_low - tolerance for candle in recent)
+
+    def _nifty_major_sell_side_recovery_ready(
+        self,
+        context: StrategyContext,
+        observation: Observation,
+        event: SweepEvent,
+    ) -> bool:
+        if event.side != "sell" or event.reclaim_index is None:
+            return False
+        tolerance = max(observation.atr * 0.08, 0.8)
+        fresh_day_low_sweep = event.sweep_price <= observation.prior_session_low - tolerance
+        major_sell_level = event.primary or any(
+            token in event.level_label.lower()
+            for token in (
+                "previous day low",
+                "opening range low",
+                "first 15m low",
+                "session low",
+                "same-day swing low",
+                "previous-day last-2h swing low",
+                "pivot s",
+            )
+        )
+        if not (fresh_day_low_sweep or major_sell_level):
+            return False
+        post_sweep = context.session_candles[event.sweep_index + 1 :]
+        higher_low = any(candle.low >= event.sweep_price + tolerance for candle in post_sweep)
+        accepted_recovery = context.current_candle.close >= max(
+            observation.opening_range_low,
+            observation.vwap - max(observation.atr * 0.15, 1.0),
+        )
+        return higher_low or accepted_recovery
+
+    def _nifty_major_upper_rejection_ready(
+        self,
+        context: StrategyContext,
+        observation: Observation,
+        event: SweepEvent,
+    ) -> bool:
+        if event.side != "buy" or event.reclaim_index is None:
+            return False
+        label = event.level_label.lower()
+        major_upper = event.primary or any(
+            token in label
+            for token in (
+                "previous day high",
+                "opening range high",
+                "first 15m high",
+                "session high",
+                "same-day swing high",
+                "previous-day last-2h swing high",
+                "pivot r",
+            )
+        )
+        if not major_upper:
+            return False
+        tolerance = max(observation.atr * 0.08, 0.8)
+        bounce_height = event.level_price - observation.session_low
+        clean_rejection = context.current_candle.close <= event.defended_level - tolerance
+        enough_bounce = bounce_height >= max(observation.atr * 1.2, 28.0)
+        return enough_bounce and clean_rejection
+
+    def _nifty_after_morning_sell_drive(self, context: StrategyContext, observation: Observation) -> bool:
+        if len(context.session_candles) < 20:
+            return False
+        first_high = context.session_candles[0].high
+        sell_drive = first_high - observation.session_low
+        return sell_drive >= max(observation.atr * 2.0, 45.0)
+
+    def _nifty_gap_up_morning_sell_drive_reclaimed(self, context: StrategyContext, observation: Observation) -> bool:
+        if not self._nifty_after_morning_sell_drive(context, observation):
+            return False
+        reclaim_level = max(observation.vwap, observation.opening_range_low)
+        tolerance = max(observation.atr * 0.08, 1.0)
+        recent = context.session_candles[-min(2, len(context.session_candles)) :]
+        return bool(recent) and all(candle.close >= reclaim_level + tolerance for candle in recent)
+
+    def _nifty_short_near_lower_auction_without_bounce(
+        self,
+        context: StrategyContext,
+        observation: Observation,
+        event: SweepEvent,
+    ) -> bool:
+        if (
+            event.side != "buy"
+            or observation.session_phase not in {"midday", "late-session"}
+            or not self._nifty_after_morning_sell_drive(context, observation)
+        ):
+            return False
+        lower_reference = min(observation.first_fifteen_low, observation.opening_range_low, observation.session_low)
+        near_lower_auction = context.current_candle.close <= lower_reference + max(observation.atr * 1.0, 24.0)
+        if not near_lower_auction:
+            return False
+        return not self._nifty_major_upper_rejection_ready(context, observation, event)
+
+    def _nifty_inside_opening_auction_range(
+        self,
+        context: StrategyContext,
+        observation: Observation,
+        price: float,
+        *,
+        buffer: float = 0.0,
+    ) -> bool:
+        bounds = self._nifty_first_candle_bounds(context)
+        if bounds is None:
+            return False
+        first_high, first_low = bounds
+        auction_high = max(first_high, observation.first_fifteen_high)
+        auction_low = min(first_low, observation.first_fifteen_low)
+        return auction_low - buffer <= price <= auction_high + buffer
+
+    @staticmethod
+    def _nifty_equal_cluster_touch_count(level_label: str) -> int:
+        label = level_label.lower()
+        if "equal high cluster" not in label and "equal low cluster" not in label:
+            return 0
+        marker = "touches"
+        if marker not in label:
+            return 0
+        before = label.split(marker, 1)[0]
+        digits = ""
+        for character in reversed(before):
+            if character.isdigit():
+                digits = character + digits
+            elif digits:
+                break
+        return int(digits) if digits else 0
+
+    def _nifty_short_near_exhaustion_low_without_bounce(
+        self,
+        context: StrategyContext,
+        observation: Observation,
+        event: SweepEvent,
+    ) -> bool:
+        if event.side != "buy":
+            return False
+        sell_drive_points = context.session_candles[0].open - observation.session_low
+        large_sell_drive = sell_drive_points >= max(observation.atr * 3.0, 70.0)
+        near_day_low = context.current_candle.close <= observation.session_low + max(observation.atr * 0.8, 18.0)
+        if not (large_sell_drive and near_day_low):
+            return False
+        bounce_height = event.level_price - observation.session_low
+        rejected_after_bounce = (
+            bounce_height >= max(observation.atr * 1.4, 32.0)
+            and event.reclaim_index is not None
+            and context.current_candle.close < event.defended_level
+        )
+        return not rejected_after_bounce
+
+    def _nifty_near_upper_liquidity_with_small_room(
+        self,
+        context: StrategyContext,
+        observation: Observation,
+        entry_price: float,
+        target_spot: float,
+        risk: float,
+    ) -> bool:
+        band = max(20.0, observation.atr * 0.8)
+        references = [
+            observation.session_high,
+            observation.opening_range_high,
+            observation.first_fifteen_high,
+        ]
+        if context.previous_day.high:
+            references.append(context.previous_day.high)
+        upper_round = math.ceil(entry_price / 100.0) * 100.0
+        references.append(upper_round)
+        references.extend(price for _, price, _ in observation.mapped_buy_liquidity if price >= entry_price - band)
+        near_resistance = any(0 <= level - entry_price <= band for level in references)
+        target_room = max(target_spot - entry_price, 0.0)
+        return near_resistance and target_room < max(risk * 1.8, observation.atr * 1.25, 25.0)
+
+    def _nifty_recent_same_thesis_failures(self, context: StrategyContext, option_type: str) -> int:
+        current_day = context.current_candle.timestamp.date()
+        failures = 0
+        for trade in context.recent_closed_trades:
+            if trade.status != "CLOSED":
+                continue
+            if trade.entry_time.date() != current_day:
+                continue
+            if trade.option_type != option_type:
+                continue
+            if (trade.pnl or 0.0) <= 0:
+                failures += 1
+        return failures
+
+    def _nifty_recent_closed_trade_count(self, context: StrategyContext) -> int:
+        current_day = context.current_candle.timestamp.date()
+        return sum(
+            1
+            for trade in context.recent_closed_trades
+            if trade.status == "CLOSED" and trade.entry_time.date() == current_day
+        )
+
+    def _nifty_new_major_liquidity_event(self, event: SweepEvent) -> bool:
+        label = event.level_label.lower()
+        return event.primary and (
+            event.quality == "explosive"
+            or any(
+                token in label
+                for token in (
+                    "previous day high",
+                    "previous day low",
+                    "opening range high",
+                    "opening range low",
+                    "first 15m high",
+                    "first 15m low",
+                    "session high",
+                    "session low",
+                    "previous-day last-2h swing",
+                )
+            )
+        )
+
     def _companion_bank_confirmation(
         self,
         bank_session: list[Candle],
@@ -4360,6 +5236,122 @@ class HeuristicDecisionEngine:
             notes.append(retest_note)
 
         room = abs(target_spot - current.close)
+        native_room = self._nifty_native_target_room(context, option_type, current.close) if self._is_nifty_mode(context) else None
+        large_gap_up_block_reason = self._nifty_large_gap_up_range_block_reason(
+            context,
+            observation,
+            event,
+            option_type=option_type,
+            entry_price=current.close,
+            native_room=native_room,
+            risk=max(plan_risk, 0.01),
+        )
+        if large_gap_up_block_reason:
+            notes.append(large_gap_up_block_reason)
+            rule_ids.extend(["R17", "R18", "R44", "R55", "R60", "R64", "R80", "R91", "R98", "R99"])
+            return None
+        bullish_selling_gap_up_block_reason = self._nifty_bullish_selling_gap_up_block_reason(
+            context,
+            observation,
+            event,
+            option_type=option_type,
+            native_room=native_room,
+            risk=max(plan_risk, 0.01),
+        )
+        if bullish_selling_gap_up_block_reason:
+            notes.append(bullish_selling_gap_up_block_reason)
+            rule_ids.extend(["R16", "R18", "R25", "R27", "R35", "R44", "R55", "R60", "R74", "R81", "R91", "R98", "R99"])
+            return None
+        selling_gap_down_block_reason = self._nifty_selling_gap_down_profit_recovery_block_reason(
+            context,
+            observation,
+            event,
+            option_type=option_type,
+            native_room=native_room,
+            risk=max(plan_risk, 0.01),
+        )
+        if selling_gap_down_block_reason:
+            notes.append(selling_gap_down_block_reason)
+            rule_ids.extend(["R15", "R18", "R25", "R27", "R35", "R44", "R55", "R60", "R81", "R87", "R98", "R99"])
+            return None
+        extreme_selling_flat_block_reason = self._nifty_extreme_selling_flat_recovery_block_reason(
+            context,
+            observation,
+            event,
+            option_type=option_type,
+            native_room=native_room,
+            risk=max(plan_risk, 0.01),
+        )
+        if extreme_selling_flat_block_reason:
+            notes.append(extreme_selling_flat_block_reason)
+            rule_ids.extend(["R15", "R18", "R25", "R27", "R35", "R44", "R55", "R60", "R81", "R87", "R91", "R98", "R99"])
+            return None
+        neutral_buying_gap_down_block_reason = self._nifty_neutral_buying_gap_down_block_reason(
+            context,
+            observation,
+            event,
+            option_type=option_type,
+            native_room=native_room,
+            risk=max(plan_risk, 0.01),
+        )
+        if neutral_buying_gap_down_block_reason:
+            notes.append(neutral_buying_gap_down_block_reason)
+            rule_ids.extend(["R15", "R16", "R18", "R25", "R27", "R35", "R44", "R55", "R60", "R74", "R81", "R87", "R91", "R98", "R99"])
+            return None
+        if self._is_nifty_mode(context) and self._nifty_strong_bullish_gap_down_recovery_profile(observation):
+            same_thesis_failures = self._nifty_recent_same_thesis_failures(context, option_type)
+            if same_thesis_failures >= 2:
+                return None
+            if option_type == "CE":
+                if not self._nifty_opening_low_sweep_finished(observation, event):
+                    return None
+                if self._nifty_near_upper_liquidity_with_small_room(
+                    context,
+                    observation,
+                    current.close,
+                    target_spot,
+                    risk,
+                ):
+                    return None
+                if same_thesis_failures == 1:
+                    score -= 10
+                    notes.append(
+                        "One same-thesis Nifty long has already failed today, so this recovery profile reduces fresh long aggression."
+                    )
+                    rule_ids.extend(["R87", "R91", "R99"])
+            else:
+                accepted_below_opening_low = self._nifty_accepts_below_opening_low(context, observation)
+                if not accepted_below_opening_low and (event.quality != "explosive" or score < 88):
+                    return None
+                if not accepted_below_opening_low:
+                    score -= 8
+                    notes.append(
+                        "Strong bullish gap-down recovery profile blocks weak shorts until price accepts below the opening low."
+                    )
+                    rule_ids.extend(["R18", "R35", "R60", "R65", "R81"])
+        if self._is_nifty_mode(context) and self._nifty_strong_bearish_gap_down_trapped_buyers_profile(observation):
+            same_thesis_failures = self._nifty_recent_same_thesis_failures(context, option_type)
+            recent_trade_count = self._nifty_recent_closed_trade_count(context)
+            new_major_event = self._nifty_new_major_liquidity_event(event)
+            effective_risk = max(plan_risk, 40.0)
+            if recent_trade_count >= 4 and not (new_major_event and event.quality == "explosive" and score >= 90):
+                return None
+            if room < max(effective_risk * 1.0, 35.0):
+                return None
+            if option_type == "CE":
+                if same_thesis_failures >= 2 and not new_major_event:
+                    return None
+                if not self._nifty_major_sell_side_recovery_ready(context, observation, event):
+                    return None
+                if same_thesis_failures == 1:
+                    score -= 12
+                    notes.append(
+                        "One trapped-buyer recovery long already failed, so this profile requires stronger proof before another long."
+                    )
+                    rule_ids.extend(["R60", "R87", "R91", "R99"])
+            else:
+                if self._nifty_short_near_exhaustion_low_without_bounce(context, observation, event):
+                    return None
         if setup_type in {"bullish_pullback_continuation", "bearish_pullback_continuation"} and room < risk * 2.2:
             score -= 14
             notes.append("Continuation pullback does not have enough room left to the next liquidity pool.")
@@ -4715,8 +5707,36 @@ class HeuristicDecisionEngine:
         if (
             nifty_mode_trade
             and heuristic_early_exit_enabled
+            and self._nifty_cost_protection_at_first_target_profile(observation)
             and trade.first_target_price is not None
-            and observation.nifty_risk_mode in {"fast_profit", "trap_first", "range_farming_risk"}
+            and not stop_is_protected_at_cost
+        ):
+            first_target_tagged = (
+                context.current_candle.high >= trade.first_target_price
+                if bullish_trade
+                else context.current_candle.low <= trade.first_target_price
+            )
+            if first_target_tagged:
+                return TradeDecision(
+                    action=TradeAction.update_stop,
+                    confidence=0.88,
+                    reason=(
+                        "Nifty gap-down market-mechanics profile reached first target, "
+                        "so move Nifty stop to cost before managing the fast-profit exit."
+                    ),
+                    decision_source="heuristic",
+                    option_type=trade.option_type,
+                    invalidation_level=round(trade.entry_spot_price, 2),
+                    market_state=observation.day_type,
+                    setup_type=trade.setup_type,
+                    rule_ids_used=["R41", "R42", "R43", "R44", "R74", "R81", "R99"],
+                )
+
+        if (
+            nifty_mode_trade
+            and heuristic_early_exit_enabled
+            and trade.first_target_price is not None
+            and observation.nifty_risk_mode in {"fast_profit", "trap_first", "range_farming_risk", "large_gap_range_farming"}
             and (not trailing_stop_enabled or stop_is_protected_at_cost)
         ):
             first_target_tagged = (

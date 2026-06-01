@@ -3564,7 +3564,7 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertEqual(bearish_trade.option_type, "PE")
         self.assertEqual(bearish_trade.strike, 23200)
 
-    def test_nifty_entry_invalidation_is_normalized_to_20_40_point_risk(self) -> None:
+    def test_nifty_entry_invalidation_is_normalized_to_40_60_point_risk(self) -> None:
         candle = Candle(timestamp="2026-05-14T11:27:00", open=24240, high=24258, low=24230, close=24252, volume=1000)
 
         tight_long = self.test_engine._build_entry_trade(
@@ -3588,10 +3588,10 @@ class AppIntegrationTests(unittest.TestCase):
             source="replay",
         )
 
-        self.assertEqual(tight_long.invalidation_level, 24232.0)
-        self.assertEqual(wide_long.invalidation_level, 24212.0)
-        self.assertEqual(tight_short.invalidation_level, 24272.0)
-        self.assertEqual(wide_short.invalidation_level, 24292.0)
+        self.assertEqual(tight_long.invalidation_level, 24212.0)
+        self.assertEqual(wide_long.invalidation_level, 24192.0)
+        self.assertEqual(tight_short.invalidation_level, 24292.0)
+        self.assertEqual(wide_short.invalidation_level, 24312.0)
 
     def test_nifty_entry_invalidation_uses_saved_min_max_sl_points(self) -> None:
         self.temp_store.save(nifty_min_sl_points=12.0, nifty_max_sl_points=30.0)
@@ -4860,7 +4860,7 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertEqual(trade.direction, "SHORT_STOCK")
         self.assertEqual(trade.symbol, "NIFTY SPOT")
         self.assertEqual(trade.entry_price, 23602.0)
-        self.assertEqual(trade.stop_price, 23640.0)
+        self.assertEqual(trade.stop_price, 23642.0)
         self.assertEqual(trade.target_price, 23520.0)
 
     def test_dhan_market_context_uses_closed_session_replay_before_open(self) -> None:
@@ -6083,6 +6083,1181 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertEqual(profile.risk_mode, "trap_first")
         self.assertIn("last 2h selling_rally", profile.summary)
 
+    def test_nifty_market_mechanics_profiles_strong_bullish_gap_down_recovery(self) -> None:
+        previous_day_candles = []
+        start = datetime(2026, 2, 16, 9, 15)
+        for index in range(240):
+            price = 23950.0 + index * 0.8
+            previous_day_candles.append(
+                Candle(
+                    timestamp=start + timedelta(minutes=index),
+                    open=price - 0.4,
+                    high=price + 2.0,
+                    low=price - 2.0,
+                    close=price + 0.4,
+                    volume=1000 + index,
+                )
+            )
+        session = [
+            Candle(timestamp=datetime(2026, 2, 17, 9, 15), open=24070.0, high=24082.0, low=24042.0, close=24055.0, volume=2500),
+            Candle(timestamp=datetime(2026, 2, 17, 9, 16), open=24055.0, high=24064.0, low=24035.0, close=24048.0, volume=2200),
+        ]
+        context = StrategyContext(
+            instrument=InstrumentState(),
+            current_candle=session[-1],
+            recent_candles=session,
+            session_candles=session,
+            previous_day_candles=previous_day_candles,
+            previous_day=PreviousDayLevels(
+                high=max(candle.high for candle in previous_day_candles),
+                low=min(candle.low for candle in previous_day_candles),
+                close=previous_day_candles[-1].close,
+            ),
+            liquidity_zones=[],
+            operator_zones=[],
+            signal_events=[],
+            market_structure="",
+            pending_setup=None,
+            active_trade=None,
+            recent_closed_trades=[],
+            rulebook_markdown="",
+        )
+
+        profile = self.test_engine.heuristic_engine.nifty_market_mechanics_profile(context, atr=20.0)
+
+        self.assertEqual(profile.previous_day_profile, "strong_bullish")
+        self.assertEqual(profile.last_2h_flow, "buying_rally")
+        self.assertEqual(profile.open_type, "gap_down")
+        self.assertEqual(profile.trade_bias, "prefer_long")
+        self.assertEqual(profile.risk_mode, "fast_profit")
+        self.assertEqual(profile.expected_behavior, "strong_bullish_gap_down_sell_sweep_reclaim_long")
+
+    def test_nifty_market_mechanics_profiles_strong_bearish_gap_down_trapped_buyers(self) -> None:
+        previous_day_candles = []
+        start = datetime(2026, 2, 5, 9, 15)
+        for index in range(120):
+            price = 25755.0 - index * 1.45
+            previous_day_candles.append(
+                Candle(
+                    timestamp=start + timedelta(minutes=index),
+                    open=price + 0.6,
+                    high=price + 4.0,
+                    low=price - 4.0,
+                    close=price - 0.6,
+                    volume=1000 + index,
+                )
+            )
+        for index in range(120):
+            price = 25580.0 + index * 0.52
+            previous_day_candles.append(
+                Candle(
+                    timestamp=start + timedelta(minutes=120 + index),
+                    open=price - 0.4,
+                    high=price + 3.0,
+                    low=price - 3.0,
+                    close=price + 0.4,
+                    volume=1200 + index,
+                )
+            )
+        session = [
+            Candle(timestamp=datetime(2026, 2, 6, 9, 15), open=25605.0, high=25624.0, low=25570.0, close=25588.0, volume=2500),
+            Candle(timestamp=datetime(2026, 2, 6, 9, 16), open=25588.0, high=25596.0, low=25562.0, close=25570.0, volume=2200),
+        ]
+        context = StrategyContext(
+            instrument=InstrumentState(),
+            current_candle=session[-1],
+            recent_candles=session,
+            session_candles=session,
+            previous_day_candles=previous_day_candles,
+            previous_day=PreviousDayLevels(
+                high=max(candle.high for candle in previous_day_candles),
+                low=min(candle.low for candle in previous_day_candles),
+                close=previous_day_candles[-1].close,
+            ),
+            liquidity_zones=[],
+            operator_zones=[],
+            signal_events=[],
+            market_structure="",
+            pending_setup=None,
+            active_trade=None,
+            recent_closed_trades=[],
+            rulebook_markdown="",
+        )
+
+        profile = self.test_engine.heuristic_engine.nifty_market_mechanics_profile(context, atr=20.0)
+
+        self.assertEqual(profile.previous_day_profile, "strong_bearish")
+        self.assertEqual(profile.last_2h_flow, "buying_rally")
+        self.assertEqual(profile.open_type, "gap_down")
+        self.assertEqual(profile.trade_bias, "prefer_short")
+        self.assertEqual(profile.risk_mode, "fast_profit")
+        self.assertEqual(profile.expected_behavior, "strong_bearish_gap_down_trapped_buyers_sell_drive")
+
+    def test_nifty_market_mechanics_profiles_strong_bearish_selling_gap_down_profit_recovery(self) -> None:
+        previous_day_candles = []
+        start = datetime(2026, 2, 13, 9, 15)
+        for index in range(240):
+            price = 25620.0 - index * 0.62
+            previous_day_candles.append(
+                Candle(
+                    timestamp=start + timedelta(minutes=index),
+                    open=price + 0.5,
+                    high=price + 3.0,
+                    low=price - 3.0,
+                    close=price - 0.5,
+                    volume=1000 + index,
+                )
+            )
+        session = [
+            Candle(timestamp=datetime(2026, 2, 16, 9, 15), open=25423.6, high=25444.95, low=25372.7, close=25410.0, volume=5000),
+            Candle(timestamp=datetime(2026, 2, 16, 9, 16), open=25410.0, high=25436.0, low=25402.0, close=25428.0, volume=3600),
+        ]
+        context = StrategyContext(
+            instrument=InstrumentState(),
+            current_candle=session[-1],
+            recent_candles=session,
+            session_candles=session,
+            previous_day_candles=previous_day_candles,
+            previous_day=PreviousDayLevels(
+                high=max(candle.high for candle in previous_day_candles),
+                low=min(candle.low for candle in previous_day_candles),
+                close=previous_day_candles[-1].close,
+            ),
+            liquidity_zones=[],
+            operator_zones=[],
+            signal_events=[],
+            market_structure="",
+            pending_setup=None,
+            active_trade=None,
+            recent_closed_trades=[],
+            rulebook_markdown="",
+        )
+
+        profile = self.test_engine.heuristic_engine.nifty_market_mechanics_profile(context, atr=20.0)
+
+        self.assertEqual(profile.previous_day_profile, "strong_bearish")
+        self.assertEqual(profile.last_2h_flow, "selling_rally")
+        self.assertEqual(profile.open_type, "gap_down")
+        self.assertEqual(profile.trade_bias, "neutral")
+        self.assertEqual(profile.risk_mode, "fast_profit")
+        self.assertEqual(profile.expected_behavior, "strong_bearish_selling_gap_down_seller_profit_recovery")
+
+    def test_nifty_market_mechanics_profiles_bullish_large_gap_up_range_farming(self) -> None:
+        previous_day_candles = []
+        start = datetime(2026, 2, 6, 9, 15)
+        for index in range(120):
+            price = 25550.0 + index * 0.2
+            previous_day_candles.append(
+                Candle(
+                    timestamp=start + timedelta(minutes=index),
+                    open=price - 0.3,
+                    high=price + 2.0,
+                    low=price - 2.0,
+                    close=price + 0.3,
+                    volume=1000 + index,
+                )
+            )
+        for index in range(120):
+            price = 25575.0 + index * 0.85
+            previous_day_candles.append(
+                Candle(
+                    timestamp=start + timedelta(minutes=120 + index),
+                    open=price - 0.5,
+                    high=price + 3.0,
+                    low=price - 3.0,
+                    close=price + 0.5,
+                    volume=1200 + index,
+                )
+            )
+        session = [
+            Candle(timestamp=datetime(2026, 2, 9, 9, 15), open=25888.0, high=25922.0, low=25796.0, close=25832.0, volume=8000),
+            Candle(timestamp=datetime(2026, 2, 9, 9, 16), open=25832.0, high=25842.0, low=25826.0, close=25830.0, volume=4000),
+        ]
+        context = StrategyContext(
+            instrument=InstrumentState(),
+            current_candle=session[-1],
+            recent_candles=session,
+            session_candles=session,
+            previous_day_candles=previous_day_candles,
+            previous_day=PreviousDayLevels(
+                high=max(candle.high for candle in previous_day_candles),
+                low=min(candle.low for candle in previous_day_candles),
+                close=previous_day_candles[-1].close,
+            ),
+            liquidity_zones=[],
+            operator_zones=[],
+            signal_events=[],
+            market_structure="",
+            pending_setup=None,
+            active_trade=None,
+            recent_closed_trades=[],
+            rulebook_markdown="",
+        )
+
+        profile = self.test_engine.heuristic_engine.nifty_market_mechanics_profile(context, atr=20.0)
+
+        self.assertEqual(profile.previous_day_profile, "strong_bullish")
+        self.assertEqual(profile.last_2h_flow, "buying_rally")
+        self.assertEqual(profile.open_type, "large_gap_up")
+        self.assertEqual(profile.trade_bias, "neutral")
+        self.assertEqual(profile.risk_mode, "large_gap_range_farming")
+        self.assertEqual(profile.expected_behavior, "bullish_large_gap_up_range_farming")
+
+    def test_bullish_large_gap_up_range_blocks_short_near_first_candle_low(self) -> None:
+        candles = [
+            Candle(timestamp=datetime(2026, 2, 9, 9, 15), open=25888.0, high=25922.0, low=25796.0, close=25832.0, volume=8000),
+            Candle(timestamp=datetime(2026, 2, 9, 9, 36), open=25803.0, high=25807.0, low=25797.0, close=25798.1, volume=1000),
+        ]
+        context = self._build_context(candles)
+        observation = self._build_observation(
+            atr=20.0,
+            nifty_expected_behavior="bullish_large_gap_up_range_farming",
+            nifty_risk_mode="large_gap_range_farming",
+        )
+        event = SweepEvent(
+            side="buy",
+            level_label="Round Number 25800",
+            level_price=25800.0,
+            sweep_index=1,
+            reclaim_index=1,
+            trigger_index=1,
+            sweep_price=25807.0,
+            defended_level=25800.0,
+            trigger_price=25798.0,
+            invalidation_level=25840.0,
+            primary=True,
+            quality="tradable",
+        )
+
+        reason = self.test_engine.heuristic_engine._nifty_large_gap_up_range_block_reason(
+            context,
+            observation,
+            event,
+            option_type="PE",
+            entry_price=25798.1,
+            native_room=80.0,
+            risk=40.0,
+        )
+
+        self.assertIsNotNone(reason)
+        self.assertIn("blocks shorts near first-candle low", reason or "")
+
+    def test_strong_bearish_selling_gap_down_blocks_weak_recovery_short(self) -> None:
+        candles = [
+            Candle(timestamp=datetime(2026, 2, 16, 9, 15), open=25423.6, high=25444.95, low=25372.7, close=25410.0, volume=5000),
+            Candle(timestamp=datetime(2026, 2, 16, 9, 44), open=25476.0, high=25483.0, low=25458.0, close=25460.15, volume=2500),
+        ]
+        context = self._build_context(candles)
+        observation = self._build_observation(
+            atr=20.0,
+            opening_range_low=25372.7,
+            first_fifteen_low=25372.7,
+            session_low=25372.7,
+            prior_session_low=25444.3,
+            nifty_expected_behavior="strong_bearish_selling_gap_down_seller_profit_recovery",
+            nifty_risk_mode="fast_profit",
+        )
+        event = SweepEvent(
+            side="buy",
+            level_label="Equal High Cluster (6 touches)",
+            level_price=25460.0,
+            sweep_index=1,
+            reclaim_index=1,
+            trigger_index=1,
+            sweep_price=25483.0,
+            defended_level=25460.0,
+            trigger_price=25455.0,
+            invalidation_level=25500.0,
+            primary=True,
+            quality="tradable",
+        )
+
+        reason = self.test_engine.heuristic_engine._nifty_selling_gap_down_profit_recovery_block_reason(
+            context,
+            observation,
+            event,
+            option_type="PE",
+            native_room=80.0,
+            risk=40.0,
+        )
+
+        self.assertIsNotNone(reason)
+        self.assertIn("blocks shorts", reason or "")
+
+    def test_strong_bearish_selling_gap_down_allows_sell_side_reclaim_long(self) -> None:
+        candles = [
+            Candle(timestamp=datetime(2026, 2, 16, 9, 15), open=25423.6, high=25444.95, low=25372.7, close=25410.0, volume=5000),
+            Candle(timestamp=datetime(2026, 2, 16, 9, 16), open=25410.0, high=25436.0, low=25402.0, close=25428.0, volume=3600),
+            Candle(timestamp=datetime(2026, 2, 16, 9, 17), open=25428.0, high=25462.0, low=25420.0, close=25452.0, volume=3400),
+        ]
+        context = self._build_context(candles)
+        observation = self._build_observation(
+            atr=20.0,
+            vwap=25430.0,
+            opening_range_low=25372.7,
+            first_fifteen_low=25372.7,
+            session_low=25372.7,
+            prior_session_low=25444.3,
+            nifty_expected_behavior="strong_bearish_selling_gap_down_seller_profit_recovery",
+            nifty_risk_mode="fast_profit",
+        )
+        event = SweepEvent(
+            side="sell",
+            level_label="Previous-Day Last-2h Swing Low 15:17",
+            level_price=25444.3,
+            sweep_index=0,
+            reclaim_index=1,
+            trigger_index=2,
+            sweep_price=25372.7,
+            defended_level=25444.3,
+            trigger_price=25452.0,
+            invalidation_level=25372.7,
+            primary=True,
+            quality="tradable",
+        )
+
+        reason = self.test_engine.heuristic_engine._nifty_selling_gap_down_profit_recovery_block_reason(
+            context,
+            observation,
+            event,
+            option_type="CE",
+            native_room=80.0,
+            risk=40.0,
+        )
+
+        self.assertIsNone(reason)
+
+    def test_strong_bearish_selling_gap_down_rejects_tiny_target_room(self) -> None:
+        candles = [
+            Candle(timestamp=datetime(2026, 2, 16, 9, 15), open=25423.6, high=25444.95, low=25372.7, close=25410.0, volume=5000),
+            Candle(timestamp=datetime(2026, 2, 16, 10, 49), open=25523.0, high=25528.0, low=25512.0, close=25518.6, volume=2600),
+        ]
+        context = self._build_context(candles)
+        observation = self._build_observation(
+            atr=20.0,
+            opening_range_low=25372.7,
+            first_fifteen_low=25372.7,
+            session_low=25372.7,
+            prior_session_low=25444.3,
+            nifty_expected_behavior="strong_bearish_selling_gap_down_seller_profit_recovery",
+            nifty_risk_mode="fast_profit",
+        )
+        event = SweepEvent(
+            side="buy",
+            level_label="Equal High Cluster (12 touches)",
+            level_price=25523.8,
+            sweep_index=1,
+            reclaim_index=1,
+            trigger_index=1,
+            sweep_price=25528.0,
+            defended_level=25523.8,
+            trigger_price=25518.6,
+            invalidation_level=25558.6,
+            primary=True,
+            quality="tradable",
+        )
+
+        reason = self.test_engine.heuristic_engine._nifty_selling_gap_down_profit_recovery_block_reason(
+            context,
+            observation,
+            event,
+            option_type="PE",
+            native_room=6.64,
+            risk=40.0,
+        )
+
+        self.assertIsNotNone(reason)
+        self.assertIn("poor target room", reason or "")
+
+    def test_nifty_market_mechanics_profiles_extreme_selling_flat_recovery(self) -> None:
+        previous_day_candles = []
+        start = datetime(2026, 2, 19, 9, 15)
+        for index in range(255):
+            price = 25873.35 - index * 1.0
+            previous_day_candles.append(
+                Candle(
+                    timestamp=start + timedelta(minutes=index),
+                    open=price + 0.5,
+                    high=price + 3.0,
+                    low=price - 3.0,
+                    close=price - 0.5,
+                    volume=1000 + index,
+                )
+            )
+        for index in range(120):
+            price = 25618.0 - index * 1.7
+            previous_day_candles.append(
+                Candle(
+                    timestamp=start + timedelta(minutes=255 + index),
+                    open=price + 0.5,
+                    high=price + 3.0,
+                    low=price - 3.0,
+                    close=price - 0.5,
+                    volume=1300 + index,
+                )
+            )
+        session = [
+            Candle(timestamp=datetime(2026, 2, 20, 9, 15), open=25406.55, high=25466.55, low=25386.2, close=25462.4, volume=6500),
+            Candle(timestamp=datetime(2026, 2, 20, 9, 16), open=25462.4, high=25474.0, low=25442.0, close=25458.0, volume=3000),
+        ]
+        context = StrategyContext(
+            instrument=InstrumentState(),
+            current_candle=session[-1],
+            recent_candles=session,
+            session_candles=session,
+            previous_day_candles=previous_day_candles,
+            previous_day=PreviousDayLevels(
+                high=max(candle.high for candle in previous_day_candles),
+                low=min(candle.low for candle in previous_day_candles),
+                close=previous_day_candles[-1].close,
+            ),
+            liquidity_zones=[],
+            operator_zones=[],
+            signal_events=[],
+            market_structure="",
+            pending_setup=None,
+            active_trade=None,
+            recent_closed_trades=[],
+            rulebook_markdown="",
+        )
+
+        profile = self.test_engine.heuristic_engine.nifty_market_mechanics_profile(context, atr=20.0)
+
+        self.assertEqual(profile.previous_day_profile, "strong_bearish")
+        self.assertEqual(profile.last_2h_flow, "selling_rally")
+        self.assertEqual(profile.open_type, "flat")
+        self.assertEqual(profile.trade_bias, "neutral")
+        self.assertEqual(profile.risk_mode, "trap_first")
+        self.assertEqual(profile.expected_behavior, "strong_bearish_extreme_selling_flat_seller_exhaustion_recovery")
+
+        slight_gap_down_session = [
+            Candle(timestamp=datetime(2026, 2, 20, 9, 15), open=25395.0, high=25458.0, low=25380.0, close=25450.0, volume=6500),
+            Candle(timestamp=datetime(2026, 2, 20, 9, 16), open=25450.0, high=25464.0, low=25434.0, close=25456.0, volume=3000),
+        ]
+        slight_gap_down_context = context.model_copy(
+            update={
+                "current_candle": slight_gap_down_session[-1],
+                "recent_candles": slight_gap_down_session,
+                "session_candles": slight_gap_down_session,
+            }
+        )
+        slight_gap_down_profile = self.test_engine.heuristic_engine.nifty_market_mechanics_profile(
+            slight_gap_down_context,
+            atr=20.0,
+        )
+
+        self.assertEqual(slight_gap_down_profile.open_type, "gap_down")
+        self.assertEqual(slight_gap_down_profile.risk_mode, "trap_first")
+        self.assertEqual(
+            slight_gap_down_profile.expected_behavior,
+            "strong_bearish_extreme_selling_flat_seller_exhaustion_recovery",
+        )
+
+    def test_extreme_selling_flat_profile_blocks_first_candle_long_without_confirmation(self) -> None:
+        candles = [
+            Candle(timestamp=datetime(2026, 2, 20, 9, 15), open=25406.55, high=25466.55, low=25386.2, close=25462.4, volume=6500),
+        ]
+        context = self._build_context(candles)
+        observation = self._build_observation(
+            atr=20.0,
+            vwap=25435.0,
+            opening_range_low=25386.2,
+            first_fifteen_high=25485.85,
+            first_fifteen_low=25379.75,
+            session_low=25386.2,
+            prior_session_low=25388.75,
+            nifty_expected_behavior="strong_bearish_extreme_selling_flat_seller_exhaustion_recovery",
+            nifty_risk_mode="trap_first",
+        )
+        event = SweepEvent(
+            side="sell",
+            level_label="Previous Day Low",
+            level_price=25388.75,
+            sweep_index=0,
+            reclaim_index=0,
+            trigger_index=0,
+            sweep_price=25386.2,
+            defended_level=25388.75,
+            trigger_price=25462.4,
+            invalidation_level=25366.2,
+            primary=True,
+            quality="tradable",
+        )
+
+        reason = self.test_engine.heuristic_engine._nifty_extreme_selling_flat_recovery_block_reason(
+            context,
+            observation,
+            event,
+            option_type="CE",
+            native_room=90.0,
+            risk=40.0,
+        )
+
+        self.assertIsNotNone(reason)
+        self.assertIn("sell-side sweep/reclaim plus higher-low", reason or "")
+
+    def test_extreme_selling_flat_profile_allows_recovery_long_after_higher_low(self) -> None:
+        candles = [
+            Candle(timestamp=datetime(2026, 2, 20, 9, 15), open=25406.55, high=25466.55, low=25386.2, close=25462.4, volume=6500),
+            Candle(timestamp=datetime(2026, 2, 20, 9, 29), open=25410.0, high=25418.0, low=25379.75, close=25396.0, volume=2500),
+            Candle(timestamp=datetime(2026, 2, 20, 9, 35), open=25442.0, high=25496.0, low=25428.0, close=25490.0, volume=3300),
+        ]
+        context = self._build_context(candles)
+        observation = self._build_observation(
+            atr=20.0,
+            vwap=25455.0,
+            opening_range_low=25386.2,
+            first_fifteen_high=25485.85,
+            first_fifteen_low=25379.75,
+            session_low=25379.75,
+            prior_session_low=25388.75,
+            nifty_expected_behavior="strong_bearish_extreme_selling_flat_seller_exhaustion_recovery",
+            nifty_risk_mode="trap_first",
+        )
+        event = SweepEvent(
+            side="sell",
+            level_label="Previous Day Low",
+            level_price=25388.75,
+            sweep_index=1,
+            reclaim_index=2,
+            trigger_index=2,
+            sweep_price=25379.75,
+            defended_level=25388.75,
+            trigger_price=25490.0,
+            invalidation_level=25359.75,
+            primary=True,
+            quality="tradable",
+        )
+
+        reason = self.test_engine.heuristic_engine._nifty_extreme_selling_flat_recovery_block_reason(
+            context,
+            observation,
+            event,
+            option_type="CE",
+            native_room=100.0,
+            risk=40.0,
+        )
+
+        self.assertIsNone(reason)
+
+    def test_extreme_selling_flat_profile_blocks_short_near_low_without_first15_acceptance(self) -> None:
+        candles = [
+            Candle(timestamp=datetime(2026, 2, 20, 9, 15), open=25406.55, high=25466.55, low=25386.2, close=25462.4, volume=6500),
+            Candle(timestamp=datetime(2026, 2, 20, 9, 28), open=25420.0, high=25426.0, low=25395.0, close=25407.0, volume=2200),
+        ]
+        context = self._build_context(candles)
+        observation = self._build_observation(
+            atr=20.0,
+            opening_range_low=25386.2,
+            first_fifteen_high=25485.85,
+            first_fifteen_low=25379.75,
+            session_low=25386.2,
+            prior_session_low=25388.75,
+            nifty_expected_behavior="strong_bearish_extreme_selling_flat_seller_exhaustion_recovery",
+            nifty_risk_mode="trap_first",
+        )
+        event = SweepEvent(
+            side="buy",
+            level_label="Same-Day Swing High",
+            level_price=25420.0,
+            sweep_index=1,
+            reclaim_index=1,
+            trigger_index=1,
+            sweep_price=25426.0,
+            defended_level=25420.0,
+            trigger_price=25407.0,
+            invalidation_level=25447.0,
+            primary=True,
+            quality="tradable",
+        )
+
+        reason = self.test_engine.heuristic_engine._nifty_extreme_selling_flat_recovery_block_reason(
+            context,
+            observation,
+            event,
+            option_type="PE",
+            native_room=80.0,
+            risk=40.0,
+        )
+
+        self.assertIsNotNone(reason)
+        self.assertIn("blocks shorts", reason or "")
+
+    def test_extreme_selling_flat_profile_blocks_high_touch_equal_cluster_inside_range(self) -> None:
+        candles = [
+            Candle(timestamp=datetime(2026, 2, 20, 9, 15), open=25406.55, high=25466.55, low=25386.2, close=25462.4, volume=6500),
+            Candle(timestamp=datetime(2026, 2, 20, 14, 29), open=25592.0, high=25600.0, low=25586.0, close=25590.0, volume=1400),
+        ]
+        context = self._build_context(candles)
+        observation = self._build_observation(
+            atr=20.0,
+            first_fifteen_high=25485.85,
+            first_fifteen_low=25379.75,
+            session_high=25663.55,
+            session_low=25379.75,
+            nifty_expected_behavior="strong_bearish_extreme_selling_flat_seller_exhaustion_recovery",
+            nifty_risk_mode="trap_first",
+        )
+        event = SweepEvent(
+            side="buy",
+            level_label="Equal High Cluster (183 touches)",
+            level_price=25460.0,
+            sweep_index=1,
+            reclaim_index=1,
+            trigger_index=1,
+            sweep_price=25600.0,
+            defended_level=25460.0,
+            trigger_price=25590.0,
+            invalidation_level=25630.0,
+            primary=True,
+            quality="tradable",
+        )
+
+        reason = self.test_engine.heuristic_engine._nifty_extreme_selling_flat_recovery_block_reason(
+            context,
+            observation,
+            event,
+            option_type="PE",
+            native_room=90.0,
+            risk=40.0,
+        )
+
+        self.assertIsNotNone(reason)
+        self.assertIn("high-touch equal clusters", reason or "")
+
+    def test_extreme_selling_flat_profile_requires_round_acceptance(self) -> None:
+        candles = [
+            Candle(timestamp=datetime(2026, 2, 20, 9, 15), open=25406.55, high=25466.55, low=25386.2, close=25462.4, volume=6500),
+            Candle(timestamp=datetime(2026, 2, 20, 12, 26), open=25595.0, high=25606.0, low=25588.0, close=25602.0, volume=2100),
+            Candle(timestamp=datetime(2026, 2, 20, 12, 27), open=25602.0, high=25608.0, low=25590.0, close=25595.0, volume=2400),
+        ]
+        context = self._build_context(candles)
+        observation = self._build_observation(
+            atr=20.0,
+            opening_range_low=25386.2,
+            first_fifteen_high=25485.85,
+            first_fifteen_low=25379.75,
+            session_high=25608.0,
+            session_low=25379.75,
+            nifty_expected_behavior="strong_bearish_extreme_selling_flat_seller_exhaustion_recovery",
+            nifty_risk_mode="trap_first",
+        )
+        event = SweepEvent(
+            side="buy",
+            level_label="Round Number 25600",
+            level_price=25600.0,
+            sweep_index=2,
+            reclaim_index=2,
+            trigger_index=2,
+            sweep_price=25608.0,
+            defended_level=25600.0,
+            trigger_price=25595.0,
+            invalidation_level=25635.0,
+            primary=True,
+            quality="tradable",
+        )
+
+        reason = self.test_engine.heuristic_engine._nifty_extreme_selling_flat_recovery_block_reason(
+            context,
+            observation,
+            event,
+            option_type="PE",
+            native_room=90.0,
+            risk=40.0,
+        )
+
+        self.assertIsNotNone(reason)
+        self.assertIn("requires acceptance", reason or "")
+
+    def test_extreme_selling_flat_profile_moves_stop_to_cost_at_first_target(self) -> None:
+        candles = [
+            Candle(timestamp=datetime(2026, 2, 20, 9, 35), open=25442.0, high=25496.0, low=25428.0, close=25490.0, volume=3300),
+            Candle(timestamp=datetime(2026, 2, 20, 9, 36), open=25490.0, high=25518.0, low=25486.0, close=25510.0, volume=3500),
+        ]
+        trade = self._build_trade(
+            entry_time=candles[0].timestamp,
+            entry_spot_price=25490.0,
+            invalidation_level=25450.0,
+            setup_type="bullish_reclaim_watch",
+        )
+        trade.first_target_price = 25505.0
+        context = self._build_context(candles, active_trade=trade).model_copy(
+            update={
+                "nifty_heuristic_early_exit_enabled": True,
+                "nifty_trailing_stop_enabled": True,
+                "nifty_target_enabled": False,
+                "nifty_cost_sl_enabled": False,
+            }
+        )
+        observation = self._build_observation(
+            atr=20.0,
+            nifty_expected_behavior="strong_bearish_extreme_selling_flat_seller_exhaustion_recovery",
+            nifty_risk_mode="trap_first",
+        )
+
+        decision = self.test_engine.heuristic_engine.manage_active_trade(context, observation, current_trade_price=12.0)
+
+        self.assertEqual(decision.action, TradeAction.update_stop)
+        self.assertEqual(decision.invalidation_level, 25490.0)
+        self.assertIn("first target", decision.reason.lower())
+
+    def test_nifty_market_mechanics_profiles_neutral_buying_gap_down_trapped_buyers(self) -> None:
+        previous_day_candles = []
+        start = datetime(2026, 2, 23, 9, 15)
+        for index in range(255):
+            price = 25700.0 - index * 0.22
+            previous_day_candles.append(
+                Candle(
+                    timestamp=start + timedelta(minutes=index),
+                    open=price + 0.2,
+                    high=price + 30.0,
+                    low=price - 30.0,
+                    close=price - 0.2,
+                    volume=1000 + index,
+                )
+            )
+        for index in range(120):
+            price = 25644.0 + index * 0.50
+            previous_day_candles.append(
+                Candle(
+                    timestamp=start + timedelta(minutes=255 + index),
+                    open=price - 0.2,
+                    high=price + 3.0,
+                    low=price - 3.0,
+                    close=price + 0.2,
+                    volume=1300 + index,
+                )
+            )
+        session = [
+            Candle(timestamp=datetime(2026, 2, 24, 9, 15), open=25641.8, high=25641.8, low=25580.35, close=25596.25, volume=8195178),
+            Candle(timestamp=datetime(2026, 2, 24, 9, 16), open=25592.9, high=25613.25, low=25591.05, close=25607.6, volume=4222573),
+        ]
+        context = StrategyContext(
+            instrument=InstrumentState(),
+            current_candle=session[-1],
+            recent_candles=session,
+            session_candles=session,
+            previous_day_candles=previous_day_candles,
+            previous_day=PreviousDayLevels(
+                high=25771.45,
+                low=25609.35,
+                close=25704.0,
+            ),
+            liquidity_zones=[],
+            operator_zones=[],
+            signal_events=[],
+            market_structure="",
+            pending_setup=None,
+            active_trade=None,
+            recent_closed_trades=[],
+            rulebook_markdown="",
+        )
+
+        profile = self.test_engine.heuristic_engine.nifty_market_mechanics_profile(context, atr=20.0)
+
+        self.assertEqual(profile.previous_day_profile, "doji_or_neutral")
+        self.assertEqual(profile.last_2h_flow, "buying_rally")
+        self.assertEqual(profile.open_type, "gap_down")
+        self.assertEqual(profile.trade_bias, "prefer_short")
+        self.assertEqual(profile.risk_mode, "fast_profit")
+        self.assertEqual(profile.expected_behavior, "neutral_buying_gap_down_trapped_buyers_sell_drive")
+
+    def test_neutral_buying_gap_down_blocks_early_long_after_bearish_open(self) -> None:
+        candles = [
+            Candle(timestamp=datetime(2026, 2, 24, 9, 15), open=25641.8, high=25641.8, low=25580.35, close=25596.25, volume=8195178),
+            Candle(timestamp=datetime(2026, 2, 24, 9, 45), open=25500.3, high=25508.4, low=25497.35, close=25504.7, volume=1043510),
+        ]
+        context = self._build_context(candles)
+        observation = self._build_observation(
+            atr=20.0,
+            gap=-62.2,
+            vwap=25535.0,
+            first_fifteen_high=25641.8,
+            first_fifteen_low=25547.15,
+            opening_range_low=25547.15,
+            session_low=25482.85,
+            nifty_expected_behavior="neutral_buying_gap_down_trapped_buyers_sell_drive",
+            nifty_risk_mode="fast_profit",
+        )
+        event = SweepEvent(
+            side="sell",
+            level_label="Round Number 25500",
+            level_price=25500.0,
+            sweep_index=1,
+            reclaim_index=1,
+            trigger_index=1,
+            sweep_price=25497.35,
+            defended_level=25500.0,
+            trigger_price=25504.7,
+            invalidation_level=25464.7,
+            primary=True,
+            quality="tradable",
+        )
+
+        reason = self.test_engine.heuristic_engine._nifty_neutral_buying_gap_down_block_reason(
+            context,
+            observation,
+            event,
+            option_type="CE",
+            native_room=80.0,
+            risk=40.0,
+        )
+
+        self.assertIsNotNone(reason)
+        self.assertIn("blocks early longs", reason or "")
+
+    def test_neutral_buying_gap_down_allows_pullback_rejection_short(self) -> None:
+        candles = [
+            Candle(timestamp=datetime(2026, 2, 24, 9, 15), open=25641.8, high=25641.8, low=25580.35, close=25596.25, volume=8195178),
+            Candle(timestamp=datetime(2026, 2, 24, 10, 48), open=25486.3, high=25487.85, low=25472.35, close=25474.95, volume=1054028),
+            Candle(timestamp=datetime(2026, 2, 24, 12, 13), open=25455.45, high=25468.1, low=25454.55, close=25467.6, volume=809071),
+            Candle(timestamp=datetime(2026, 2, 24, 12, 14), open=25466.45, high=25470.55, low=25464.95, close=25466.05, volume=751486),
+        ]
+        context = self._build_context(candles)
+        observation = self._build_observation(
+            atr=20.0,
+            gap=-62.2,
+            first_fifteen_high=25641.8,
+            first_fifteen_low=25547.15,
+            opening_range_low=25547.15,
+            session_low=25454.55,
+            nifty_expected_behavior="neutral_buying_gap_down_trapped_buyers_sell_drive",
+            nifty_risk_mode="fast_profit",
+        )
+        event = SweepEvent(
+            side="buy",
+            level_label="Equal High Cluster (9 touches)",
+            level_price=25463.6,
+            sweep_index=2,
+            reclaim_index=3,
+            trigger_index=3,
+            sweep_price=25470.55,
+            defended_level=25463.6,
+            trigger_price=25466.05,
+            invalidation_level=25506.05,
+            primary=True,
+            quality="tradable",
+        )
+
+        reason = self.test_engine.heuristic_engine._nifty_neutral_buying_gap_down_block_reason(
+            context,
+            observation,
+            event,
+            option_type="PE",
+            native_room=90.0,
+            risk=40.0,
+        )
+
+        self.assertIsNone(reason)
+
+    def test_neutral_buying_gap_down_blocks_short_after_day_low_reclaim(self) -> None:
+        candles = [
+            Candle(timestamp=datetime(2026, 2, 24, 9, 15), open=25641.8, high=25641.8, low=25580.35, close=25596.25, volume=8195178),
+            Candle(timestamp=datetime(2026, 2, 24, 13, 36), open=25338.2, high=25339.6, low=25327.6, close=25328.6, volume=1382068),
+            Candle(timestamp=datetime(2026, 2, 24, 13, 37), open=25328.65, high=25349.6, low=25328.65, close=25349.6, volume=1526483),
+            Candle(timestamp=datetime(2026, 2, 24, 13, 38), open=25349.35, high=25365.05, low=25347.4, close=25365.0, volume=832032),
+            Candle(timestamp=datetime(2026, 2, 24, 13, 40), open=25377.65, high=25379.2, low=25369.6, close=25369.85, volume=956651),
+        ]
+        context = self._build_context(candles)
+        observation = self._build_observation(
+            atr=20.0,
+            gap=-62.2,
+            first_fifteen_high=25641.8,
+            first_fifteen_low=25547.15,
+            opening_range_low=25547.15,
+            session_low=25327.6,
+            nifty_expected_behavior="neutral_buying_gap_down_trapped_buyers_sell_drive",
+            nifty_risk_mode="fast_profit",
+        )
+        event = SweepEvent(
+            side="buy",
+            level_label="Round Number 25400 Premature Reversal Zone",
+            level_price=25400.0,
+            sweep_index=4,
+            reclaim_index=4,
+            trigger_index=4,
+            sweep_price=25379.2,
+            defended_level=25400.0,
+            trigger_price=25369.85,
+            invalidation_level=25409.85,
+            primary=True,
+            quality="tradable",
+        )
+
+        reason = self.test_engine.heuristic_engine._nifty_neutral_buying_gap_down_block_reason(
+            context,
+            observation,
+            event,
+            option_type="PE",
+            native_room=90.0,
+            risk=40.0,
+        )
+
+        self.assertIsNotNone(reason)
+        self.assertIn("day-low reclaim", reason or "")
+
+    def test_neutral_buying_gap_down_profile_moves_stop_to_cost_at_first_target(self) -> None:
+        candles = [
+            Candle(timestamp=datetime(2026, 2, 24, 12, 14), open=25466.45, high=25470.55, low=25464.95, close=25466.05, volume=751486),
+            Candle(timestamp=datetime(2026, 2, 24, 12, 15), open=25466.0, high=25467.0, low=25444.0, close=25445.0, volume=1330106),
+        ]
+        trade = self._build_trade(
+            entry_time=candles[0].timestamp,
+            entry_spot_price=25466.05,
+            invalidation_level=25506.05,
+            setup_type="bearish_rejection_watch",
+        )
+        trade.direction = "LONG_PUT"
+        trade.option_type = "PE"
+        trade.first_target_price = 25449.45
+        context = self._build_context(candles, active_trade=trade).model_copy(
+            update={
+                "nifty_heuristic_early_exit_enabled": True,
+                "nifty_trailing_stop_enabled": True,
+                "nifty_target_enabled": False,
+                "nifty_cost_sl_enabled": False,
+            }
+        )
+        observation = self._build_observation(
+            atr=20.0,
+            nifty_expected_behavior="neutral_buying_gap_down_trapped_buyers_sell_drive",
+            nifty_risk_mode="fast_profit",
+        )
+
+        decision = self.test_engine.heuristic_engine.manage_active_trade(context, observation, current_trade_price=12.0)
+
+        self.assertEqual(decision.action, TradeAction.update_stop)
+        self.assertEqual(decision.invalidation_level, 25466.05)
+        self.assertIn("first target", decision.reason.lower())
+
+    def test_nifty_market_mechanics_profiles_bullish_selling_gap_up_auction(self) -> None:
+        previous_day_candles = []
+        start = datetime(2026, 2, 17, 9, 15)
+        for index in range(255):
+            price = 25580.0 + index * 0.65
+            previous_day_candles.append(
+                Candle(
+                    timestamp=start + timedelta(minutes=index),
+                    open=price - 0.4,
+                    high=price + 2.5,
+                    low=price - 2.5,
+                    close=price + 0.4,
+                    volume=1000 + index,
+                )
+            )
+        for index in range(120):
+            price = 25750.0 - index * 0.35
+            previous_day_candles.append(
+                Candle(
+                    timestamp=start + timedelta(minutes=255 + index),
+                    open=price + 0.4,
+                    high=price + 2.5,
+                    low=price - 2.5,
+                    close=price - 0.4,
+                    volume=1400 + index,
+                )
+            )
+        session = [
+            Candle(timestamp=datetime(2026, 2, 18, 9, 15), open=25752.65, high=25759.75, low=25709.8, close=25713.6, volume=6000),
+            Candle(timestamp=datetime(2026, 2, 18, 9, 16), open=25711.1, high=25722.4, low=25705.4, close=25717.0, volume=3600),
+        ]
+        context = StrategyContext(
+            instrument=InstrumentState(),
+            current_candle=session[-1],
+            recent_candles=session,
+            session_candles=session,
+            previous_day_candles=previous_day_candles,
+            previous_day=PreviousDayLevels(
+                high=max(candle.high for candle in previous_day_candles),
+                low=min(candle.low for candle in previous_day_candles),
+                close=previous_day_candles[-1].close,
+            ),
+            liquidity_zones=[],
+            operator_zones=[],
+            signal_events=[],
+            market_structure="",
+            pending_setup=None,
+            active_trade=None,
+            recent_closed_trades=[],
+            rulebook_markdown="",
+        )
+
+        profile = self.test_engine.heuristic_engine.nifty_market_mechanics_profile(context, atr=20.0)
+
+        self.assertIn(profile.previous_day_profile, {"weak_bullish", "strong_bullish"})
+        self.assertEqual(profile.last_2h_flow, "selling_rally")
+        self.assertEqual(profile.open_type, "gap_up")
+        self.assertEqual(profile.trade_bias, "neutral")
+        self.assertEqual(profile.risk_mode, "fast_profit")
+        self.assertEqual(profile.expected_behavior, "bullish_selling_gap_up_auction_rejection_or_recovery")
+
+    def test_bullish_selling_gap_up_blocks_early_long_after_bearish_first_candle(self) -> None:
+        candles = [
+            Candle(timestamp=datetime(2026, 2, 18, 9, 15), open=25752.65, high=25759.75, low=25709.8, close=25713.6, volume=6000),
+            Candle(timestamp=datetime(2026, 2, 18, 9, 16), open=25711.1, high=25722.4, low=25705.4, close=25717.0, volume=3600),
+            Candle(timestamp=datetime(2026, 2, 18, 9, 17), open=25720.1, high=25731.0, low=25718.4, close=25731.0, volume=3000),
+        ]
+        context = self._build_context(candles)
+        observation = self._build_observation(
+            atr=20.0,
+            gap=36.65,
+            first_fifteen_high=25759.75,
+            first_fifteen_low=25697.75,
+            opening_range_low=25705.4,
+            session_low=25705.4,
+            nifty_expected_behavior="bullish_selling_gap_up_auction_rejection_or_recovery",
+            nifty_risk_mode="fast_profit",
+        )
+        event = SweepEvent(
+            side="sell",
+            level_label="Previous-Day Last-2h Swing Low 15:16",
+            level_price=25720.0,
+            sweep_index=1,
+            reclaim_index=2,
+            trigger_index=2,
+            sweep_price=25705.4,
+            defended_level=25720.0,
+            trigger_price=25731.0,
+            invalidation_level=25691.0,
+            primary=True,
+            quality="tradable",
+        )
+
+        reason = self.test_engine.heuristic_engine._nifty_bullish_selling_gap_up_block_reason(
+            context,
+            observation,
+            event,
+            option_type="CE",
+            native_room=80.0,
+            risk=40.0,
+        )
+
+        self.assertIsNotNone(reason)
+        self.assertIn("bearish first-candle rejection", reason or "")
+
+    def test_bullish_selling_gap_up_allows_first15_break_short_for_fast_profit(self) -> None:
+        candles = [
+            Candle(timestamp=datetime(2026, 2, 18, 9, 15), open=25752.65, high=25759.75, low=25709.8, close=25713.6, volume=6000),
+            Candle(timestamp=datetime(2026, 2, 18, 9, 54), open=25713.9, high=25714.1, low=25699.35, close=25702.35, volume=900),
+            Candle(timestamp=datetime(2026, 2, 18, 9, 55), open=25701.85, high=25702.0, low=25679.05, close=25679.9, volume=1100),
+            Candle(timestamp=datetime(2026, 2, 18, 9, 56), open=25680.3, high=25681.8, low=25672.65, close=25677.8, volume=1500),
+        ]
+        context = self._build_context(candles)
+        observation = self._build_observation(
+            atr=20.0,
+            gap=36.65,
+            session_phase="primary-trap-window",
+            first_fifteen_high=25759.75,
+            first_fifteen_low=25697.75,
+            opening_range_low=25705.4,
+            session_low=25672.65,
+            nifty_expected_behavior="bullish_selling_gap_up_auction_rejection_or_recovery",
+            nifty_risk_mode="fast_profit",
+        )
+        event = SweepEvent(
+            side="buy",
+            level_label="Pivot Point",
+            level_price=25690.0,
+            sweep_index=3,
+            reclaim_index=3,
+            trigger_index=3,
+            sweep_price=25681.8,
+            defended_level=25690.0,
+            trigger_price=25677.8,
+            invalidation_level=25717.8,
+            primary=True,
+            quality="tradable",
+        )
+
+        reason = self.test_engine.heuristic_engine._nifty_bullish_selling_gap_up_block_reason(
+            context,
+            observation,
+            event,
+            option_type="PE",
+            native_room=85.0,
+            risk=40.0,
+        )
+
+        self.assertIsNone(reason)
+
+    def test_bullish_selling_gap_up_blocks_high_touch_equal_cluster_inside_opening_auction(self) -> None:
+        candles = [
+            Candle(timestamp=datetime(2026, 2, 18, 9, 15), open=25752.65, high=25759.75, low=25709.8, close=25713.6, volume=6000),
+            Candle(timestamp=datetime(2026, 2, 18, 13, 54), open=25708.15, high=25709.95, low=25699.15, close=25700.0, volume=900),
+        ]
+        context = self._build_context(candles)
+        observation = self._build_observation(
+            atr=20.0,
+            gap=36.65,
+            session_phase="midday",
+            first_fifteen_high=25759.75,
+            first_fifteen_low=25697.75,
+            opening_range_low=25705.4,
+            session_low=25645.15,
+            nifty_expected_behavior="bullish_selling_gap_up_auction_rejection_or_recovery",
+            nifty_risk_mode="fast_profit",
+        )
+        event = SweepEvent(
+            side="buy",
+            level_label="Equal High Cluster (79 touches)",
+            level_price=25700.0,
+            sweep_index=1,
+            reclaim_index=1,
+            trigger_index=1,
+            sweep_price=25709.95,
+            defended_level=25700.0,
+            trigger_price=25700.0,
+            invalidation_level=25740.0,
+            primary=True,
+            quality="tradable",
+        )
+
+        reason = self.test_engine.heuristic_engine._nifty_bullish_selling_gap_up_block_reason(
+            context,
+            observation,
+            event,
+            option_type="PE",
+            native_room=85.0,
+            risk=40.0,
+        )
+
+        self.assertIsNotNone(reason)
+        self.assertIn("high-touch equal clusters", reason or "")
+
+    def test_bullish_selling_gap_up_profile_moves_stop_to_cost_at_first_target(self) -> None:
+        candles = [
+            Candle(timestamp=datetime(2026, 2, 18, 9, 56), open=25680.3, high=25681.8, low=25672.65, close=25677.8, volume=1500),
+            Candle(timestamp=datetime(2026, 2, 18, 9, 57), open=25678.0, high=25678.0, low=25664.65, close=25668.45, volume=1500),
+        ]
+        trade = self._build_trade(
+            entry_time=candles[0].timestamp,
+            entry_spot_price=25677.8,
+            invalidation_level=25717.8,
+            setup_type="bearish_rejection_watch",
+        )
+        trade.direction = "LONG_PUT"
+        trade.option_type = "PE"
+        trade.first_target_price = 25670.68
+        context = self._build_context(candles, active_trade=trade).model_copy(
+            update={
+                "nifty_heuristic_early_exit_enabled": True,
+                "nifty_trailing_stop_enabled": True,
+                "nifty_target_enabled": False,
+                "nifty_cost_sl_enabled": False,
+            }
+        )
+        observation = self._build_observation(
+            atr=20.0,
+            nifty_expected_behavior="bullish_selling_gap_up_auction_rejection_or_recovery",
+            nifty_risk_mode="fast_profit",
+        )
+
+        decision = self.test_engine.heuristic_engine.manage_active_trade(context, observation, current_trade_price=12.0)
+
+        self.assertEqual(decision.action, TradeAction.update_stop)
+        self.assertEqual(decision.invalidation_level, 25677.8)
+        self.assertIn("first target", decision.reason.lower())
+
     def test_nifty_liquidity_map_adds_previous_day_last_2h_swing_levels(self) -> None:
         previous_day_candles = []
         start = datetime(2026, 2, 16, 13, 0)
@@ -6187,6 +7362,72 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertEqual(decision.action, TradeAction.exit)
         self.assertEqual(decision.target_spot_price, 24030.0)
         self.assertIn("fast-profit", decision.reason)
+
+    def test_strong_bullish_gap_down_profile_moves_stop_to_cost_at_first_target(self) -> None:
+        candles = [
+            Candle(timestamp=datetime(2026, 5, 14, 9, 15), open=24000, high=24015, low=23990, close=24005, volume=1200),
+            Candle(timestamp=datetime(2026, 5, 14, 9, 16), open=24008, high=24034, low=24006, close=24028, volume=1400),
+        ]
+        trade = self._build_trade(
+            entry_time=candles[0].timestamp,
+            entry_spot_price=24005.0,
+            invalidation_level=23965.0,
+            setup_type="bullish_reclaim_watch",
+        )
+        trade.first_target_price = 24030.0
+        context = self._build_context(candles, active_trade=trade).model_copy(
+            update={
+                "nifty_heuristic_early_exit_enabled": True,
+                "nifty_trailing_stop_enabled": True,
+                "nifty_target_enabled": False,
+                "nifty_cost_sl_enabled": False,
+            }
+        )
+        observation = self._build_observation(
+            atr=20.0,
+            nifty_expected_behavior="strong_bullish_gap_down_sell_sweep_reclaim_long",
+            nifty_risk_mode="fast_profit",
+        )
+
+        decision = self.test_engine.heuristic_engine.manage_active_trade(context, observation, current_trade_price=12.0)
+
+        self.assertEqual(decision.action, TradeAction.update_stop)
+        self.assertEqual(decision.invalidation_level, 24005.0)
+        self.assertIn("first target", decision.reason.lower())
+
+    def test_strong_bearish_gap_down_profile_moves_stop_to_cost_at_first_target(self) -> None:
+        candles = [
+            Candle(timestamp=datetime(2026, 2, 6, 9, 55), open=25520, high=25524, low=25508, close=25512, volume=1200),
+            Candle(timestamp=datetime(2026, 2, 6, 9, 56), open=25512, high=25515, low=25488, close=25492, volume=1500),
+        ]
+        trade = self._build_trade(
+            entry_time=candles[0].timestamp,
+            entry_spot_price=25520.0,
+            invalidation_level=25560.0,
+            setup_type="bearish_rejection_watch",
+        )
+        trade.direction = "LONG_PUT"
+        trade.option_type = "PE"
+        trade.first_target_price = 25495.0
+        context = self._build_context(candles, active_trade=trade).model_copy(
+            update={
+                "nifty_heuristic_early_exit_enabled": True,
+                "nifty_trailing_stop_enabled": True,
+                "nifty_target_enabled": False,
+                "nifty_cost_sl_enabled": False,
+            }
+        )
+        observation = self._build_observation(
+            atr=20.0,
+            nifty_expected_behavior="strong_bearish_gap_down_trapped_buyers_sell_drive",
+            nifty_risk_mode="fast_profit",
+        )
+
+        decision = self.test_engine.heuristic_engine.manage_active_trade(context, observation, current_trade_price=12.0)
+
+        self.assertEqual(decision.action, TradeAction.update_stop)
+        self.assertEqual(decision.invalidation_level, 25520.0)
+        self.assertIn("first target", decision.reason.lower())
 
     def test_reversal_exit_can_enter_opposite_pending_setup_after_square_off(self) -> None:
         exit_candle = Candle(timestamp="2026-05-14T09:42:00", open=24105, high=24108, low=24062, close=24070, volume=1600)

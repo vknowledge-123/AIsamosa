@@ -376,8 +376,8 @@ function buildCredentialPayload(form) {
     nifty_heuristic_early_exit_enabled: form.elements.nifty_heuristic_early_exit_enabled?.checked ? "true" : "false",
     nifty_cost_sl_enabled: form.elements.nifty_cost_sl_enabled?.checked ? "true" : "false",
     nifty_cost_sl_points: (form.elements.nifty_cost_sl_points?.value || "35").trim(),
-    nifty_min_sl_points: (form.elements.nifty_min_sl_points?.value || "20").trim(),
-    nifty_max_sl_points: (form.elements.nifty_max_sl_points?.value || "40").trim(),
+    nifty_min_sl_points: (form.elements.nifty_min_sl_points?.value || "40").trim(),
+    nifty_max_sl_points: (form.elements.nifty_max_sl_points?.value || "60").trim(),
     nifty_target_enabled: form.elements.nifty_target_enabled?.checked ? "true" : "false",
     nifty_target_points: (form.elements.nifty_target_points?.value || "90").trim(),
     pyramiding_enabled: form.elements.pyramiding_enabled?.checked ? "true" : "false",
@@ -1093,8 +1093,8 @@ function renderState(state) {
     syncCredentialField(credentialSaveForm, "nifty_heuristic_early_exit_enabled", state.credentials.nifty_heuristic_early_exit_enabled !== false);
     syncCredentialField(credentialSaveForm, "nifty_cost_sl_enabled", state.credentials.nifty_cost_sl_enabled === true);
     syncCredentialField(credentialSaveForm, "nifty_cost_sl_points", String(state.credentials.nifty_cost_sl_points ?? 35));
-    syncCredentialField(credentialSaveForm, "nifty_min_sl_points", String(state.credentials.nifty_min_sl_points ?? 20));
-    syncCredentialField(credentialSaveForm, "nifty_max_sl_points", String(state.credentials.nifty_max_sl_points ?? 40));
+    syncCredentialField(credentialSaveForm, "nifty_min_sl_points", String(state.credentials.nifty_min_sl_points ?? 40));
+    syncCredentialField(credentialSaveForm, "nifty_max_sl_points", String(state.credentials.nifty_max_sl_points ?? 60));
     syncCredentialField(credentialSaveForm, "nifty_target_enabled", state.credentials.nifty_target_enabled === true);
     syncCredentialField(credentialSaveForm, "nifty_target_points", String(state.credentials.nifty_target_points ?? 90));
     syncCredentialField(credentialSaveForm, "pyramiding_enabled", state.credentials.pyramiding_enabled === true);
