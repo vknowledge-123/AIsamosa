@@ -44,6 +44,8 @@ class CredentialStore:
         nifty_heuristic_early_exit_enabled: bool | None = None,
         nifty_cost_sl_enabled: bool | None = None,
         nifty_cost_sl_points: float | None = None,
+        nifty_min_sl_points: float | None = None,
+        nifty_max_sl_points: float | None = None,
         nifty_target_enabled: bool | None = None,
         nifty_target_points: float | None = None,
         pyramiding_enabled: bool | None = None,
@@ -146,6 +148,16 @@ class CredentialStore:
             normalized = round(max(float(nifty_cost_sl_points), 0.0), 2)
             if payload.get("nifty_cost_sl_points") != normalized:
                 payload["nifty_cost_sl_points"] = normalized
+                updated = True
+        if nifty_min_sl_points is not None:
+            normalized = round(max(float(nifty_min_sl_points), 0.0), 2)
+            if payload.get("nifty_min_sl_points") != normalized:
+                payload["nifty_min_sl_points"] = normalized
+                updated = True
+        if nifty_max_sl_points is not None:
+            normalized = round(max(float(nifty_max_sl_points), 0.0), 2)
+            if payload.get("nifty_max_sl_points") != normalized:
+                payload["nifty_max_sl_points"] = normalized
                 updated = True
         if nifty_target_enabled is not None:
             normalized = bool(nifty_target_enabled)
@@ -328,6 +340,16 @@ class CredentialStore:
         payload = self.load()
         return self._coerce_float(payload.get("nifty_cost_sl_points"), float(settings.nifty_cost_sl_points), minimum=0.0)
 
+    def get_nifty_min_sl_points(self, settings: Settings) -> float:
+        payload = self.load()
+        return self._coerce_float(payload.get("nifty_min_sl_points"), float(settings.nifty_min_sl_points), minimum=0.0)
+
+    def get_nifty_max_sl_points(self, settings: Settings) -> float:
+        payload = self.load()
+        minimum = self.get_nifty_min_sl_points(settings)
+        value = self._coerce_float(payload.get("nifty_max_sl_points"), float(settings.nifty_max_sl_points), minimum=0.0)
+        return max(value, minimum)
+
     def get_nifty_target_enabled(self, settings: Settings) -> bool:
         payload = self.load()
         return self._coerce_bool(payload.get("nifty_target_enabled"), bool(settings.nifty_target_enabled))
@@ -399,6 +421,8 @@ class CredentialStore:
             nifty_heuristic_early_exit_enabled=self.get_nifty_heuristic_early_exit_enabled(settings),
             nifty_cost_sl_enabled=self.get_nifty_cost_sl_enabled(settings),
             nifty_cost_sl_points=self.get_nifty_cost_sl_points(settings),
+            nifty_min_sl_points=self.get_nifty_min_sl_points(settings),
+            nifty_max_sl_points=self.get_nifty_max_sl_points(settings),
             nifty_target_enabled=self.get_nifty_target_enabled(settings),
             nifty_target_points=self.get_nifty_target_points(settings),
             pyramiding_enabled=self.get_pyramiding_enabled(settings),

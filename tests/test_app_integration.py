@@ -249,6 +249,8 @@ class AppIntegrationTests(unittest.TestCase):
                 "stock_heuristic_early_exit_enabled": "false",
                 "nifty_trailing_stop_enabled": "false",
                 "nifty_heuristic_early_exit_enabled": "false",
+                "nifty_min_sl_points": "18",
+                "nifty_max_sl_points": "45",
                 "pyramiding_enabled": "true",
                 "intelligent_pyramiding_enabled": "true",
                 "nifty_option_trade_mode": "buying",
@@ -273,6 +275,8 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertFalse(summary["stock_heuristic_early_exit_enabled"])
         self.assertFalse(summary["nifty_trailing_stop_enabled"])
         self.assertFalse(summary["nifty_heuristic_early_exit_enabled"])
+        self.assertEqual(summary["nifty_min_sl_points"], 18.0)
+        self.assertEqual(summary["nifty_max_sl_points"], 45.0)
         self.assertTrue(summary["pyramiding_enabled"])
         self.assertTrue(summary["intelligent_pyramiding_enabled"])
         self.assertEqual(summary["nifty_option_trade_mode"], "buying")
@@ -3588,6 +3592,24 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertEqual(wide_long.invalidation_level, 24212.0)
         self.assertEqual(tight_short.invalidation_level, 24272.0)
         self.assertEqual(wide_short.invalidation_level, 24292.0)
+
+    def test_nifty_entry_invalidation_uses_saved_min_max_sl_points(self) -> None:
+        self.temp_store.save(nifty_min_sl_points=12.0, nifty_max_sl_points=30.0)
+        candle = Candle(timestamp="2026-05-14T11:27:00", open=24240, high=24258, low=24230, close=24252, volume=1000)
+
+        tight_long = self.test_engine._build_entry_trade(
+            candle,
+            TradeDecision(action=TradeAction.enter_call, option_type="CE", invalidation_level=24245, target_spot_price=24340),
+            source="replay",
+        )
+        wide_short = self.test_engine._build_entry_trade(
+            candle,
+            TradeDecision(action=TradeAction.enter_put, option_type="PE", invalidation_level=24320, target_spot_price=24120),
+            source="replay",
+        )
+
+        self.assertEqual(tight_long.invalidation_level, 24240.0)
+        self.assertEqual(wide_short.invalidation_level, 24282.0)
 
     def test_short_option_pnl_and_live_order_sides_are_reversed(self) -> None:
         candle = Candle(timestamp="2026-05-14T11:27:00", open=23510, high=23542, low=23502, close=23534, volume=1000)

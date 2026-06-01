@@ -313,6 +313,13 @@ class SimulationEngine:
     def _nifty_cost_sl_points(self) -> float:
         return self.credential_store.get_nifty_cost_sl_points(self.settings)
 
+    def _nifty_min_sl_points(self) -> float:
+        return self.credential_store.get_nifty_min_sl_points(self.settings)
+
+    def _nifty_max_sl_points(self) -> float:
+        min_points = self._nifty_min_sl_points()
+        return max(self.credential_store.get_nifty_max_sl_points(self.settings), min_points)
+
     def _nifty_target_enabled(self) -> bool:
         return self.credential_store.get_nifty_target_enabled(self.settings)
 
@@ -609,6 +616,8 @@ class SimulationEngine:
             nifty_heuristic_early_exit_enabled=self.credential_store.get_nifty_heuristic_early_exit_enabled(self.settings),
             nifty_cost_sl_enabled=self._nifty_cost_sl_enabled(),
             nifty_cost_sl_points=self._nifty_cost_sl_points(),
+            nifty_min_sl_points=self._nifty_min_sl_points(),
+            nifty_max_sl_points=self._nifty_max_sl_points(),
             nifty_target_enabled=self._nifty_target_enabled(),
             nifty_target_points=self._nifty_target_points(),
             pyramiding_enabled=self.credential_store.get_pyramiding_enabled(self.settings),
@@ -2761,6 +2770,8 @@ class SimulationEngine:
         nifty_heuristic_early_exit_enabled: bool | None = None,
         nifty_cost_sl_enabled: bool | None = None,
         nifty_cost_sl_points: float | None = None,
+        nifty_min_sl_points: float | None = None,
+        nifty_max_sl_points: float | None = None,
         nifty_target_enabled: bool | None = None,
         nifty_target_points: float | None = None,
         pyramiding_enabled: bool | None = None,
@@ -2787,6 +2798,8 @@ class SimulationEngine:
                 nifty_heuristic_early_exit_enabled=nifty_heuristic_early_exit_enabled,
                 nifty_cost_sl_enabled=nifty_cost_sl_enabled,
                 nifty_cost_sl_points=nifty_cost_sl_points,
+                nifty_min_sl_points=nifty_min_sl_points,
+                nifty_max_sl_points=nifty_max_sl_points,
                 nifty_target_enabled=nifty_target_enabled,
                 nifty_target_points=nifty_target_points,
                 pyramiding_enabled=pyramiding_enabled,
@@ -2962,6 +2975,8 @@ class SimulationEngine:
             nifty_heuristic_early_exit_enabled=self.credential_store.get_nifty_heuristic_early_exit_enabled(self.settings),
             nifty_cost_sl_enabled=self._nifty_cost_sl_enabled(),
             nifty_cost_sl_points=self._nifty_cost_sl_points(),
+            nifty_min_sl_points=self._nifty_min_sl_points(),
+            nifty_max_sl_points=self._nifty_max_sl_points(),
             nifty_target_enabled=self._nifty_target_enabled(),
             nifty_target_points=self._nifty_target_points(),
             pyramiding_enabled=self.credential_store.get_pyramiding_enabled(self.settings),
@@ -4589,23 +4604,25 @@ class SimulationEngine:
             return invalidation_level
         if invalidation_level is None or abs(entry_spot) < 10000:
             return invalidation_level
+        min_sl_points = max(self._nifty_min_sl_points(), 0.0)
+        max_sl_points = max(self._nifty_max_sl_points(), min_sl_points)
         bullish_signal = signal_option_type == "CE"
         if bullish_signal:
             distance = entry_spot - invalidation_level
             if distance <= 0:
-                return round(entry_spot - 20.0, 2)
-            if distance < 20.0:
-                return round(entry_spot - 20.0, 2)
-            if distance > 40.0:
-                return round(entry_spot - 40.0, 2)
+                return round(entry_spot - min_sl_points, 2)
+            if distance < min_sl_points:
+                return round(entry_spot - min_sl_points, 2)
+            if distance > max_sl_points:
+                return round(entry_spot - max_sl_points, 2)
             return round(invalidation_level, 2)
         distance = invalidation_level - entry_spot
         if distance <= 0:
-            return round(entry_spot + 20.0, 2)
-        if distance < 20.0:
-            return round(entry_spot + 20.0, 2)
-        if distance > 40.0:
-            return round(entry_spot + 40.0, 2)
+            return round(entry_spot + min_sl_points, 2)
+        if distance < min_sl_points:
+            return round(entry_spot + min_sl_points, 2)
+        if distance > max_sl_points:
+            return round(entry_spot + max_sl_points, 2)
         return round(invalidation_level, 2)
 
     def _update_trade_level_from_structure(self, trade: SimulatedTrade, current_spot: float, decision: TradeDecision) -> tuple[float | None, float | None]:
