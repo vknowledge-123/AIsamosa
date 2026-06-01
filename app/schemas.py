@@ -470,6 +470,8 @@ class DashboardState(BaseModel):
     signal_history: list[SignalEvent] = Field(default_factory=list)
     heuristic_trace: list[HeuristicTraceEntry] = Field(default_factory=list)
     heuristic_narrative: list[HeuristicNarrativeEvent] = Field(default_factory=list)
+    market_structure: str = ""
+    nifty_market_mechanics: dict[str, object] = Field(default_factory=dict)
     pending_setup: PendingSetup | None = None
     decision: TradeDecision | None = None
     active_trade: SimulatedTrade | None = None

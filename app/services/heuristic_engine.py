@@ -44,6 +44,40 @@ class SetupCandidate:
 
 
 @dataclass
+class NiftyMarketMechanicsProfile:
+    previous_day_profile: str = "neutral"
+    last_2h_flow: str = "range"
+    open_type: str = "unknown"
+    expected_behavior: str = "wait_for_structure"
+    trade_bias: str = "neutral"
+    risk_mode: str = "normal"
+    gap_points: float = 0.0
+    previous_day_body_points: float = 0.0
+    previous_day_range_points: float = 0.0
+    last_2h_move_points: float = 0.0
+    last_2h_high: float = 0.0
+    last_2h_low: float = 0.0
+    summary: str = "Nifty market mechanics unavailable."
+
+    def as_dict(self) -> dict:
+        return {
+            "previous_day_profile": self.previous_day_profile,
+            "last_2h_flow": self.last_2h_flow,
+            "open_type": self.open_type,
+            "expected_behavior": self.expected_behavior,
+            "trade_bias": self.trade_bias,
+            "risk_mode": self.risk_mode,
+            "gap_points": round(self.gap_points, 2),
+            "previous_day_body_points": round(self.previous_day_body_points, 2),
+            "previous_day_range_points": round(self.previous_day_range_points, 2),
+            "last_2h_move_points": round(self.last_2h_move_points, 2),
+            "last_2h_high": round(self.last_2h_high, 2),
+            "last_2h_low": round(self.last_2h_low, 2),
+            "summary": self.summary,
+        }
+
+
+@dataclass
 class Observation:
     session_phase: str
     day_type: str
@@ -93,6 +127,13 @@ class Observation:
     layered_bullish_trap_score: float = 0.0
     layered_bearish_trap_score: float = 0.0
     liquidity_ledger_summary: str = ""
+    nifty_previous_day_profile: str = "neutral"
+    nifty_last_2h_flow: str = "range"
+    nifty_open_type: str = "unknown"
+    nifty_expected_behavior: str = "wait_for_structure"
+    nifty_trade_bias: str = "neutral"
+    nifty_risk_mode: str = "normal"
+    nifty_market_mechanics_summary: str = ""
 
 
 class HeuristicDecisionEngine:
@@ -225,6 +266,7 @@ class HeuristicDecisionEngine:
         stop_availability = self.assess_stop_availability(buy_sweeps, sell_sweeps)
         higher_timeframe_context = self.higher_timeframe_context(context, atr)
         nifty_mid_noise = self.is_nifty_mid_noise(context, atr, overlap_ratio, mapped_buy_liquidity, mapped_sell_liquidity)
+        nifty_mechanics = self.nifty_market_mechanics_profile(context, atr)
         stock_dow_bias, stock_dow_state = self._classify_stock_dow_structure(session, atr)
         stock_nifty_bias, stock_nifty_state = self._classify_stock_nifty_context(context, atr)
         layered_bullish_trap_score, layered_bearish_trap_score, liquidity_ledger_summary = self._liquidity_ledger_scores(context)
@@ -278,6 +320,131 @@ class HeuristicDecisionEngine:
             layered_bullish_trap_score=layered_bullish_trap_score,
             layered_bearish_trap_score=layered_bearish_trap_score,
             liquidity_ledger_summary=liquidity_ledger_summary,
+            nifty_previous_day_profile=nifty_mechanics.previous_day_profile,
+            nifty_last_2h_flow=nifty_mechanics.last_2h_flow,
+            nifty_open_type=nifty_mechanics.open_type,
+            nifty_expected_behavior=nifty_mechanics.expected_behavior,
+            nifty_trade_bias=nifty_mechanics.trade_bias,
+            nifty_risk_mode=nifty_mechanics.risk_mode,
+            nifty_market_mechanics_summary=nifty_mechanics.summary,
+        )
+
+    def nifty_market_mechanics_profile(
+        self,
+        context: StrategyContext,
+        atr: float | None = None,
+    ) -> NiftyMarketMechanicsProfile:
+        if not self._is_nifty_mode(context) or not context.session_candles or not context.previous_day_candles:
+            return NiftyMarketMechanicsProfile()
+        session = context.session_candles
+        previous_candles = context.previous_day_candles
+        previous = context.previous_day
+        ranges = [max(candle.high - candle.low, 0.01) for candle in session[-20:]] or [1.0]
+        session_atr = max(atr if atr is not None else median(ranges), 0.01)
+
+        day_open = previous_candles[0].open
+        day_close = previous_candles[-1].close
+        day_high = max(candle.high for candle in previous_candles)
+        day_low = min(candle.low for candle in previous_candles)
+        day_range = max(day_high - day_low, 0.01)
+        day_body = day_close - day_open
+        day_body_ratio = abs(day_body) / day_range
+        if day_body_ratio < 0.18:
+            previous_day_profile = "doji_or_neutral"
+        elif day_body > 0:
+            previous_day_profile = "strong_bullish" if day_body_ratio >= 0.52 else "weak_bullish"
+        else:
+            previous_day_profile = "strong_bearish" if day_body_ratio >= 0.52 else "weak_bearish"
+
+        last_2h = previous_candles[-120:] if len(previous_candles) >= 120 else previous_candles
+        last_2h_open = last_2h[0].open
+        last_2h_close = last_2h[-1].close
+        last_2h_high = max(candle.high for candle in last_2h)
+        last_2h_low = min(candle.low for candle in last_2h)
+        last_2h_range = max(last_2h_high - last_2h_low, 0.01)
+        last_2h_move = last_2h_close - last_2h_open
+        previous_ranges = [max(candle.high - candle.low, 0.01) for candle in last_2h] or [session_atr]
+        previous_atr = max(median(previous_ranges), 0.01)
+        if abs(last_2h_move) < max(previous_atr * 1.5, last_2h_range * 0.20):
+            last_2h_flow = "range"
+        elif last_2h_move > 0:
+            last_2h_flow = "buying_rally"
+        else:
+            last_2h_flow = "selling_rally"
+
+        gap = session[0].open - (previous.close or day_close)
+        gap_abs = abs(gap)
+        if gap_abs >= max(session_atr * 2.5, 80.0):
+            open_type = "large_gap_up" if gap > 0 else "large_gap_down"
+        elif gap_abs <= max(session_atr * 0.45, 15.0):
+            open_type = "flat"
+        elif gap > 0:
+            open_type = "gap_up"
+        else:
+            open_type = "gap_down"
+
+        base_bias = "neutral"
+        if previous_day_profile == "strong_bullish":
+            base_bias = "prefer_long"
+        elif previous_day_profile == "strong_bearish":
+            base_bias = "prefer_short"
+
+        expected_behavior = "wait_for_structure"
+        trade_bias = base_bias
+        risk_mode = "normal"
+        if "large_gap" in open_type:
+            risk_mode = "wait_for_acceptance"
+            expected_behavior = "large_gap_reset_wait_for_new_structure"
+            trade_bias = "neutral"
+        elif last_2h_flow == "selling_rally":
+            if open_type == "flat":
+                expected_behavior = "trap_sellers_first_then_short"
+                trade_bias = "prefer_short"
+                risk_mode = "trap_first"
+            elif open_type == "gap_up":
+                expected_behavior = "sellers_already_trapped_watch_rejection"
+                trade_bias = "prefer_short" if previous_day_profile != "strong_bullish" else "neutral"
+                risk_mode = "fast_profit"
+            elif open_type == "gap_down":
+                expected_behavior = "sellers_in_profit_retrace_then_short"
+                trade_bias = "prefer_short"
+                risk_mode = "fast_profit"
+        elif last_2h_flow == "buying_rally":
+            if open_type == "flat":
+                expected_behavior = "trap_buyers_first_then_long"
+                trade_bias = "prefer_long"
+                risk_mode = "trap_first"
+            elif open_type == "gap_down":
+                expected_behavior = "buyers_trapped_watch_recovery"
+                trade_bias = "prefer_long" if previous_day_profile != "strong_bearish" else "neutral"
+                risk_mode = "fast_profit"
+            elif open_type == "gap_up":
+                expected_behavior = "buyers_in_profit_pullback_then_long"
+                trade_bias = "prefer_long"
+                risk_mode = "fast_profit"
+        elif previous_day_profile in {"weak_bullish", "weak_bearish", "doji_or_neutral"}:
+            risk_mode = "range_farming_risk"
+            expected_behavior = "neutral_prior_day_trade_only_clean_liquidity"
+
+        summary = (
+            f"Previous day {previous_day_profile}; last 2h {last_2h_flow} "
+            f"({last_2h_move:+.2f} pts, high {last_2h_high:.2f}, low {last_2h_low:.2f}); "
+            f"today open {open_type} ({gap:+.2f} pts). Bias {trade_bias}, expected {expected_behavior}, risk {risk_mode}."
+        )
+        return NiftyMarketMechanicsProfile(
+            previous_day_profile=previous_day_profile,
+            last_2h_flow=last_2h_flow,
+            open_type=open_type,
+            expected_behavior=expected_behavior,
+            trade_bias=trade_bias,
+            risk_mode=risk_mode,
+            gap_points=gap,
+            previous_day_body_points=day_body,
+            previous_day_range_points=day_range,
+            last_2h_move_points=last_2h_move,
+            last_2h_high=last_2h_high,
+            last_2h_low=last_2h_low,
+            summary=summary,
         )
 
     def _liquidity_ledger_scores(self, context: StrategyContext) -> tuple[float, float, str]:
@@ -332,6 +499,68 @@ class HeuristicDecisionEngine:
                 ["R50", "R77", "R93", "R94"],
             )
         return adjustment, None, []
+
+    def _nifty_market_mechanics_score_adjustment(
+        self,
+        context: StrategyContext,
+        observation: Observation,
+        event: SweepEvent,
+        *,
+        option_type: str,
+    ) -> tuple[float, str | None, list[str]]:
+        if not self._is_nifty_mode(context):
+            return 0.0, None, []
+        adjustment = 0.0
+        notes: list[str] = []
+        rules = ["R15", "R16", "R77", "R78", "R79", "R81", "R85"]
+        bullish = option_type == "CE"
+        label = event.level_label.lower()
+        bias = observation.nifty_trade_bias
+        if bias == "prefer_long":
+            adjustment += 6.0 if bullish else -7.0
+        elif bias == "prefer_short":
+            adjustment += 6.0 if not bullish else -7.0
+
+        if "previous-day last-2h swing high" in label and not bullish:
+            adjustment += 9.0
+            notes.append("Setup is using previous-day last-2h seller-stop liquidity, matching the market-mechanics map.")
+        if "previous-day last-2h swing low" in label and bullish:
+            adjustment += 9.0
+            notes.append("Setup is using previous-day last-2h buyer-stop liquidity, matching the market-mechanics map.")
+
+        expected = observation.nifty_expected_behavior
+        if expected in {"trap_sellers_first_then_short", "sellers_already_trapped_watch_rejection"}:
+            if not bullish:
+                adjustment += 4.0
+            elif not self._nifty_priority_reclaim_label(event.level_label):
+                adjustment -= 6.0
+        elif expected == "sellers_in_profit_retrace_then_short":
+            adjustment += 5.0 if not bullish else -5.0
+        elif expected in {"trap_buyers_first_then_long", "buyers_trapped_watch_recovery", "buyers_in_profit_pullback_then_long"}:
+            if bullish:
+                adjustment += 4.0
+            elif not self._nifty_priority_reclaim_label(event.level_label):
+                adjustment -= 6.0
+
+        if observation.nifty_risk_mode == "wait_for_acceptance":
+            accepted = (
+                context.current_candle.close > observation.first_fifteen_high
+                if bullish
+                else context.current_candle.close < observation.first_fifteen_low
+            )
+            if not accepted:
+                adjustment -= 10.0
+                notes.append("Large-gap mechanics require opening-range acceptance before trusting this side.")
+                rules.extend(["R17", "R64", "R80"])
+        elif observation.nifty_risk_mode == "range_farming_risk":
+            adjustment -= 5.0
+            notes.append("Previous-day and last-2h mechanics are neutral, so Nifty treats this as range-farming risk unless liquidity is very clean.")
+            rules.extend(["R61", "R62", "R91"])
+
+        if adjustment:
+            side_text = "long" if bullish else "short"
+            notes.insert(0, f"Nifty market mechanics profile favors {bias} / {expected}; this {side_text} setup is adjusted by {adjustment:+.1f}.")
+        return adjustment, " ".join(notes) if notes else None, rules if adjustment else []
 
     def classify_session_phase(self, candle_count: int) -> str:
         if candle_count <= 5:
@@ -703,6 +932,26 @@ class HeuristicDecisionEngine:
                 tolerance=prev_tolerance,
             )
 
+        if index_round_numbers:
+            previous_last_2h = previous_day_candles[-120:] if len(previous_day_candles) >= 120 else previous_day_candles
+            last_2h_swing_highs, last_2h_swing_lows = self._detect_session_swings(previous_last_2h, previous_day_atr)
+            for label, price in last_2h_swing_highs[-4:]:
+                self._append_liquidity_level(
+                    buy_levels,
+                    label=f"Previous-Day Last-2h Swing High {label}",
+                    price=price,
+                    primary=True,
+                    tolerance=prev_tolerance,
+                )
+            for label, price in last_2h_swing_lows[-4:]:
+                self._append_liquidity_level(
+                    sell_levels,
+                    label=f"Previous-Day Last-2h Swing Low {label}",
+                    price=price,
+                    primary=True,
+                    tolerance=prev_tolerance,
+                )
+
         prev_high_clusters = sorted(
             self._cluster_price_levels([candle.high for candle in previous_day_candles], prev_tolerance),
             key=lambda item: (item[1], item[0]),
@@ -818,6 +1067,8 @@ class HeuristicDecisionEngine:
             "same-day swing low",
             "previous-day swing high",
             "previous-day swing low",
+            "previous-day last-2h swing high",
+            "previous-day last-2h swing low",
             "previous-day resistance shelf",
             "previous-day support shelf",
             "pivot point",
@@ -1170,6 +1421,8 @@ class HeuristicDecisionEngine:
             "session low",
             "previous day high",
             "previous day low",
+            "previous-day last-2h swing high",
+            "previous-day last-2h swing low",
             "previous-day swing high",
             "previous-day swing low",
             "previous-day resistance shelf",
@@ -2755,6 +3008,8 @@ class HeuristicDecisionEngine:
                 "same-day swing low",
                 "previous-day swing high",
                 "previous-day swing low",
+                "previous-day last-2h swing high",
+                "previous-day last-2h swing low",
                 "previous-day resistance shelf",
                 "previous-day support shelf",
                 "pivot point",
@@ -2927,6 +3182,8 @@ class HeuristicDecisionEngine:
             "pivot s2",
             "previous-day swing high",
             "previous-day swing low",
+            "previous-day last-2h swing high",
+            "previous-day last-2h swing low",
             "previous-day resistance shelf",
             "previous-day support shelf",
         )
@@ -2962,6 +3219,7 @@ class HeuristicDecisionEngine:
             "pivot r1",
             "pivot r2",
             "previous-day swing high",
+            "previous-day last-2h swing high",
             "previous-day resistance shelf",
         )
         return lowered.startswith(upper_reference_families)
@@ -3863,6 +4121,16 @@ class HeuristicDecisionEngine:
         if ledger_note:
             notes.append(ledger_note)
             rule_ids.extend(ledger_rules)
+        mechanics_adjustment, mechanics_note, mechanics_rules = self._nifty_market_mechanics_score_adjustment(
+            context,
+            observation,
+            event,
+            option_type=option_type,
+        )
+        score += mechanics_adjustment
+        if mechanics_note:
+            notes.append(mechanics_note)
+            rule_ids.extend(mechanics_rules)
         slight_gap = abs(observation.gap) <= max(observation.atr * 0.45, 0.4)
         if observation.previous_day_bias.startswith("bullish") and slight_gap and observation.gap >= 0 and option_type == "CE" and observation.session_phase in {"opening-map", "primary-trap-window"}:
             score += 5
@@ -4292,6 +4560,13 @@ class HeuristicDecisionEngine:
             (stock_mode_trade and context.stock_trailing_stop_enabled)
             or (nifty_mode_trade and context.nifty_trailing_stop_enabled)
         )
+        stop_is_protected_at_cost = (
+            trade.invalidation_level is not None
+            and (
+                (bullish_trade and trade.invalidation_level >= trade.entry_spot_price)
+                or ((not bullish_trade) and trade.invalidation_level <= trade.entry_spot_price)
+            )
+        )
         bars_since_entry = sum(1 for candle in context.session_candles if candle.timestamp >= trade.entry_time)
         setup_is_previous_close = trade.setup_type in {"previous_close_reclaim_long", "previous_close_rejection_short"}
         regime_deteriorated = observation.participation_state in {"fair_value_churn", "post_trend_balance"} and (
@@ -4435,6 +4710,34 @@ class HeuristicDecisionEngine:
                 pending_setup_notes=self._candidate_reason(opposite_reversal, observation, enter_now=False),
                 pending_setup_option_type=opposite_reversal.option_type,
                 rule_ids_used=opposite_reversal.rule_ids + ["R45", "R86"],
+                )
+
+        if (
+            nifty_mode_trade
+            and heuristic_early_exit_enabled
+            and trade.first_target_price is not None
+            and observation.nifty_risk_mode in {"fast_profit", "trap_first", "range_farming_risk"}
+            and (not trailing_stop_enabled or stop_is_protected_at_cost)
+        ):
+            first_target_tagged = (
+                context.current_candle.high >= trade.first_target_price
+                if bullish_trade
+                else context.current_candle.low <= trade.first_target_price
+            )
+            if first_target_tagged:
+                return TradeDecision(
+                    action=TradeAction.exit,
+                    confidence=0.88,
+                    reason=(
+                        "Nifty market mechanics are in fast-profit/range-farming mode, so book at the first target "
+                        "instead of waiting for a large trend target."
+                    ),
+                    decision_source="heuristic",
+                    option_type=trade.option_type,
+                    target_spot_price=round(trade.first_target_price, 2),
+                    market_state=observation.day_type,
+                    setup_type=trade.setup_type,
+                    rule_ids_used=["R41", "R42", "R44", "R46", "R60", "R74", "R91", "R99"],
                 )
 
         if (
@@ -4797,10 +5100,15 @@ class HeuristicDecisionEngine:
     def _candidate_reason(self, candidate: SetupCandidate, observation: Observation, *, enter_now: bool) -> str:
         action_phrase = "Entry is allowed now" if enter_now else "Setup should stay armed"
         joined_notes = " ".join(candidate.notes[:4])
+        mechanics = (
+            f" Mechanics: {observation.nifty_market_mechanics_summary}"
+            if observation.nifty_market_mechanics_summary
+            else ""
+        )
         return (
             f"{action_phrase} because {observation.day_type} conditions show a {candidate.setup_type} with "
             f"score {candidate.score:.1f}/100. Regime reads {observation.range_state} / "
-            f"{observation.participation_state}. {joined_notes}"
+            f"{observation.participation_state}. {joined_notes}{mechanics}"
         )
 
     def _append_candle_ref(

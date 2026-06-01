@@ -5923,6 +5923,160 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertGreaterEqual(decision.setup_score or 0, 80)
         self.assertIn("Opening Range Low", decision.reason)
 
+    def test_nifty_market_mechanics_profiles_previous_day_last_2h_context(self) -> None:
+        previous_day_candles = []
+        start = datetime(2026, 2, 16, 13, 0)
+        for index in range(150):
+            price = 24280.0 - index * 1.7
+            previous_day_candles.append(
+                Candle(
+                    timestamp=start + timedelta(minutes=index),
+                    open=price + 0.8,
+                    high=price + 3.0,
+                    low=price - 3.0,
+                    close=price - 0.8,
+                    volume=1000 + index,
+                )
+            )
+        session = [
+            Candle(timestamp=datetime(2026, 2, 17, 9, 15), open=24027.0, high=24042.0, low=24018.0, close=24031.0, volume=2000),
+            Candle(timestamp=datetime(2026, 2, 17, 9, 16), open=24031.0, high=24036.0, low=24020.0, close=24024.0, volume=1800),
+        ]
+        context = StrategyContext(
+            instrument=InstrumentState(),
+            current_candle=session[-1],
+            recent_candles=session,
+            session_candles=session,
+            previous_day_candles=previous_day_candles,
+            previous_day=PreviousDayLevels(
+                high=max(candle.high for candle in previous_day_candles),
+                low=min(candle.low for candle in previous_day_candles),
+                close=previous_day_candles[-1].close,
+            ),
+            liquidity_zones=[],
+            operator_zones=[],
+            signal_events=[],
+            market_structure="",
+            pending_setup=None,
+            active_trade=None,
+            recent_closed_trades=[],
+            rulebook_markdown="",
+        )
+
+        profile = self.test_engine.heuristic_engine.nifty_market_mechanics_profile(context, atr=20.0)
+
+        self.assertEqual(profile.previous_day_profile, "strong_bearish")
+        self.assertEqual(profile.last_2h_flow, "selling_rally")
+        self.assertEqual(profile.open_type, "flat")
+        self.assertEqual(profile.trade_bias, "prefer_short")
+        self.assertEqual(profile.risk_mode, "trap_first")
+        self.assertIn("last 2h selling_rally", profile.summary)
+
+    def test_nifty_liquidity_map_adds_previous_day_last_2h_swing_levels(self) -> None:
+        previous_day_candles = []
+        start = datetime(2026, 2, 16, 13, 0)
+        for index in range(120):
+            base = 24220.0 - index * 0.4
+            high_spike = 18.0 if index in {20, 62, 98} else 2.0
+            low_spike = 18.0 if index in {35, 78, 108} else 2.0
+            previous_day_candles.append(
+                Candle(
+                    timestamp=start + timedelta(minutes=index),
+                    open=base + 0.5,
+                    high=base + high_spike,
+                    low=base - low_spike,
+                    close=base - 0.5,
+                    volume=1000,
+                )
+            )
+        session = [
+            Candle(timestamp=datetime(2026, 2, 17, 9, 15), open=24180, high=24188, low=24170, close=24182, volume=2000),
+            Candle(timestamp=datetime(2026, 2, 17, 9, 16), open=24182, high=24186, low=24174, close=24179, volume=1800),
+            Candle(timestamp=datetime(2026, 2, 17, 9, 17), open=24179, high=24184, low=24176, close=24181, volume=1700),
+        ]
+
+        buy_levels, sell_levels = self.test_engine.heuristic_engine.build_liquidity_maps(
+            session,
+            previous_day_candles,
+            PreviousDayLevels(
+                high=max(candle.high for candle in previous_day_candles),
+                low=min(candle.low for candle in previous_day_candles),
+                close=previous_day_candles[-1].close,
+            ),
+            current_close=session[-1].close,
+            atr=18.0,
+            index_round_numbers=True,
+        )
+
+        self.assertTrue(any(label.startswith("Previous-Day Last-2h Swing High") for label, _, _ in buy_levels))
+        self.assertTrue(any(label.startswith("Previous-Day Last-2h Swing Low") for label, _, _ in sell_levels))
+
+    def test_nifty_market_mechanics_adjustment_boosts_matching_last_2h_liquidity(self) -> None:
+        context = self._build_context(
+            [
+                Candle(timestamp=datetime(2026, 2, 17, 9, 15), open=24180, high=24195, low=24170, close=24188, volume=2000),
+                Candle(timestamp=datetime(2026, 2, 17, 9, 16), open=24188, high=24202, low=24184, close=24186, volume=1800),
+            ]
+        )
+        observation = self._build_observation(
+            nifty_trade_bias="prefer_short",
+            nifty_expected_behavior="trap_sellers_first_then_short",
+            nifty_risk_mode="trap_first",
+        )
+        event = SweepEvent(
+            side="buy",
+            level_label="Previous-Day Last-2h Swing High 14:42",
+            level_price=24200.0,
+            sweep_index=1,
+            reclaim_index=1,
+            trigger_index=1,
+            sweep_price=24204.0,
+            defended_level=24200.0,
+            trigger_price=24195.0,
+            invalidation_level=24220.0,
+            primary=True,
+            quality="tradable",
+        )
+
+        adjustment, note, rules = self.test_engine.heuristic_engine._nifty_market_mechanics_score_adjustment(
+            context,
+            observation,
+            event,
+            option_type="PE",
+        )
+
+        self.assertGreaterEqual(adjustment, 15.0)
+        self.assertIn("last-2h seller-stop liquidity", note or "")
+        self.assertIn("R81", rules)
+
+    def test_nifty_market_mechanics_fast_profit_exits_at_first_target_after_stop_protection(self) -> None:
+        candles = [
+            Candle(timestamp=datetime(2026, 5, 14, 9, 15), open=24000, high=24015, low=23990, close=24005, volume=1200),
+            Candle(timestamp=datetime(2026, 5, 14, 9, 16), open=24008, high=24034, low=24006, close=24028, volume=1400),
+        ]
+        trade = self._build_trade(
+            entry_time=candles[0].timestamp,
+            entry_spot_price=24005.0,
+            invalidation_level=24005.0,
+            setup_type="bullish_reclaim_watch",
+        )
+        trade.first_target_price = 24030.0
+        context = self._build_context(candles, active_trade=trade).model_copy(
+            update={
+                "nifty_heuristic_early_exit_enabled": True,
+                "nifty_trailing_stop_enabled": True,
+                "nifty_target_enabled": False,
+                "nifty_cost_sl_enabled": False,
+            }
+        )
+        observation = self._build_observation(atr=20.0, nifty_risk_mode="fast_profit")
+
+        decision = self.test_engine.heuristic_engine.manage_active_trade(context, observation, current_trade_price=12.0)
+
+        self.assertEqual(decision.action, TradeAction.exit)
+        self.assertEqual(decision.target_spot_price, 24030.0)
+        self.assertIn("fast-profit", decision.reason)
+
     def test_reversal_exit_can_enter_opposite_pending_setup_after_square_off(self) -> None:
         exit_candle = Candle(timestamp="2026-05-14T09:42:00", open=24105, high=24108, low=24062, close=24070, volume=1600)
         old_trade = self._build_trade(

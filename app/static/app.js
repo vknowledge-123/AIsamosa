@@ -82,6 +82,11 @@ const elements = {
   decisionOptionLabel: document.getElementById("decisionOptionLabel"),
   decisionOption: document.getElementById("decisionOption"),
   decisionReason: document.getElementById("decisionReason"),
+  niftyMechanicsBias: document.getElementById("niftyMechanicsBias"),
+  niftyMechanicsRisk: document.getElementById("niftyMechanicsRisk"),
+  niftyMechanicsSummary: document.getElementById("niftyMechanicsSummary"),
+  niftyMechanicsPrevious: document.getElementById("niftyMechanicsPrevious"),
+  marketStructureView: document.getElementById("marketStructureView"),
   pendingSetup: document.getElementById("pendingSetup"),
   stockSearchResults: document.getElementById("stockSearchResults"),
   stockWatchlist: document.getElementById("stockWatchlist"),
@@ -944,6 +949,16 @@ function renderState(state) {
   }
 
   renderPendingSetup(state.pending_setup, state);
+  if (elements.marketStructureView) {
+    elements.marketStructureView.textContent = state.market_structure || "No market structure loaded yet.";
+  }
+  const mechanics = state.nifty_market_mechanics || {};
+  if (elements.niftyMechanicsBias) {
+    elements.niftyMechanicsBias.textContent = `${mechanics.trade_bias || "neutral"} | ${mechanics.expected_behavior || "wait_for_structure"}`;
+    elements.niftyMechanicsRisk.textContent = mechanics.risk_mode || "normal";
+    elements.niftyMechanicsSummary.textContent = mechanics.summary || "No NIFTY market mechanics profile yet.";
+    elements.niftyMechanicsPrevious.textContent = `Previous day ${mechanics.previous_day_profile || "-"} | Last 2h ${mechanics.last_2h_flow || "-"} | Open ${mechanics.open_type || "-"} | Gap ${money(mechanics.gap_points)}`;
+  }
   renderStockSearchResults(state);
   renderStockWatchlist(state);
 

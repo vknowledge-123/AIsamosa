@@ -3009,6 +3009,38 @@ class SimulationEngine:
         liquidity_ledger = self.build_liquidity_ledger(state_context_candles, previous_day, previous_day_candles) if latest_candle else []
         operator_zones = self.find_operator_zones(state_context_candles) if latest_candle else []
         signal_events = self.detect_signal_events(latest_candle, liquidity_zones, previous_day) if latest_candle else []
+        market_structure = (
+            self.describe_market_structure(
+                session_candles=state_context_candles,
+                previous_day_candles=previous_day_candles,
+                previous_day=previous_day,
+                live_current_candle=live_current_candle,
+                liquidity_ledger=liquidity_ledger,
+            )
+            if latest_candle
+            else "No closed session candles are loaded yet."
+        )
+        nifty_market_mechanics = {}
+        if latest_candle and self.instrument_mode == InstrumentMode.nifty and state_context_candles:
+            mechanics_context = StrategyContext(
+                instrument=instrument,
+                current_candle=latest_candle,
+                live_current_candle=live_current_candle,
+                recent_candles=recent_candles[-20:],
+                session_candles=state_context_candles,
+                previous_day_candles=previous_day_candles,
+                previous_day=previous_day,
+                liquidity_zones=liquidity_zones,
+                liquidity_ledger=liquidity_ledger,
+                operator_zones=operator_zones,
+                signal_events=signal_events,
+                market_structure=market_structure,
+                pending_setup=pending_setup,
+                active_trade=active_trade,
+                recent_closed_trades=[],
+                rulebook_markdown="",
+            )
+            nifty_market_mechanics = self.heuristic_engine.nifty_market_mechanics_profile(mechanics_context).as_dict()
         unrealized_pnl = active_trade.pnl if active_trade else 0.0
         if decision is not None and active_trade is None and decision.action == TradeAction.hold:
             decision.action = TradeAction.no_trade
@@ -3047,6 +3079,8 @@ class SimulationEngine:
             signal_history=signal_history,
             heuristic_trace=heuristic_trace,
             heuristic_narrative=heuristic_narrative,
+            market_structure=market_structure,
+            nifty_market_mechanics=nifty_market_mechanics,
             pending_setup=pending_setup,
             decision=decision,
             active_trade=active_trade,
