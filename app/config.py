@@ -26,6 +26,8 @@ class Settings(BaseSettings):
     nifty_max_sl_points: float = 60.0
     nifty_target_enabled: bool = False
     nifty_target_points: float = 90.0
+    nifty_daily_max_loss_enabled: bool = False
+    nifty_daily_max_loss: float = 100.0
     pyramiding_enabled: bool = False
     intelligent_pyramiding_enabled: bool = False
     nifty_point_pyramiding_enabled: bool = False

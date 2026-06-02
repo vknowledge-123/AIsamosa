@@ -26,6 +26,8 @@ from app.schemas import (
     PendingSetup,
     PreviousDayLevels,
     PyramidLeg,
+    ReplayDailyPnlState,
+    ReplayPnlSummaryState,
     RulebookJobState,
     SignalEvent,
     SimulatedTrade,
@@ -112,6 +114,7 @@ class SimulationEngine:
         self.companion_live_current_candle: Candle | None = None
         self.data_sync = DataSyncState()
         self.operation_job = OperationJobState()
+        self.replay_pnl_summary = ReplayPnlSummaryState()
         self.rulebook_job = RulebookJobState()
         self._operation_job_token = ""
         self._rulebook_job_token = ""
@@ -325,6 +328,12 @@ class SimulationEngine:
 
     def _nifty_target_points(self) -> float:
         return self.credential_store.get_nifty_target_points(self.settings)
+
+    def _nifty_daily_max_loss_enabled(self) -> bool:
+        return self.credential_store.get_nifty_daily_max_loss_enabled(self.settings)
+
+    def _nifty_daily_max_loss(self) -> float:
+        return self.credential_store.get_nifty_daily_max_loss(self.settings)
 
     def _nifty_point_pyramiding_enabled(self) -> bool:
         return self.credential_store.get_nifty_point_pyramiding_enabled(self.settings)
@@ -684,6 +693,8 @@ class SimulationEngine:
             nifty_max_sl_points=self._nifty_max_sl_points(),
             nifty_target_enabled=self._nifty_target_enabled(),
             nifty_target_points=self._nifty_target_points(),
+            nifty_daily_max_loss_enabled=self._nifty_daily_max_loss_enabled(),
+            nifty_daily_max_loss=self._nifty_daily_max_loss(),
             pyramiding_enabled=self.credential_store.get_pyramiding_enabled(self.settings),
             intelligent_pyramiding_enabled=self.credential_store.get_intelligent_pyramiding_enabled(self.settings),
             nifty_point_pyramiding_enabled=self._nifty_point_pyramiding_enabled(),
@@ -1637,6 +1648,41 @@ class SimulationEngine:
             f"NIFTY bias is set to {bias}, so {blocked_side} setups are ignored. "
             f"Original setup: {decision.reason}"
         )
+        return blocked
+
+    def _apply_nifty_daily_loss_cap_filter_locked(
+        self,
+        current_candle: Candle,
+        decision: TradeDecision,
+        source: str,
+    ) -> TradeDecision:
+        if (
+            source != "live"
+            or self.instrument_mode != InstrumentMode.nifty
+            or self.instrument_spec.symbol != "NIFTY"
+            or not self._nifty_daily_max_loss_enabled()
+            or self._nifty_daily_max_loss() <= 0
+        ):
+            return decision
+        cap_hit = self._nifty_daily_loss_cap_hit_locked(current_candle.timestamp.date(), include_active=False)
+        if not cap_hit:
+            return decision
+        is_entry = decision.action in {TradeAction.enter_call, TradeAction.enter_put}
+        is_pending = self.normalize_pending_setup_action(decision.pending_setup_action) in {"ARM", "REPLACE", "KEEP"}
+        if not is_entry and not is_pending:
+            return decision
+        blocked = decision.model_copy(deep=True)
+        blocked.action = TradeAction.no_trade
+        blocked.confidence = min(blocked.confidence, 0.2)
+        blocked.pending_setup_action = "INVALIDATE" if decision.decision_source == "pending-setup-trigger" else "NONE"
+        blocked.pending_setup_option_type = None
+        blocked.pending_setup_direction = None
+        blocked.pending_setup_trigger_price = None
+        blocked.pending_setup_notes = self._nifty_daily_loss_cap_note_locked(
+            current_candle.timestamp.date(),
+            include_active=False,
+        )
+        blocked.reason = blocked.pending_setup_notes
         return blocked
 
     def _live_feed_adapter_running_locked(self) -> bool:
@@ -3036,6 +3082,11 @@ class SimulationEngine:
             self.active_trade = None
             self.realized_pnl = round(sum(float(trade.booked_pnl or 0.0) for trade in self.trade_history), 2)
             self.balance = round(self.settings.simulation_starting_balance + self.realized_pnl, 2)
+            self.replay_pnl_summary = self._build_replay_pnl_summary(
+                aggregate_trades,
+                replayed_days=replayed_days,
+                skipped_count=len(skipped_days),
+            )
             skipped_suffix = f" Skipped {len(skipped_days)} holiday/no-data day(s)." if skipped_days else ""
             previous_context_day = last_bundle.previous_context_day if last_bundle is not None else None
             replay_session_day = replayed_days[-1]
@@ -3061,7 +3112,9 @@ class SimulationEngine:
                 0,
                 (
                     f"Bulk NIFTY replay finished: {len(replayed_days)} trading day(s), "
-                    f"{len(self.trade_history)} total trade(s), realized P&L {self.realized_pnl:.2f}."
+                    f"{len(self.trade_history)} total trade(s), uncapped P&L "
+                    f"{self.replay_pnl_summary.uncapped_total_pnl:.2f}, capped P&L "
+                    f"{self.replay_pnl_summary.capped_total_pnl:.2f}."
                     f"{skipped_suffix}"
                 ),
             )
@@ -3078,6 +3131,63 @@ class SimulationEngine:
                 days.append(current)
             current += timedelta(days=1)
         return days
+
+    def _build_replay_pnl_summary(
+        self,
+        trades: list[SimulatedTrade],
+        *,
+        replayed_days: list[date],
+        skipped_count: int,
+    ) -> ReplayPnlSummaryState:
+        cap_enabled = self._nifty_daily_max_loss_enabled()
+        daily_cap = round(max(self._nifty_daily_max_loss(), 0.0), 2)
+        trades_by_day: dict[date, list[SimulatedTrade]] = {day: [] for day in replayed_days}
+        for trade in trades:
+            trade_day = trade.entry_time.date()
+            trades_by_day.setdefault(trade_day, []).append(trade)
+
+        daily_rows: list[ReplayDailyPnlState] = []
+        uncapped_total = 0.0
+        capped_total = 0.0
+        for replay_day in replayed_days:
+            day_trades = sorted(trades_by_day.get(replay_day, []), key=lambda item: item.entry_time)
+            day_uncapped = round(sum(float(trade.booked_pnl or 0.0) for trade in day_trades), 2)
+            uncapped_total = round(uncapped_total + day_uncapped, 2)
+            day_capped = 0.0
+            cap_triggered = False
+            stopped_after_trade = None
+            for trade_index, trade in enumerate(day_trades, start=1):
+                if cap_triggered:
+                    break
+                day_capped = round(day_capped + float(trade.booked_pnl or 0.0), 2)
+                if cap_enabled and daily_cap > 0 and day_capped <= -daily_cap:
+                    day_capped = round(-daily_cap, 2)
+                    cap_triggered = True
+                    stopped_after_trade = trade_index
+            capped_total = round(capped_total + day_capped, 2)
+            daily_rows.append(
+                ReplayDailyPnlState(
+                    replay_day=replay_day,
+                    trade_count=len(day_trades),
+                    uncapped_pnl=day_uncapped,
+                    capped_pnl=day_capped,
+                    cap_triggered=cap_triggered,
+                    stopped_after_trade=stopped_after_trade,
+                )
+            )
+
+        return ReplayPnlSummaryState(
+            start_day=replayed_days[0] if replayed_days else None,
+            end_day=replayed_days[-1] if replayed_days else None,
+            replayed_days=len(replayed_days),
+            skipped_days=skipped_count,
+            total_trades=len(trades),
+            uncapped_total_pnl=round(uncapped_total, 2),
+            capped_total_pnl=round(capped_total, 2),
+            daily_max_loss_enabled=cap_enabled,
+            daily_max_loss=daily_cap,
+            daily=daily_rows,
+        )
 
     def _parse_replay_date(self, raw_value: str, *, field_name: str) -> date:
         value = (raw_value or "").strip()
@@ -3113,6 +3223,8 @@ class SimulationEngine:
         nifty_max_sl_points: float | None = None,
         nifty_target_enabled: bool | None = None,
         nifty_target_points: float | None = None,
+        nifty_daily_max_loss_enabled: bool | None = None,
+        nifty_daily_max_loss: float | None = None,
         pyramiding_enabled: bool | None = None,
         intelligent_pyramiding_enabled: bool | None = None,
         nifty_point_pyramiding_enabled: bool | None = None,
@@ -3144,6 +3256,8 @@ class SimulationEngine:
                 nifty_max_sl_points=nifty_max_sl_points,
                 nifty_target_enabled=nifty_target_enabled,
                 nifty_target_points=nifty_target_points,
+                nifty_daily_max_loss_enabled=nifty_daily_max_loss_enabled,
+                nifty_daily_max_loss=nifty_daily_max_loss,
                 pyramiding_enabled=pyramiding_enabled,
                 intelligent_pyramiding_enabled=intelligent_pyramiding_enabled,
                 nifty_point_pyramiding_enabled=nifty_point_pyramiding_enabled,
@@ -3184,6 +3298,7 @@ class SimulationEngine:
         self.decision = None
         self.realized_pnl = 0.0
         self.balance = self.settings.simulation_starting_balance
+        self.replay_pnl_summary = ReplayPnlSummaryState()
         self.live_current_candle = None if replay_from_session_start else bundle.live_open_candle
         self.signal_history = []
         self._signal_history_keys = set()
@@ -3324,6 +3439,8 @@ class SimulationEngine:
             nifty_max_sl_points=self._nifty_max_sl_points(),
             nifty_target_enabled=self._nifty_target_enabled(),
             nifty_target_points=self._nifty_target_points(),
+            nifty_daily_max_loss_enabled=self._nifty_daily_max_loss_enabled(),
+            nifty_daily_max_loss=self._nifty_daily_max_loss(),
             pyramiding_enabled=self.credential_store.get_pyramiding_enabled(self.settings),
             intelligent_pyramiding_enabled=self.credential_store.get_intelligent_pyramiding_enabled(self.settings),
             nifty_point_pyramiding_enabled=self._nifty_point_pyramiding_enabled(),
@@ -3352,6 +3469,7 @@ class SimulationEngine:
             execution = self.execution_state.model_copy(deep=True)
             data_sync = self.data_sync.model_copy(deep=True)
             operation_job = self.operation_job.model_copy(deep=True)
+            replay_pnl_summary = self.replay_pnl_summary.model_copy(deep=True)
             rulebook_job = self.rulebook_job.model_copy(deep=True)
             learning_log = list(self.rulebook_service.learning_log[:10])
             rulebook = self.rulebook_service.get_rulebook()
@@ -3477,6 +3595,7 @@ class SimulationEngine:
             realized_pnl=realized_pnl,
             unrealized_pnl=unrealized_pnl,
             integrated_pnl=integrated_pnl,
+            replay_pnl_summary=replay_pnl_summary,
             ai_enabled=ai_enabled,
             live_feed=live_feed,
             execution=execution,
@@ -3572,6 +3691,7 @@ class SimulationEngine:
         evaluation_index = None
         evaluation_symbol: str | None = None
         live_trade_control_check: tuple[float, datetime] | None = None
+        option_loss_cap_exit: tuple[Candle, str] | None = None
         with self.lock:
             if self._replay_simulation_active_locked():
                 return
@@ -3584,7 +3704,7 @@ class SimulationEngine:
             volume_delta = self._live_volume_delta_locked(security_id, tick_time, raw_volume)
             packet_type = str(packet.get("type", "Unknown"))
             if self.active_trade and self.active_trade.option_security_id and security_id == self.active_trade.option_security_id:
-                self._update_active_trade_quote_locked(
+                cap_note = self._update_active_trade_quote_locked(
                     OptionQuote(
                         security_id=security_id,
                         option_type=self.active_trade.option_type,
@@ -3596,7 +3716,37 @@ class SimulationEngine:
                         oi=self._as_int(packet.get("OI")),
                     )
                 )
+                if cap_note:
+                    spot = self.live_feed.last_ltp or self.active_trade.entry_spot_price
+                    option_loss_cap_exit = (
+                        Candle(timestamp=tick_time, open=spot, high=spot, low=spot, close=spot, volume=0.0),
+                        cap_note,
+                    )
+                self._mark_state_dirty_locked()
+                if option_loss_cap_exit is not None:
+                    pass
+                else:
+                    return
+        if option_loss_cap_exit is not None:
+            exit_candle, note = option_loss_cap_exit
+            if self._should_send_live_orders("live"):
+                self._exit_live_trade(exit_candle, note)
+            else:
+                with self.lock:
+                    if self.active_trade is not None:
+                        self.close_active_trade(exit_candle, note)
+            return
+        with self.lock:
+            if self._replay_simulation_active_locked():
                 return
+            security_id = str(packet.get("security_id", ""))
+            ltp = self._as_float(packet.get("LTP"))
+            if ltp is None:
+                return
+            tick_time = self._packet_timestamp(packet)
+            raw_volume = self._as_float(packet.get("volume")) or 0.0
+            volume_delta = self._live_volume_delta_locked(security_id, tick_time, raw_volume)
+            packet_type = str(packet.get("type", "Unknown"))
             if self.instrument_mode == InstrumentMode.stock:
                 matched_symbol = self._stock_symbol_by_security_id.get(security_id)
                 companion_spec = self._active_companion_instrument_spec()
@@ -3826,6 +3976,11 @@ class SimulationEngine:
                     trigger_decision = self._apply_stock_trade_bias_filter_locked(trigger_decision)
                     trigger_decision = self._apply_nifty_trade_bias_filter_locked(trigger_decision)
                     trigger_decision = self._apply_stock_turnover_filter_locked(snapshot.current_candle, trigger_decision)
+                    trigger_decision = self._apply_nifty_daily_loss_cap_filter_locked(
+                        snapshot.current_candle,
+                        trigger_decision,
+                        source,
+                    )
                     self.decision = trigger_decision
                     self._record_signal_events_locked(snapshot.signal_events)
                     self.apply_pending_setup_decision(snapshot.current_candle, trigger_decision)
@@ -3834,7 +3989,10 @@ class SimulationEngine:
                     self._mark_state_dirty_locked()
                     return
             heuristic_decision = self.heuristic_decision(snapshot)
-            decision = self.ai_service.decide(snapshot, heuristic_decision, self.operating_mode)
+            if source == "replay" and self.instrument_mode == InstrumentMode.nifty and self.instrument_spec.symbol == "NIFTY":
+                decision = heuristic_decision
+            else:
+                decision = self.ai_service.decide(snapshot, heuristic_decision, self.operating_mode)
             decision = self.normalize_trade_decision(decision, snapshot.active_trade)
             with self.lock:
                 if evaluation_index >= len(self.candles):
@@ -3843,6 +4001,7 @@ class SimulationEngine:
                 decision = self._apply_stock_trade_bias_filter_locked(decision)
                 decision = self._apply_nifty_trade_bias_filter_locked(decision)
                 decision = self._apply_stock_turnover_filter_locked(snapshot.current_candle, decision)
+                decision = self._apply_nifty_daily_loss_cap_filter_locked(snapshot.current_candle, decision, source)
                 self.decision = decision
                 self.apply_pending_setup_decision(snapshot.current_candle, decision)
                 self._record_signal_events_locked(snapshot.signal_events)
@@ -4705,6 +4864,7 @@ class SimulationEngine:
         trigger_decision = self._apply_stock_trade_bias_filter_locked(trigger_decision)
         trigger_decision = self._apply_nifty_trade_bias_filter_locked(trigger_decision)
         trigger_decision = self._apply_stock_turnover_filter_locked(current_candle, trigger_decision)
+        trigger_decision = self._apply_nifty_daily_loss_cap_filter_locked(current_candle, trigger_decision, source)
         self.decision = trigger_decision
         self.apply_pending_setup_decision(current_candle, trigger_decision)
         self.apply_trade_logic(current_candle, trigger_decision, source=source)
@@ -4787,6 +4947,47 @@ class SimulationEngine:
             and self.instrument_spec.symbol == "NIFTY"
         )
 
+    def _nifty_daily_pnl_locked(self, trading_day: date, *, include_active: bool = True) -> float:
+        total = 0.0
+        active_id = self.active_trade.trade_id if self.active_trade is not None else None
+        for trade in self.trade_history:
+            if trade.trade_id == active_id:
+                continue
+            if not self._is_nifty_trade_record(trade):
+                continue
+            if trade.entry_time.date() != trading_day:
+                continue
+            if trade.status == "CLOSED":
+                total += float(trade.booked_pnl or trade.pnl or 0.0)
+        if include_active and self.active_trade is not None and self._is_nifty_active_trade(self.active_trade):
+            if self.active_trade.entry_time.date() == trading_day:
+                total += float(self.active_trade.pnl or 0.0)
+        return round(total, 2)
+
+    def _is_nifty_trade_record(self, trade: SimulatedTrade) -> bool:
+        mode_value = getattr(trade.instrument_mode, "value", trade.instrument_mode)
+        return mode_value == InstrumentMode.nifty.value and (
+            trade.trade_security_id == self.instrument_spec.security_id
+            or trade.instrument_label == self.instrument_spec.label
+            or str(trade.symbol or "").startswith("NIFTY")
+        )
+
+    def _nifty_daily_loss_cap_hit_locked(self, trading_day: date, *, include_active: bool = True) -> bool:
+        if not self._nifty_daily_max_loss_enabled():
+            return False
+        daily_cap = self._nifty_daily_max_loss()
+        if daily_cap <= 0:
+            return False
+        return self._nifty_daily_pnl_locked(trading_day, include_active=include_active) <= -daily_cap
+
+    def _nifty_daily_loss_cap_note_locked(self, trading_day: date, *, include_active: bool = True) -> str:
+        day_pnl = self._nifty_daily_pnl_locked(trading_day, include_active=include_active)
+        return (
+            f"Nifty daily max loss cap hit for {trading_day.isoformat()}: "
+            f"P&L {day_pnl:.2f} reached the configured cap {self._nifty_daily_max_loss():.2f}. "
+            "Stop trading this NIFTY session."
+        )
+
     def _nifty_next_round_profit_exit_note(self, trade: SimulatedTrade, ltp: float, bullish_trade: bool) -> tuple[str, float] | None:
         if abs(trade.entry_spot_price) < 10000:
             return None
@@ -4860,6 +5061,11 @@ class SimulationEngine:
                     f"Hard LTP stop triggered: live price {ltp:.2f} crossed invalidation "
                     f"{invalidation:.2f} before candle close."
                 )
+            if exit_note is None and nifty_trade and self._nifty_daily_loss_cap_hit_locked(
+                tick_time.date(),
+                include_active=True,
+            ):
+                exit_note = self._nifty_daily_loss_cap_note_locked(tick_time.date(), include_active=True)
             if exit_note is None and nifty_trade and self._nifty_cost_sl_enabled() and self._nifty_cost_sl_points() > 0:
                 cost_points = self._nifty_cost_sl_points()
                 favorable_spot = trade.entry_spot_price + cost_points if bullish_trade else trade.entry_spot_price - cost_points
@@ -5048,15 +5254,21 @@ class SimulationEngine:
             self.rulebook_service.learning_log.insert(0, f"Option quote fallback used: {exc}")
             return None
 
-    def _update_active_trade_quote_locked(self, quote: OptionQuote) -> None:
+    def _update_active_trade_quote_locked(self, quote: OptionQuote) -> str | None:
         if not self.active_trade:
-            return
+            return None
         self.active_trade.current_price = round(quote.last_price, 2)
         self.active_trade.current_option_price = round(quote.last_price, 2)
         self.active_trade.current_quote_source = quote.source
         self.active_trade.current_quote_time = quote.quote_time
         self.active_trade.pnl = self.calculate_trade_pnl(self.active_trade, self.active_trade.current_price)
         self._mark_state_dirty_locked()
+        if self._is_nifty_active_trade(self.active_trade) and self._nifty_daily_loss_cap_hit_locked(
+            quote.quote_time.date(),
+            include_active=True,
+        ):
+            return self._nifty_daily_loss_cap_note_locked(quote.quote_time.date(), include_active=True)
+        return None
 
     def heuristic_decision(self, context: StrategyContext) -> TradeDecision:
         current_trade_price = None

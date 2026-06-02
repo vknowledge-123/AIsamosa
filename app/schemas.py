@@ -200,6 +200,8 @@ class StrategyContext(BaseModel):
     nifty_max_sl_points: float = 60.0
     nifty_target_enabled: bool = False
     nifty_target_points: float = 90.0
+    nifty_daily_max_loss_enabled: bool = False
+    nifty_daily_max_loss: float = 100.0
     pyramiding_enabled: bool = False
     intelligent_pyramiding_enabled: bool = False
     nifty_point_pyramiding_enabled: bool = False
@@ -399,6 +401,8 @@ class CredentialSummary(BaseModel):
     nifty_max_sl_points: float = 60.0
     nifty_target_enabled: bool = False
     nifty_target_points: float = 90.0
+    nifty_daily_max_loss_enabled: bool = False
+    nifty_daily_max_loss: float = 100.0
     pyramiding_enabled: bool = False
     intelligent_pyramiding_enabled: bool = False
     nifty_point_pyramiding_enabled: bool = False
@@ -464,6 +468,28 @@ class IntegratedPnlState(BaseModel):
     min_total_pnl_at: datetime | None = None
 
 
+class ReplayDailyPnlState(BaseModel):
+    replay_day: date
+    trade_count: int = 0
+    uncapped_pnl: float = 0.0
+    capped_pnl: float = 0.0
+    cap_triggered: bool = False
+    stopped_after_trade: int | None = None
+
+
+class ReplayPnlSummaryState(BaseModel):
+    start_day: date | None = None
+    end_day: date | None = None
+    replayed_days: int = 0
+    skipped_days: int = 0
+    total_trades: int = 0
+    uncapped_total_pnl: float = 0.0
+    capped_total_pnl: float = 0.0
+    daily_max_loss_enabled: bool = False
+    daily_max_loss: float = 0.0
+    daily: list[ReplayDailyPnlState] = Field(default_factory=list)
+
+
 class DashboardState(BaseModel):
     state_revision: int = 0
     mode: str
@@ -493,6 +519,7 @@ class DashboardState(BaseModel):
     realized_pnl: float
     unrealized_pnl: float
     integrated_pnl: IntegratedPnlState = Field(default_factory=IntegratedPnlState)
+    replay_pnl_summary: ReplayPnlSummaryState = Field(default_factory=ReplayPnlSummaryState)
     ai_enabled: bool
     live_feed: LiveFeedState
     execution: ExecutionState = Field(default_factory=ExecutionState)

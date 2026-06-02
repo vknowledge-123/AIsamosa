@@ -65,12 +65,20 @@ const elements = {
   savedNiftyMaxSlPointsValue: document.getElementById("savedNiftyMaxSlPointsValue"),
   savedNiftyTargetValue: document.getElementById("savedNiftyTargetValue"),
   savedNiftyTargetPointsValue: document.getElementById("savedNiftyTargetPointsValue"),
+  savedNiftyDailyMaxLossValue: document.getElementById("savedNiftyDailyMaxLossValue"),
+  savedNiftyDailyMaxLossAmountValue: document.getElementById("savedNiftyDailyMaxLossAmountValue"),
   savedPyramidingValue: document.getElementById("savedPyramidingValue"),
   savedIntelligentPyramidingValue: document.getElementById("savedIntelligentPyramidingValue"),
   savedNiftyPointPyramidingValue: document.getElementById("savedNiftyPointPyramidingValue"),
   savedNiftyPointPyramidingPointsValue: document.getElementById("savedNiftyPointPyramidingPointsValue"),
   savedPathValue: document.getElementById("savedPathValue"),
   savedUpdatedValue: document.getElementById("savedUpdatedValue"),
+  replayPnlRangeValue: document.getElementById("replayPnlRangeValue"),
+  replayPnlUncappedValue: document.getElementById("replayPnlUncappedValue"),
+  replayPnlCappedValue: document.getElementById("replayPnlCappedValue"),
+  replayPnlCapValue: document.getElementById("replayPnlCapValue"),
+  replayPnlDaysValue: document.getElementById("replayPnlDaysValue"),
+  replayPnlDailyList: document.getElementById("replayPnlDailyList"),
   credentialSaveStatus: document.getElementById("credentialSaveStatus"),
   aiStatusValue: document.getElementById("aiStatusValue"),
   aiModelStatusValue: document.getElementById("aiModelStatusValue"),
@@ -394,6 +402,8 @@ function buildCredentialPayload(form) {
     nifty_max_sl_points: (form.elements.nifty_max_sl_points?.value || "60").trim(),
     nifty_target_enabled: form.elements.nifty_target_enabled?.checked ? "true" : "false",
     nifty_target_points: (form.elements.nifty_target_points?.value || "90").trim(),
+    nifty_daily_max_loss_enabled: form.elements.nifty_daily_max_loss_enabled?.checked ? "true" : "false",
+    nifty_daily_max_loss: (form.elements.nifty_daily_max_loss?.value || "100").trim(),
     pyramiding_enabled: form.elements.pyramiding_enabled?.checked ? "true" : "false",
     intelligent_pyramiding_enabled: form.elements.intelligent_pyramiding_enabled?.checked ? "true" : "false",
     nifty_point_pyramiding_enabled: form.elements.nifty_point_pyramiding_enabled?.checked ? "true" : "false",
@@ -431,6 +441,8 @@ function serializeCredentialPayload(payload) {
     nifty_max_sl_points: payload.nifty_max_sl_points,
     nifty_target_enabled: payload.nifty_target_enabled,
     nifty_target_points: payload.nifty_target_points,
+    nifty_daily_max_loss_enabled: payload.nifty_daily_max_loss_enabled,
+    nifty_daily_max_loss: payload.nifty_daily_max_loss,
     pyramiding_enabled: payload.pyramiding_enabled,
     intelligent_pyramiding_enabled: payload.intelligent_pyramiding_enabled,
     nifty_point_pyramiding_enabled: payload.nifty_point_pyramiding_enabled,
@@ -758,6 +770,34 @@ function renderTradeHistoryList(trades) {
   });
 }
 
+function renderReplayPnlSummary(summary) {
+  if (!elements.replayPnlDailyList) {
+    return;
+  }
+  const hasSummary = summary && (summary.replayed_days || 0) > 0;
+  elements.replayPnlRangeValue.textContent = hasSummary
+    ? `${formatIsoDate(summary.start_day)} to ${formatIsoDate(summary.end_day)}`
+    : "No bulk replay summary yet";
+  elements.replayPnlUncappedValue.textContent = money(summary?.uncapped_total_pnl);
+  elements.replayPnlCappedValue.textContent = money(summary?.capped_total_pnl);
+  elements.replayPnlCapValue.textContent = summary?.daily_max_loss_enabled
+    ? money(summary.daily_max_loss)
+    : "Disabled";
+  elements.replayPnlDaysValue.textContent = `${summary?.replayed_days || 0} / ${summary?.total_trades || 0}`;
+  if (!hasSummary || !summary.daily || summary.daily.length === 0) {
+    elements.replayPnlDailyList.innerHTML = `<div class="list-item empty-state">Run a NIFTY bulk replay to see day-wise P&amp;L.</div>`;
+    return;
+  }
+  elements.replayPnlDailyList.innerHTML = summary.daily.map((day) => `
+    <div class="list-item">
+      <strong>${formatIsoDate(day.replay_day)}</strong>
+      <span class="pill">${day.trade_count || 0} trade(s)</span>
+      ${day.cap_triggered ? `<span class="pill warning">Cap hit after trade ${day.stopped_after_trade || "-"}</span>` : ""}
+      <p>Total ${money(day.uncapped_pnl)} | With daily cap ${money(day.capped_pnl)}</p>
+    </div>
+  `).join("");
+}
+
 function renderPendingSetup(setup, state) {
   if (!setup || ["consumed", "invalidated"].includes(setup.status)) {
     const extra = setup && ["consumed", "invalidated"].includes(setup.status)
@@ -970,6 +1010,8 @@ function renderState(state) {
   elements.savedNiftyMaxSlPointsValue.textContent = money(state.credentials.nifty_max_sl_points);
   elements.savedNiftyTargetValue.textContent = state.credentials.nifty_target_enabled ? "Enabled" : "Disabled";
   elements.savedNiftyTargetPointsValue.textContent = money(state.credentials.nifty_target_points);
+  elements.savedNiftyDailyMaxLossValue.textContent = state.credentials.nifty_daily_max_loss_enabled ? "Enabled" : "Disabled";
+  elements.savedNiftyDailyMaxLossAmountValue.textContent = money(state.credentials.nifty_daily_max_loss);
   elements.savedPyramidingValue.textContent = state.credentials.pyramiding_enabled ? "Enabled" : "Disabled";
   elements.savedIntelligentPyramidingValue.textContent = state.credentials.intelligent_pyramiding_enabled ? "Enabled" : "Disabled";
   elements.savedNiftyPointPyramidingValue.textContent = state.credentials.nifty_point_pyramiding_enabled ? "Enabled" : "Disabled";
@@ -1043,6 +1085,7 @@ function renderState(state) {
   }
   renderStockSearchResults(state);
   renderStockWatchlist(state);
+  renderReplayPnlSummary(state.replay_pnl_summary);
 
   const liquidityItems = [
     ...(state.liquidity_zones || []).map((zone) => ({ kind: "zone", ...zone })),
@@ -1155,6 +1198,8 @@ function renderState(state) {
     syncCredentialField(credentialSaveForm, "nifty_max_sl_points", String(state.credentials.nifty_max_sl_points ?? 60));
     syncCredentialField(credentialSaveForm, "nifty_target_enabled", state.credentials.nifty_target_enabled === true);
     syncCredentialField(credentialSaveForm, "nifty_target_points", String(state.credentials.nifty_target_points ?? 90));
+    syncCredentialField(credentialSaveForm, "nifty_daily_max_loss_enabled", state.credentials.nifty_daily_max_loss_enabled === true);
+    syncCredentialField(credentialSaveForm, "nifty_daily_max_loss", String(state.credentials.nifty_daily_max_loss ?? 100));
     syncCredentialField(credentialSaveForm, "pyramiding_enabled", state.credentials.pyramiding_enabled === true);
     syncCredentialField(credentialSaveForm, "intelligent_pyramiding_enabled", state.credentials.intelligent_pyramiding_enabled === true);
     syncCredentialField(credentialSaveForm, "nifty_point_pyramiding_enabled", state.credentials.nifty_point_pyramiding_enabled === true);

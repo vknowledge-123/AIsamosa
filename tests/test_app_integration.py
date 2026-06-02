@@ -251,6 +251,8 @@ class AppIntegrationTests(unittest.TestCase):
                 "nifty_heuristic_early_exit_enabled": "false",
                 "nifty_min_sl_points": "18",
                 "nifty_max_sl_points": "45",
+                "nifty_daily_max_loss_enabled": "true",
+                "nifty_daily_max_loss": "125",
                 "pyramiding_enabled": "true",
                 "intelligent_pyramiding_enabled": "true",
                 "nifty_point_pyramiding_enabled": "true",
@@ -280,6 +282,8 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertFalse(summary["nifty_heuristic_early_exit_enabled"])
         self.assertEqual(summary["nifty_min_sl_points"], 18.0)
         self.assertEqual(summary["nifty_max_sl_points"], 45.0)
+        self.assertTrue(summary["nifty_daily_max_loss_enabled"])
+        self.assertEqual(summary["nifty_daily_max_loss"], 125.0)
         self.assertTrue(summary["pyramiding_enabled"])
         self.assertTrue(summary["intelligent_pyramiding_enabled"])
         self.assertTrue(summary["nifty_point_pyramiding_enabled"])

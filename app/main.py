@@ -427,6 +427,8 @@ async def save_credentials(
     nifty_max_sl_points: float = Form(default=60.0),
     nifty_target_enabled: str = Form(default="false"),
     nifty_target_points: float = Form(default=90.0),
+    nifty_daily_max_loss_enabled: str = Form(default="false"),
+    nifty_daily_max_loss: float = Form(default=100.0),
     pyramiding_enabled: str = Form(default="false"),
     intelligent_pyramiding_enabled: str = Form(default="false"),
     nifty_point_pyramiding_enabled: str = Form(default="false"),
@@ -441,6 +443,7 @@ async def save_credentials(
     nifty_early_exit_enabled = nifty_heuristic_early_exit_enabled.strip().lower() in {"1", "true", "yes", "on"}
     nifty_cost_enabled = nifty_cost_sl_enabled.strip().lower() in {"1", "true", "yes", "on"}
     nifty_target_control_enabled = nifty_target_enabled.strip().lower() in {"1", "true", "yes", "on"}
+    nifty_daily_loss_enabled = nifty_daily_max_loss_enabled.strip().lower() in {"1", "true", "yes", "on"}
     pyramid_enabled = pyramiding_enabled.strip().lower() in {"1", "true", "yes", "on"}
     intelligent_pyramid_enabled = intelligent_pyramiding_enabled.strip().lower() in {"1", "true", "yes", "on"}
     nifty_point_pyramid_enabled = nifty_point_pyramiding_enabled.strip().lower() in {"1", "true", "yes", "on"}
@@ -468,6 +471,8 @@ async def save_credentials(
         nifty_max_sl_points=nifty_max_sl_points,
         nifty_target_enabled=nifty_target_control_enabled,
         nifty_target_points=nifty_target_points,
+        nifty_daily_max_loss_enabled=nifty_daily_loss_enabled,
+        nifty_daily_max_loss=nifty_daily_max_loss,
         pyramiding_enabled=pyramid_enabled,
         intelligent_pyramiding_enabled=intelligent_pyramid_enabled,
         nifty_point_pyramiding_enabled=nifty_point_pyramid_enabled,
