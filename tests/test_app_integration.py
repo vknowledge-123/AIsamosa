@@ -5801,7 +5801,7 @@ class AppIntegrationTests(unittest.TestCase):
                 "nifty_heuristic_early_exit_enabled": False,
                 "nifty_trailing_stop_enabled": False,
                 "nifty_target_enabled": False,
-                "pyramiding_enabled": True,
+                "pyramiding_enabled": False,
                 "intelligent_pyramiding_enabled": True,
                 "nifty_point_pyramiding_enabled": True,
                 "nifty_point_pyramiding_points": 45.0,

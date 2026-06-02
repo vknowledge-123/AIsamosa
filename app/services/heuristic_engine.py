@@ -5977,7 +5977,10 @@ class HeuristicDecisionEngine:
                         rule_ids_used=list(dict.fromkeys(same_side.rule_ids + ["R41", "R42", "R63", "R74", "R98", "R99"])),
                     )
 
-        elif context.pyramiding_enabled and pyramid_count < 2:
+        elif (
+            context.pyramiding_enabled
+            or (nifty_mode_trade and context.nifty_point_pyramiding_enabled)
+        ) and pyramid_count < 2:
             base_quantity = max(int(trade.base_quantity or trade.quantity or 1), 1)
             point_pyramiding_active = (
                 nifty_mode_trade
