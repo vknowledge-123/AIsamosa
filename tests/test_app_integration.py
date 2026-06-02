@@ -5754,9 +5754,9 @@ class AppIntegrationTests(unittest.TestCase):
         candles = [
             Candle(timestamp="2026-05-13T09:15:00", open=24120, high=24170, low=24100, close=24150, volume=1000),
             Candle(timestamp="2026-05-14T09:15:00", open=24240, high=24260, low=24230, close=24252, volume=1200),
-            Candle(timestamp="2026-05-14T09:16:00", open=24252, high=24282, low=24248, close=24276, volume=1400),
-            Candle(timestamp="2026-05-14T09:17:00", open=24276, high=24278, low=24255, close=24258, volume=1450),
-            Candle(timestamp="2026-05-14T09:18:00", open=24258, high=24260, low=24240, close=24244, volume=1500),
+            Candle(timestamp="2026-05-14T09:16:00", open=24252, high=24304, low=24248, close=24296, volume=1400),
+            Candle(timestamp="2026-05-14T09:17:00", open=24296, high=24298, low=24270, close=24278, volume=1450),
+            Candle(timestamp="2026-05-14T09:18:00", open=24278, high=24280, low=24252, close=24260, volume=1500),
         ]
         trade = self._build_trade(
             entry_time=candles[1].timestamp,
@@ -5775,9 +5775,9 @@ class AppIntegrationTests(unittest.TestCase):
         decision = self.test_engine.heuristic_engine.manage_active_trade(context, observation, current_trade_price=12.0)
 
         self.assertEqual(decision.action, TradeAction.exit)
-        self.assertEqual(decision.target_spot_price, 24244.0)
+        self.assertEqual(decision.target_spot_price, 24260.0)
         self.assertIn("next 100-point round shelf 24300.00", decision.reason)
-        self.assertIn("reversal structure", decision.reason)
+        self.assertIn("two-candle reversal", decision.reason)
 
     def test_nifty_does_not_square_off_on_blind_next_round_band_tag(self) -> None:
         candles = [
@@ -6797,9 +6797,8 @@ class AppIntegrationTests(unittest.TestCase):
 
         decision = self.test_engine.heuristic_engine.manage_active_trade(context, observation, current_trade_price=12.0)
 
-        self.assertEqual(decision.action, TradeAction.update_stop)
-        self.assertEqual(decision.invalidation_level, 25490.0)
-        self.assertIn("first target", decision.reason.lower())
+        self.assertEqual(decision.action, TradeAction.hold)
+        self.assertNotIn("first target", decision.reason.lower())
 
     def test_nifty_market_mechanics_profiles_neutral_buying_gap_down_trapped_buyers(self) -> None:
         previous_day_candles = []
@@ -7026,9 +7025,96 @@ class AppIntegrationTests(unittest.TestCase):
 
         decision = self.test_engine.heuristic_engine.manage_active_trade(context, observation, current_trade_price=12.0)
 
-        self.assertEqual(decision.action, TradeAction.update_stop)
-        self.assertEqual(decision.invalidation_level, 25466.05)
-        self.assertIn("first target", decision.reason.lower())
+        self.assertEqual(decision.action, TradeAction.hold)
+        self.assertNotIn("first target", decision.reason.lower())
+
+    def test_nifty_round_sweep_override_allows_opposite_side_trade(self) -> None:
+        candles = [
+            Candle(timestamp=datetime(2026, 6, 2, 9, 15), open=23940.0, high=23970.0, low=23920.0, close=23962.0, volume=1500),
+            Candle(timestamp=datetime(2026, 6, 2, 9, 16), open=23962.0, high=24005.0, low=23955.0, close=23982.0, volume=1700),
+            Candle(timestamp=datetime(2026, 6, 2, 9, 17), open=23982.0, high=24008.0, low=23940.0, close=23948.0, volume=2200),
+        ]
+        context = self._build_context(candles)
+        observation = self._build_observation(
+            atr=20.0,
+            vwap=23970.0,
+            value_state="fair",
+            session_phase="primary-trap-window",
+            nifty_expected_behavior="strong_bullish_gap_down_sell_sweep_reclaim_long",
+            nifty_risk_mode="fast_profit",
+        )
+        event = SweepEvent(
+            side="buy",
+            level_label="Round Number 24000",
+            level_price=24000.0,
+            sweep_index=2,
+            reclaim_index=2,
+            trigger_index=2,
+            sweep_price=24008.0,
+            defended_level=24000.0,
+            trigger_price=23948.0,
+            invalidation_level=24028.0,
+            primary=True,
+            quality="tradable",
+        )
+
+        candidate = self.test_engine.heuristic_engine.build_candidate_from_event(
+            context,
+            observation,
+            event,
+            option_type="PE",
+            direction="LONG_PUT",
+        )
+
+        self.assertIsNotNone(candidate)
+        assert candidate is not None
+        self.assertTrue(candidate.ready_to_enter)
+        self.assertGreaterEqual(candidate.score, self.test_engine.heuristic_engine.enter_threshold)
+        self.assertTrue(any("overrides profile bias" in note for note in candidate.notes))
+
+    def test_nifty_double_top_sweep_override_allows_opposite_side_trade(self) -> None:
+        candles = [
+            Candle(timestamp=datetime(2026, 6, 2, 9, 15), open=23940.0, high=23982.0, low=23920.0, close=23972.0, volume=1500),
+            Candle(timestamp=datetime(2026, 6, 2, 9, 16), open=23972.0, high=23998.0, low=23960.0, close=23988.0, volume=1700),
+            Candle(timestamp=datetime(2026, 6, 2, 9, 17), open=23988.0, high=24002.0, low=23942.0, close=23948.0, volume=2200),
+        ]
+        context = self._build_context(candles)
+        observation = self._build_observation(
+            atr=20.0,
+            vwap=23970.0,
+            value_state="fair",
+            session_phase="primary-trap-window",
+            nifty_expected_behavior="strong_bullish_gap_down_sell_sweep_reclaim_long",
+            nifty_risk_mode="fast_profit",
+        )
+        event = SweepEvent(
+            side="buy",
+            level_label="Equal High Cluster (2 touches)",
+            level_price=23998.0,
+            sweep_index=2,
+            reclaim_index=2,
+            trigger_index=2,
+            sweep_price=24002.0,
+            defended_level=23998.0,
+            trigger_price=23948.0,
+            invalidation_level=24022.0,
+            primary=True,
+            quality="tradable",
+        )
+
+        candidate = self.test_engine.heuristic_engine.build_candidate_from_event(
+            context,
+            observation,
+            event,
+            option_type="PE",
+            direction="LONG_PUT",
+        )
+
+        self.assertIsNotNone(candidate)
+        assert candidate is not None
+        self.assertTrue(candidate.ready_to_enter)
+        self.assertGreaterEqual(candidate.score, self.test_engine.heuristic_engine.enter_threshold)
+        self.assertTrue(any("Double top/bottom" in note for note in candidate.notes))
 
     def test_nifty_market_mechanics_profiles_bullish_selling_gap_up_auction(self) -> None:
         previous_day_candles = []
@@ -7254,9 +7340,8 @@ class AppIntegrationTests(unittest.TestCase):
 
         decision = self.test_engine.heuristic_engine.manage_active_trade(context, observation, current_trade_price=12.0)
 
-        self.assertEqual(decision.action, TradeAction.update_stop)
-        self.assertEqual(decision.invalidation_level, 25677.8)
-        self.assertIn("first target", decision.reason.lower())
+        self.assertEqual(decision.action, TradeAction.hold)
+        self.assertNotIn("first target", decision.reason.lower())
 
     def test_nifty_liquidity_map_adds_previous_day_last_2h_swing_levels(self) -> None:
         previous_day_candles = []
@@ -7391,9 +7476,8 @@ class AppIntegrationTests(unittest.TestCase):
 
         decision = self.test_engine.heuristic_engine.manage_active_trade(context, observation, current_trade_price=12.0)
 
-        self.assertEqual(decision.action, TradeAction.update_stop)
-        self.assertEqual(decision.invalidation_level, 24005.0)
-        self.assertIn("first target", decision.reason.lower())
+        self.assertEqual(decision.action, TradeAction.hold)
+        self.assertNotIn("first target", decision.reason.lower())
 
     def test_strong_bearish_gap_down_profile_moves_stop_to_cost_at_first_target(self) -> None:
         candles = [
@@ -7425,9 +7509,8 @@ class AppIntegrationTests(unittest.TestCase):
 
         decision = self.test_engine.heuristic_engine.manage_active_trade(context, observation, current_trade_price=12.0)
 
-        self.assertEqual(decision.action, TradeAction.update_stop)
-        self.assertEqual(decision.invalidation_level, 25520.0)
-        self.assertIn("first target", decision.reason.lower())
+        self.assertEqual(decision.action, TradeAction.hold)
+        self.assertNotIn("first target", decision.reason.lower())
 
     def test_reversal_exit_can_enter_opposite_pending_setup_after_square_off(self) -> None:
         exit_candle = Candle(timestamp="2026-05-14T09:42:00", open=24105, high=24108, low=24062, close=24070, volume=1600)

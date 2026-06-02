@@ -1339,7 +1339,7 @@ class HeuristicDecisionEngine:
         if abs(trade.entry_spot_price) < 10000:
             return None
         round_level, band_price = self._nifty_next_round_profit_band(trade.entry_spot_price, bullish_trade)
-        exit_trigger = band_price
+        exit_trigger = round_level
         if bullish_trade and exit_trigger <= trade.entry_spot_price:
             return None
         if (not bullish_trade) and exit_trigger >= trade.entry_spot_price:
@@ -1355,9 +1355,9 @@ class HeuristicDecisionEngine:
             action=TradeAction.exit,
             confidence=0.9,
             reason=(
-                f"Nifty moved from entry toward the next 100-point round shelf {round_level:.2f}, tagged "
-                f"the square-off band at {exit_trigger:.2f}, and then printed reversal structure; "
-                "book the position before round-number resistance/support expands against the trade."
+                f"Nifty reached the next 100-point round shelf {round_level:.2f} and then printed "
+                f"two-candle reversal structure from that shelf; square off and remap the opposite-side "
+                "liquidity setup instead of waiting for the old thesis to decay."
             ),
             decision_source="heuristic",
             option_type=trade.option_type,
@@ -1394,48 +1394,22 @@ class HeuristicDecisionEngine:
         if tag_index is None:
             return False
         after_tag = since_entry[tag_index:]
-        latest = after_tag[-1]
-        recent = after_tag[-3:]
         last_two = after_tag[-2:]
 
-        def body(candle: Candle) -> float:
-            return abs(candle.close - candle.open)
-
-        def candle_range(candle: Candle) -> float:
-            return max(candle.high - candle.low, 0.01)
-
         if bullish_trade:
-            rejection_at_band = any(
-                candle.high >= exit_trigger
-                and candle.close < min(candle.open, exit_trigger)
-                and (candle.high - max(candle.open, candle.close)) >= max(body(candle) * 0.35, candle_range(candle) * 0.12)
-                for candle in recent
-            )
             consecutive_red = (
                 len(last_two) >= 2
                 and all(candle.close < candle.open for candle in last_two)
                 and last_two[-1].close < last_two[0].close
             )
-            current_reversal = latest.close < latest.open and latest.close < exit_trigger and (
-                len(after_tag) == 1 or latest.close < after_tag[-2].close
-            )
-            return rejection_at_band or consecutive_red or current_reversal
+            return consecutive_red
 
-        rejection_at_band = any(
-            candle.low <= exit_trigger
-            and candle.close > max(candle.open, exit_trigger)
-            and (min(candle.open, candle.close) - candle.low) >= max(body(candle) * 0.35, candle_range(candle) * 0.12)
-            for candle in recent
-        )
         consecutive_green = (
             len(last_two) >= 2
             and all(candle.close > candle.open for candle in last_two)
             and last_two[-1].close > last_two[0].close
         )
-        current_reversal = latest.close > latest.open and latest.close > exit_trigger and (
-            len(after_tag) == 1 or latest.close > after_tag[-2].close
-        )
-        return rejection_at_band or consecutive_green or current_reversal
+        return consecutive_green
 
     def _nifty_round_front_run_grace_allowed(self, observation: Observation, option_type: str, current: Candle, session: list[Candle]) -> bool:
         if observation.range_state != "expanding":
@@ -1590,6 +1564,7 @@ class HeuristicDecisionEngine:
     def _nifty_priority_reclaim_label(self, label: str) -> bool:
         lowered = label.lower()
         priority_families = (
+            "round number",
             "opening range high",
             "opening range low",
             "first 15m high",
@@ -1612,6 +1587,59 @@ class HeuristicDecisionEngine:
         )
         return lowered.startswith(priority_families)
 
+    def _nifty_top_priority_liquidity_label(self, label: str) -> bool:
+        lowered = label.lower()
+        touch_count = self._nifty_equal_cluster_touch_count(label)
+        if (
+            ("equal high cluster" in lowered or "equal low cluster" in lowered)
+            and 2 <= touch_count <= 4
+        ):
+            return True
+        return lowered.startswith(
+            (
+                "round number",
+                "session high",
+                "session low",
+                "session extreme",
+                "same-day swing high",
+                "same-day swing low",
+                "previous day high",
+                "previous day low",
+            )
+        )
+
+    def _nifty_strong_priority_reclaim_override(
+        self,
+        context: StrategyContext,
+        observation: Observation,
+        event: SweepEvent,
+        option_type: str,
+    ) -> bool:
+        if not self._is_nifty_mode(context):
+            return False
+        if event.reclaim_index != len(context.session_candles) - 1:
+            return False
+        if not self._nifty_top_priority_liquidity_label(event.level_label):
+            return False
+        current = context.current_candle
+        reclaim_index = event.reclaim_index
+        if reclaim_index is None or not 0 <= reclaim_index < len(context.session_candles):
+            return False
+        reclaim_strength = self.candle_strength(context.session_candles[reclaim_index])
+        if option_type == "CE":
+            return (
+                event.side == "sell"
+                and current.close > event.defended_level
+                and current.close > current.open
+                and (reclaim_strength >= 0.30 or self._candle_range(current) >= observation.atr * 0.9)
+            )
+        return (
+            event.side == "buy"
+            and current.close < event.defended_level
+            and current.close < current.open
+            and (reclaim_strength >= 0.30 or self._candle_range(current) >= observation.atr * 0.9)
+        )
+
     def _nifty_priority_immediate_reclaim(
         self,
         context: StrategyContext,
@@ -1626,11 +1654,15 @@ class HeuristicDecisionEngine:
             return False
         if event.reclaim_index != len(context.session_candles) - 1:
             return False
-        if not event.primary or event.quality not in {"tradable", "explosive"}:
+        top_priority = self._nifty_top_priority_liquidity_label(event.level_label)
+        if not (event.primary or top_priority) or event.quality not in {"tradable", "explosive"}:
             return False
         if not self._nifty_priority_reclaim_label(event.level_label):
             return False
-        strong_reclaim = reclaim_strength >= 0.45 or self._candle_range(current) >= observation.atr * 1.35
+        if top_priority:
+            strong_reclaim = reclaim_strength >= 0.18 or self._candle_range(current) >= observation.atr * 0.60
+        else:
+            strong_reclaim = reclaim_strength >= 0.45 or self._candle_range(current) >= observation.atr * 1.35
         if not strong_reclaim:
             return False
         if option_type == "CE":
@@ -4685,6 +4717,12 @@ class HeuristicDecisionEngine:
             current=current,
             reclaim_strength=reclaim_strength,
         )
+        nifty_strong_priority_override = self._nifty_strong_priority_reclaim_override(
+            context,
+            observation,
+            event,
+            option_type,
+        )
         continuation_count = 0
         hold_count = 0
         follow_through = False
@@ -4723,8 +4761,12 @@ class HeuristicDecisionEngine:
         else:
             score += 12
         level_label = event.level_label.lower()
+        if self._nifty_top_priority_liquidity_label(event.level_label):
+            score += 18
+            notes.append("Top-priority Nifty liquidity was swept: day high/day low, double top/bottom, or a 100-point round shelf.")
+            rule_ids.extend(["R2", "R3", "R24", "R25", "R26", "R58", "R77", "R79"])
         if "round number" in level_label:
-            score += 6
+            score += 15
             notes.append("Sweep happened at a nearby round-number liquidity shelf.")
             rule_ids.extend(["R2", "R78", "R84"])
         if "pivot " in level_label or level_label == "pivot point":
@@ -4732,8 +4774,12 @@ class HeuristicDecisionEngine:
             notes.append("Classic pivot-point liquidity was tested and then rejected or reclaimed.")
             rule_ids.extend(["R2", "R72", "R73", "R79"])
         if "equal high cluster" in level_label or "equal low cluster" in level_label:
-            score += 8
-            notes.append("Equal-high or equal-low stop cluster adds stronger trap potential.")
+            if self._nifty_top_priority_liquidity_label(event.level_label):
+                score += 14
+                notes.append("Double top/bottom liquidity sweep adds high-priority trap potential.")
+            else:
+                score += 8
+                notes.append("Equal-high or equal-low stop cluster adds stronger trap potential.")
             rule_ids.extend(["R3", "R25", "R26", "R52", "R77"])
         if "same-day swing high" in level_label or "same-day swing low" in level_label:
             score += 5
@@ -4845,7 +4891,11 @@ class HeuristicDecisionEngine:
             score += 15
         if "reclaimed back" in " ".join(event.notes).lower():
             rule_ids.extend(["R31", "R32"])
-        if reclaim_strength >= 0.55:
+        if nifty_priority_reclaim:
+            score += 16
+            notes.append("Fresh day high/day low or round-number sweep reclaimed immediately, so NIFTY enters without waiting for extra confirmation.")
+            rule_ids.extend(["R140", "R141"])
+        elif reclaim_strength >= 0.55:
             score += 10
             notes.append("Reclaim or rejection candle has healthy body quality.")
             rule_ids.append("R89")
@@ -4861,7 +4911,7 @@ class HeuristicDecisionEngine:
             notes.append("Follow-through confirmed after the reclaim or rejection.")
             rule_ids.append("R89")
         elif nifty_immediate_reclaim:
-            score += 8
+            score += 14 if nifty_priority_reclaim else 8
             notes.append("Nifty primary sweep reclaimed on the current candle, so entry does not wait for a later follow-through candle.")
             rule_ids.extend(["R140", "R141"])
         else:
@@ -5181,7 +5231,7 @@ class HeuristicDecisionEngine:
             notes.append("Nifty target is normalized to at least 3R from the entry/invalidation risk.")
             rule_ids.append("R142")
         late_round_band_note = self._nifty_late_entry_round_band_note(context, option_type, current.close)
-        if late_round_band_note:
+        if late_round_band_note and not nifty_strong_priority_override:
             notes.append(late_round_band_note)
             rule_ids.extend(["R2", "R44", "R51", "R74", "R78", "R101"])
             return None
@@ -5199,6 +5249,13 @@ class HeuristicDecisionEngine:
                     "Fresh Nifty priority liquidity was swept and reclaimed on the current candle, so entry does not wait for an equal-level cluster or later expansion."
                 )
                 rule_ids.extend(["R2", "R25", "R27", "R58", "R63", "R79"])
+        if nifty_strong_priority_override:
+            score += 20
+            ready_to_enter = True
+            notes.append(
+                "Strong day high/day low or round-number sweep/reclaim overrides profile bias, so NIFTY can take the opposite side immediately."
+            )
+            rule_ids.extend(["R24", "R25", "R26", "R27", "R28", "R58", "R77", "R79"])
         elif (
             not context.instrument.supports_options
             and setup_type in {"bullish_reclaim_watch", "bearish_rejection_watch"}
@@ -5246,7 +5303,7 @@ class HeuristicDecisionEngine:
             native_room=native_room,
             risk=max(plan_risk, 0.01),
         )
-        if large_gap_up_block_reason:
+        if large_gap_up_block_reason and not nifty_strong_priority_override:
             notes.append(large_gap_up_block_reason)
             rule_ids.extend(["R17", "R18", "R44", "R55", "R60", "R64", "R80", "R91", "R98", "R99"])
             return None
@@ -5258,7 +5315,7 @@ class HeuristicDecisionEngine:
             native_room=native_room,
             risk=max(plan_risk, 0.01),
         )
-        if bullish_selling_gap_up_block_reason:
+        if bullish_selling_gap_up_block_reason and not nifty_strong_priority_override:
             notes.append(bullish_selling_gap_up_block_reason)
             rule_ids.extend(["R16", "R18", "R25", "R27", "R35", "R44", "R55", "R60", "R74", "R81", "R91", "R98", "R99"])
             return None
@@ -5270,7 +5327,7 @@ class HeuristicDecisionEngine:
             native_room=native_room,
             risk=max(plan_risk, 0.01),
         )
-        if selling_gap_down_block_reason:
+        if selling_gap_down_block_reason and not nifty_strong_priority_override:
             notes.append(selling_gap_down_block_reason)
             rule_ids.extend(["R15", "R18", "R25", "R27", "R35", "R44", "R55", "R60", "R81", "R87", "R98", "R99"])
             return None
@@ -5282,7 +5339,7 @@ class HeuristicDecisionEngine:
             native_room=native_room,
             risk=max(plan_risk, 0.01),
         )
-        if extreme_selling_flat_block_reason:
+        if extreme_selling_flat_block_reason and not nifty_strong_priority_override:
             notes.append(extreme_selling_flat_block_reason)
             rule_ids.extend(["R15", "R18", "R25", "R27", "R35", "R44", "R55", "R60", "R81", "R87", "R91", "R98", "R99"])
             return None
@@ -5294,16 +5351,16 @@ class HeuristicDecisionEngine:
             native_room=native_room,
             risk=max(plan_risk, 0.01),
         )
-        if neutral_buying_gap_down_block_reason:
+        if neutral_buying_gap_down_block_reason and not nifty_strong_priority_override:
             notes.append(neutral_buying_gap_down_block_reason)
             rule_ids.extend(["R15", "R16", "R18", "R25", "R27", "R35", "R44", "R55", "R60", "R74", "R81", "R87", "R91", "R98", "R99"])
             return None
         if self._is_nifty_mode(context) and self._nifty_strong_bullish_gap_down_recovery_profile(observation):
             same_thesis_failures = self._nifty_recent_same_thesis_failures(context, option_type)
-            if same_thesis_failures >= 2:
+            if same_thesis_failures >= 2 and not nifty_strong_priority_override:
                 return None
             if option_type == "CE":
-                if not self._nifty_opening_low_sweep_finished(observation, event):
+                if not self._nifty_opening_low_sweep_finished(observation, event) and not nifty_strong_priority_override:
                     return None
                 if self._nifty_near_upper_liquidity_with_small_room(
                     context,
@@ -5311,7 +5368,7 @@ class HeuristicDecisionEngine:
                     current.close,
                     target_spot,
                     risk,
-                ):
+                ) and not nifty_strong_priority_override:
                     return None
                 if same_thesis_failures == 1:
                     score -= 10
@@ -5321,7 +5378,7 @@ class HeuristicDecisionEngine:
                     rule_ids.extend(["R87", "R91", "R99"])
             else:
                 accepted_below_opening_low = self._nifty_accepts_below_opening_low(context, observation)
-                if not accepted_below_opening_low and (event.quality != "explosive" or score < 88):
+                if not accepted_below_opening_low and (event.quality != "explosive" or score < 88) and not nifty_strong_priority_override:
                     return None
                 if not accepted_below_opening_low:
                     score -= 8
@@ -5334,14 +5391,14 @@ class HeuristicDecisionEngine:
             recent_trade_count = self._nifty_recent_closed_trade_count(context)
             new_major_event = self._nifty_new_major_liquidity_event(event)
             effective_risk = max(plan_risk, 40.0)
-            if recent_trade_count >= 4 and not (new_major_event and event.quality == "explosive" and score >= 90):
+            if recent_trade_count >= 4 and not (new_major_event and event.quality == "explosive" and score >= 90) and not nifty_strong_priority_override:
                 return None
-            if room < max(effective_risk * 1.0, 35.0):
+            if room < max(effective_risk * 1.0, 35.0) and not nifty_strong_priority_override:
                 return None
             if option_type == "CE":
-                if same_thesis_failures >= 2 and not new_major_event:
+                if same_thesis_failures >= 2 and not new_major_event and not nifty_strong_priority_override:
                     return None
-                if not self._nifty_major_sell_side_recovery_ready(context, observation, event):
+                if not self._nifty_major_sell_side_recovery_ready(context, observation, event) and not nifty_strong_priority_override:
                     return None
                 if same_thesis_failures == 1:
                     score -= 12
@@ -5350,7 +5407,7 @@ class HeuristicDecisionEngine:
                     )
                     rule_ids.extend(["R60", "R87", "R91", "R99"])
             else:
-                if self._nifty_short_near_exhaustion_low_without_bounce(context, observation, event):
+                if self._nifty_short_near_exhaustion_low_without_bounce(context, observation, event) and not nifty_strong_priority_override:
                     return None
         if setup_type in {"bullish_pullback_continuation", "bearish_pullback_continuation"} and room < risk * 2.2:
             score -= 14
@@ -5702,62 +5759,6 @@ class HeuristicDecisionEngine:
                 pending_setup_notes=self._candidate_reason(opposite_reversal, observation, enter_now=False),
                 pending_setup_option_type=opposite_reversal.option_type,
                 rule_ids_used=opposite_reversal.rule_ids + ["R45", "R86"],
-                )
-
-        if (
-            nifty_mode_trade
-            and heuristic_early_exit_enabled
-            and self._nifty_cost_protection_at_first_target_profile(observation)
-            and trade.first_target_price is not None
-            and not stop_is_protected_at_cost
-        ):
-            first_target_tagged = (
-                context.current_candle.high >= trade.first_target_price
-                if bullish_trade
-                else context.current_candle.low <= trade.first_target_price
-            )
-            if first_target_tagged:
-                return TradeDecision(
-                    action=TradeAction.update_stop,
-                    confidence=0.88,
-                    reason=(
-                        "Nifty gap-down market-mechanics profile reached first target, "
-                        "so move Nifty stop to cost before managing the fast-profit exit."
-                    ),
-                    decision_source="heuristic",
-                    option_type=trade.option_type,
-                    invalidation_level=round(trade.entry_spot_price, 2),
-                    market_state=observation.day_type,
-                    setup_type=trade.setup_type,
-                    rule_ids_used=["R41", "R42", "R43", "R44", "R74", "R81", "R99"],
-                )
-
-        if (
-            nifty_mode_trade
-            and heuristic_early_exit_enabled
-            and trade.first_target_price is not None
-            and observation.nifty_risk_mode in {"fast_profit", "trap_first", "range_farming_risk", "large_gap_range_farming"}
-            and (not trailing_stop_enabled or stop_is_protected_at_cost)
-        ):
-            first_target_tagged = (
-                context.current_candle.high >= trade.first_target_price
-                if bullish_trade
-                else context.current_candle.low <= trade.first_target_price
-            )
-            if first_target_tagged:
-                return TradeDecision(
-                    action=TradeAction.exit,
-                    confidence=0.88,
-                    reason=(
-                        "Nifty market mechanics are in fast-profit/range-farming mode, so book at the first target "
-                        "instead of waiting for a large trend target."
-                    ),
-                    decision_source="heuristic",
-                    option_type=trade.option_type,
-                    target_spot_price=round(trade.first_target_price, 2),
-                    market_state=observation.day_type,
-                    setup_type=trade.setup_type,
-                    rule_ids_used=["R41", "R42", "R44", "R46", "R60", "R74", "R91", "R99"],
                 )
 
         if (
