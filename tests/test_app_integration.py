@@ -253,6 +253,9 @@ class AppIntegrationTests(unittest.TestCase):
                 "nifty_max_sl_points": "45",
                 "pyramiding_enabled": "true",
                 "intelligent_pyramiding_enabled": "true",
+                "nifty_point_pyramiding_enabled": "true",
+                "nifty_point_pyramiding_points": "55",
+                "nifty_trade_bias": "long",
                 "nifty_option_trade_mode": "buying",
             },
         )
@@ -279,6 +282,9 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertEqual(summary["nifty_max_sl_points"], 45.0)
         self.assertTrue(summary["pyramiding_enabled"])
         self.assertTrue(summary["intelligent_pyramiding_enabled"])
+        self.assertTrue(summary["nifty_point_pyramiding_enabled"])
+        self.assertEqual(summary["nifty_point_pyramiding_points"], 55.0)
+        self.assertEqual(summary["nifty_trade_bias"], "long")
         self.assertEqual(summary["nifty_option_trade_mode"], "buying")
         self.assertTrue(Path(summary["storage_path"]).exists())
 
@@ -5749,6 +5755,65 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertEqual(decision.action, TradeAction.exit)
         self.assertEqual(decision.target_spot_price, 23282.0)
         self.assertIn("fixed target", decision.reason.lower())
+
+    def test_nifty_bias_filter_blocks_wrong_side_entry_and_pending_setup(self) -> None:
+        self.temp_store.save(nifty_trade_bias="long")
+        short_entry = TradeDecision(
+            action=TradeAction.enter_put,
+            confidence=0.9,
+            reason="Bearish liquidity setup.",
+            option_type="PE",
+        )
+        blocked_entry = self.test_engine._apply_nifty_trade_bias_filter_locked(short_entry)
+
+        self.assertEqual(blocked_entry.action, TradeAction.no_trade)
+        self.assertIn("bias is set to long", blocked_entry.reason)
+
+        pending_short = TradeDecision(
+            action=TradeAction.no_trade,
+            confidence=0.82,
+            reason="Arm bearish setup.",
+            pending_setup_action="ARM",
+            pending_setup_option_type="PE",
+        )
+        blocked_pending = self.test_engine._apply_nifty_trade_bias_filter_locked(pending_short)
+
+        self.assertEqual(blocked_pending.action, TradeAction.no_trade)
+        self.assertEqual(blocked_pending.pending_setup_action, "INVALIDATE")
+
+    def test_nifty_point_wise_pyramiding_adds_equal_base_quantity_after_point_move(self) -> None:
+        candles = [
+            Candle(timestamp="2026-05-13T09:15:00", open=23100, high=23120, low=23080, close=23100, volume=1000),
+            Candle(timestamp="2026-05-14T09:15:00", open=23192, high=23205, low=23180, close=23196, volume=1200),
+            Candle(timestamp="2026-05-14T09:16:00", open=23196, high=23247, low=23194, close=23244, volume=1400),
+        ]
+        trade = self._build_trade(
+            entry_time=candles[1].timestamp,
+            entry_spot_price=23192.0,
+            invalidation_level=23140.0,
+            setup_type="bullish_reclaim_watch",
+        )
+        trade.base_quantity = 3
+        trade.quantity = 3
+        trade.open_quantity = 3
+        context = self._build_context(candles, active_trade=trade).model_copy(
+            update={
+                "nifty_heuristic_early_exit_enabled": False,
+                "nifty_trailing_stop_enabled": False,
+                "nifty_target_enabled": False,
+                "pyramiding_enabled": True,
+                "intelligent_pyramiding_enabled": True,
+                "nifty_point_pyramiding_enabled": True,
+                "nifty_point_pyramiding_points": 45.0,
+            }
+        )
+        observation = self._build_observation(atr=25.0)
+
+        decision = self.test_engine.heuristic_engine.manage_active_trade(context, observation, current_trade_price=12.0)
+
+        self.assertEqual(decision.action, TradeAction.add_position)
+        self.assertEqual(decision.add_quantity, 3)
+        self.assertIn("point-wise pyramiding add 1/2", decision.reason.lower())
 
     def test_nifty_square_offs_near_next_100_point_round_shelf(self) -> None:
         candles = [

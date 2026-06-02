@@ -272,6 +272,18 @@
             <input type="checkbox" name="intelligent_pyramiding_enabled" />
             <span>Enable Intelligent Pyramiding</span>
           </label>
+          <label class="checkbox-row">
+            <input type="checkbox" name="nifty_point_pyramiding_enabled" />
+            <span>Enable Nifty Point-Wise Pyramiding</span>
+          </label>
+          <label>Nifty Point Pyramiding Step</label>
+          <input type="number" name="nifty_point_pyramiding_points" min="0" step="1" value="50" />
+          <label>Nifty Bias</label>
+          <select name="nifty_trade_bias">
+            <option value="both">Both Sides</option>
+            <option value="long">Long Only</option>
+            <option value="short">Short Only</option>
+          </select>
           <label>Nifty Expiry Preference</label>
           <select name="nifty_expiry_preference">
             <option value="current-weekly">Current Weekly</option>
@@ -336,6 +348,10 @@
             <p id="savedNiftyOptionTradeModeValue">selling</p>
           </div>
           <div class="list-item">
+            <strong>Nifty Bias</strong>
+            <p id="savedNiftyTradeBiasValue">both</p>
+          </div>
+          <div class="list-item">
             <strong>Stock Partial Profit Booking</strong>
             <p id="savedStockPartialProfitValue">Enabled</p>
           </div>
@@ -386,6 +402,14 @@
           <div class="list-item">
             <strong>Intelligent Pyramiding</strong>
             <p id="savedIntelligentPyramidingValue">Disabled</p>
+          </div>
+          <div class="list-item">
+            <strong>Nifty Point-Wise Pyramiding</strong>
+            <p id="savedNiftyPointPyramidingValue">Disabled</p>
+          </div>
+          <div class="list-item">
+            <strong>Nifty Point Pyramid Step</strong>
+            <p id="savedNiftyPointPyramidingPointsValue">50</p>
           </div>
           <div class="list-item">
             <strong>Storage Path</strong>

@@ -326,6 +326,15 @@ class SimulationEngine:
     def _nifty_target_points(self) -> float:
         return self.credential_store.get_nifty_target_points(self.settings)
 
+    def _nifty_point_pyramiding_enabled(self) -> bool:
+        return self.credential_store.get_nifty_point_pyramiding_enabled(self.settings)
+
+    def _nifty_point_pyramiding_points(self) -> float:
+        return self.credential_store.get_nifty_point_pyramiding_points(self.settings)
+
+    def _nifty_trade_bias(self) -> str:
+        return self.credential_store.get_nifty_trade_bias(self.settings)
+
     def _use_banknifty_companion(self) -> bool:
         return self.instrument_mode == InstrumentMode.nifty and self.instrument_spec.symbol == "NIFTY"
 
@@ -622,6 +631,9 @@ class SimulationEngine:
             nifty_target_points=self._nifty_target_points(),
             pyramiding_enabled=self.credential_store.get_pyramiding_enabled(self.settings),
             intelligent_pyramiding_enabled=self.credential_store.get_intelligent_pyramiding_enabled(self.settings),
+            nifty_point_pyramiding_enabled=self._nifty_point_pyramiding_enabled(),
+            nifty_point_pyramiding_points=self._nifty_point_pyramiding_points(),
+            nifty_trade_bias=self._nifty_trade_bias(),
             nifty_option_trade_mode=self.credential_store.get_nifty_option_trade_mode(self.settings),
             stock_trade_bias=self.stock_watch_meta.get(self.instrument_spec.symbol, {}).get("trade_bias", "both"),
         )
@@ -1530,6 +1542,44 @@ class SimulationEngine:
         blocked.pending_setup_trigger_price = None
         blocked.reason = (
             f"Stock is in the {self._stock_trade_bias_label(bias)} bulk list, so {blocked_side} setups are ignored. "
+            f"Original setup: {decision.reason}"
+        )
+        return blocked
+
+    def _apply_nifty_trade_bias_filter_locked(self, decision: TradeDecision) -> TradeDecision:
+        if (
+            self.instrument_mode != InstrumentMode.nifty
+            or self.instrument_spec.symbol != "NIFTY"
+            or not self.instrument_spec.supports_options
+        ):
+            return decision
+        bias = self._nifty_trade_bias()
+        if bias == "both":
+            return decision
+        blocked_side = "short" if bias == "long" else "long"
+        entry_blocked = (
+            (bias == "long" and decision.action == TradeAction.enter_put)
+            or (bias == "short" and decision.action == TradeAction.enter_call)
+        )
+        pending_option = self.normalize_option_type(decision.pending_setup_option_type)
+        pending_blocked = (
+            decision.pending_setup_action in {"ARM", "REPLACE", "KEEP"}
+            and ((bias == "long" and pending_option == "PE") or (bias == "short" and pending_option == "CE"))
+        )
+        if not entry_blocked and not pending_blocked:
+            return decision
+        blocked = decision.model_copy(deep=True)
+        blocked.action = TradeAction.no_trade
+        blocked.confidence = min(blocked.confidence, 0.49)
+        blocked.pending_setup_action = (
+            "INVALIDATE" if pending_blocked or decision.decision_source == "pending-setup-trigger" else "NONE"
+        )
+        blocked.pending_setup_notes = f"Pending setup invalidated by NIFTY {bias} bias."
+        blocked.pending_setup_option_type = None
+        blocked.pending_setup_direction = None
+        blocked.pending_setup_trigger_price = None
+        blocked.reason = (
+            f"NIFTY bias is set to {bias}, so {blocked_side} setups are ignored. "
             f"Original setup: {decision.reason}"
         )
         return blocked
@@ -2776,6 +2826,9 @@ class SimulationEngine:
         nifty_target_points: float | None = None,
         pyramiding_enabled: bool | None = None,
         intelligent_pyramiding_enabled: bool | None = None,
+        nifty_point_pyramiding_enabled: bool | None = None,
+        nifty_point_pyramiding_points: float | None = None,
+        nifty_trade_bias: str | None = None,
         nifty_option_trade_mode: str | None = None,
     ) -> DashboardState:
         with self.lock:
@@ -2804,6 +2857,9 @@ class SimulationEngine:
                 nifty_target_points=nifty_target_points,
                 pyramiding_enabled=pyramiding_enabled,
                 intelligent_pyramiding_enabled=intelligent_pyramiding_enabled,
+                nifty_point_pyramiding_enabled=nifty_point_pyramiding_enabled,
+                nifty_point_pyramiding_points=nifty_point_pyramiding_points,
+                nifty_trade_bias=nifty_trade_bias,
                 nifty_option_trade_mode=nifty_option_trade_mode,
             )
             self._credential_summary_cache = self.credential_store.summary(self.settings)
@@ -2981,6 +3037,9 @@ class SimulationEngine:
             nifty_target_points=self._nifty_target_points(),
             pyramiding_enabled=self.credential_store.get_pyramiding_enabled(self.settings),
             intelligent_pyramiding_enabled=self.credential_store.get_intelligent_pyramiding_enabled(self.settings),
+            nifty_point_pyramiding_enabled=self._nifty_point_pyramiding_enabled(),
+            nifty_point_pyramiding_points=self._nifty_point_pyramiding_points(),
+            nifty_trade_bias=self._nifty_trade_bias(),
             nifty_option_trade_mode=self.credential_store.get_nifty_option_trade_mode(self.settings),
         )
 
@@ -3476,6 +3535,7 @@ class SimulationEngine:
                     trigger_decision = self.evaluate_pending_setup_trigger(snapshot.current_candle)
                 if trigger_decision is not None:
                     trigger_decision = self._apply_stock_trade_bias_filter_locked(trigger_decision)
+                    trigger_decision = self._apply_nifty_trade_bias_filter_locked(trigger_decision)
                     trigger_decision = self._apply_stock_turnover_filter_locked(snapshot.current_candle, trigger_decision)
                     self.decision = trigger_decision
                     self._record_signal_events_locked(snapshot.signal_events)
@@ -3492,6 +3552,7 @@ class SimulationEngine:
                     return
                 self.current_index = evaluation_index
                 decision = self._apply_stock_trade_bias_filter_locked(decision)
+                decision = self._apply_nifty_trade_bias_filter_locked(decision)
                 decision = self._apply_stock_turnover_filter_locked(snapshot.current_candle, decision)
                 self.decision = decision
                 self.apply_pending_setup_decision(snapshot.current_candle, decision)
@@ -4353,6 +4414,7 @@ class SimulationEngine:
         if trigger_decision is None or trigger_decision.action not in {TradeAction.enter_call, TradeAction.enter_put}:
             return
         trigger_decision = self._apply_stock_trade_bias_filter_locked(trigger_decision)
+        trigger_decision = self._apply_nifty_trade_bias_filter_locked(trigger_decision)
         trigger_decision = self._apply_stock_turnover_filter_locked(current_candle, trigger_decision)
         self.decision = trigger_decision
         self.apply_pending_setup_decision(current_candle, trigger_decision)

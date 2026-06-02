@@ -53,6 +53,7 @@ const elements = {
   savedStockCapitalValue: document.getElementById("savedStockCapitalValue"),
   savedExpiryPreferenceValue: document.getElementById("savedExpiryPreferenceValue"),
   savedNiftyOptionTradeModeValue: document.getElementById("savedNiftyOptionTradeModeValue"),
+  savedNiftyTradeBiasValue: document.getElementById("savedNiftyTradeBiasValue"),
   savedStockPartialProfitValue: document.getElementById("savedStockPartialProfitValue"),
   savedStockTrailingStopValue: document.getElementById("savedStockTrailingStopValue"),
   savedStockHeuristicExitValue: document.getElementById("savedStockHeuristicExitValue"),
@@ -66,6 +67,8 @@ const elements = {
   savedNiftyTargetPointsValue: document.getElementById("savedNiftyTargetPointsValue"),
   savedPyramidingValue: document.getElementById("savedPyramidingValue"),
   savedIntelligentPyramidingValue: document.getElementById("savedIntelligentPyramidingValue"),
+  savedNiftyPointPyramidingValue: document.getElementById("savedNiftyPointPyramidingValue"),
+  savedNiftyPointPyramidingPointsValue: document.getElementById("savedNiftyPointPyramidingPointsValue"),
   savedPathValue: document.getElementById("savedPathValue"),
   savedUpdatedValue: document.getElementById("savedUpdatedValue"),
   credentialSaveStatus: document.getElementById("credentialSaveStatus"),
@@ -382,6 +385,9 @@ function buildCredentialPayload(form) {
     nifty_target_points: (form.elements.nifty_target_points?.value || "90").trim(),
     pyramiding_enabled: form.elements.pyramiding_enabled?.checked ? "true" : "false",
     intelligent_pyramiding_enabled: form.elements.intelligent_pyramiding_enabled?.checked ? "true" : "false",
+    nifty_point_pyramiding_enabled: form.elements.nifty_point_pyramiding_enabled?.checked ? "true" : "false",
+    nifty_point_pyramiding_points: (form.elements.nifty_point_pyramiding_points?.value || "50").trim(),
+    nifty_trade_bias: (form.elements.nifty_trade_bias?.value || "both").trim(),
     nifty_option_trade_mode: (form.elements.nifty_option_trade_mode?.value || "selling").trim(),
   };
   return Object.values(payload).some((value) => value) ? payload : null;
@@ -416,6 +422,9 @@ function serializeCredentialPayload(payload) {
     nifty_target_points: payload.nifty_target_points,
     pyramiding_enabled: payload.pyramiding_enabled,
     intelligent_pyramiding_enabled: payload.intelligent_pyramiding_enabled,
+    nifty_point_pyramiding_enabled: payload.nifty_point_pyramiding_enabled,
+    nifty_point_pyramiding_points: payload.nifty_point_pyramiding_points,
+    nifty_trade_bias: payload.nifty_trade_bias,
     nifty_option_trade_mode: payload.nifty_option_trade_mode,
   });
 }
@@ -887,6 +896,7 @@ function renderState(state) {
   elements.savedStockCapitalValue.textContent = money(state.credentials.stock_trade_capital);
   elements.savedExpiryPreferenceValue.textContent = state.credentials.nifty_expiry_preference || "current-weekly";
   elements.savedNiftyOptionTradeModeValue.textContent = state.credentials.nifty_option_trade_mode || "selling";
+  elements.savedNiftyTradeBiasValue.textContent = state.credentials.nifty_trade_bias || "both";
   elements.savedStockPartialProfitValue.textContent = state.credentials.stock_partial_profit_enabled ? "Enabled" : "Disabled";
   elements.savedStockTrailingStopValue.textContent = state.credentials.stock_trailing_stop_enabled ? "Enabled" : "Disabled";
   elements.savedStockHeuristicExitValue.textContent = state.credentials.stock_heuristic_early_exit_enabled ? "Enabled" : "Disabled";
@@ -900,6 +910,8 @@ function renderState(state) {
   elements.savedNiftyTargetPointsValue.textContent = money(state.credentials.nifty_target_points);
   elements.savedPyramidingValue.textContent = state.credentials.pyramiding_enabled ? "Enabled" : "Disabled";
   elements.savedIntelligentPyramidingValue.textContent = state.credentials.intelligent_pyramiding_enabled ? "Enabled" : "Disabled";
+  elements.savedNiftyPointPyramidingValue.textContent = state.credentials.nifty_point_pyramiding_enabled ? "Enabled" : "Disabled";
+  elements.savedNiftyPointPyramidingPointsValue.textContent = money(state.credentials.nifty_point_pyramiding_points);
   elements.savedPathValue.textContent = state.credentials.storage_path || "-";
   elements.savedUpdatedValue.textContent = state.credentials.last_updated
     ? new Date(state.credentials.last_updated).toLocaleString()
@@ -1099,6 +1111,9 @@ function renderState(state) {
     syncCredentialField(credentialSaveForm, "nifty_target_points", String(state.credentials.nifty_target_points ?? 90));
     syncCredentialField(credentialSaveForm, "pyramiding_enabled", state.credentials.pyramiding_enabled === true);
     syncCredentialField(credentialSaveForm, "intelligent_pyramiding_enabled", state.credentials.intelligent_pyramiding_enabled === true);
+    syncCredentialField(credentialSaveForm, "nifty_point_pyramiding_enabled", state.credentials.nifty_point_pyramiding_enabled === true);
+    syncCredentialField(credentialSaveForm, "nifty_point_pyramiding_points", String(state.credentials.nifty_point_pyramiding_points ?? 50));
+    syncCredentialField(credentialSaveForm, "nifty_trade_bias", state.credentials.nifty_trade_bias || "both");
     if (!settingsUiState.dirtyFields.size && !settingsUiState.saveInFlight) {
       setCredentialSaveStatus("Saved locally. Autosave is active.", "saved");
     }

@@ -28,6 +28,9 @@ class Settings(BaseSettings):
     nifty_target_points: float = 90.0
     pyramiding_enabled: bool = False
     intelligent_pyramiding_enabled: bool = False
+    nifty_point_pyramiding_enabled: bool = False
+    nifty_point_pyramiding_points: float = 50.0
+    nifty_trade_bias: str = "both"
     nifty_option_trade_mode: str = "selling"
     simulation_starting_balance: float = 250000.0
     simulation_max_risk_per_trade: float = 0.01

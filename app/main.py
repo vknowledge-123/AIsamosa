@@ -401,6 +401,9 @@ async def save_credentials(
     nifty_target_points: float = Form(default=90.0),
     pyramiding_enabled: str = Form(default="false"),
     intelligent_pyramiding_enabled: str = Form(default="false"),
+    nifty_point_pyramiding_enabled: str = Form(default="false"),
+    nifty_point_pyramiding_points: float = Form(default=50.0),
+    nifty_trade_bias: str = Form(default="both"),
     nifty_option_trade_mode: str = Form(default="selling"),
 ):
     partial_profit_enabled = stock_partial_profit_enabled.strip().lower() in {"1", "true", "yes", "on"}
@@ -412,6 +415,7 @@ async def save_credentials(
     nifty_target_control_enabled = nifty_target_enabled.strip().lower() in {"1", "true", "yes", "on"}
     pyramid_enabled = pyramiding_enabled.strip().lower() in {"1", "true", "yes", "on"}
     intelligent_pyramid_enabled = intelligent_pyramiding_enabled.strip().lower() in {"1", "true", "yes", "on"}
+    nifty_point_pyramid_enabled = nifty_point_pyramiding_enabled.strip().lower() in {"1", "true", "yes", "on"}
     state = await run_in_threadpool(
         engine.save_credentials,
         client_id=client_id,
@@ -438,6 +442,9 @@ async def save_credentials(
         nifty_target_points=nifty_target_points,
         pyramiding_enabled=pyramid_enabled,
         intelligent_pyramiding_enabled=intelligent_pyramid_enabled,
+        nifty_point_pyramiding_enabled=nifty_point_pyramid_enabled,
+        nifty_point_pyramiding_points=nifty_point_pyramiding_points,
+        nifty_trade_bias=nifty_trade_bias,
         nifty_option_trade_mode=nifty_option_trade_mode,
     )
     return {"message": "Dhan, AI, sizing, expiry, and trading-mode settings saved locally for reuse.", "state": state}

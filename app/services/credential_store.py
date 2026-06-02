@@ -50,6 +50,9 @@ class CredentialStore:
         nifty_target_points: float | None = None,
         pyramiding_enabled: bool | None = None,
         intelligent_pyramiding_enabled: bool | None = None,
+        nifty_point_pyramiding_enabled: bool | None = None,
+        nifty_point_pyramiding_points: float | None = None,
+        nifty_trade_bias: str | None = None,
         nifty_option_trade_mode: str | None = None,
     ) -> None:
         payload = self.load()
@@ -178,6 +181,21 @@ class CredentialStore:
             normalized = bool(intelligent_pyramiding_enabled)
             if payload.get("intelligent_pyramiding_enabled") != normalized:
                 payload["intelligent_pyramiding_enabled"] = normalized
+                updated = True
+        if nifty_point_pyramiding_enabled is not None:
+            normalized = bool(nifty_point_pyramiding_enabled)
+            if payload.get("nifty_point_pyramiding_enabled") != normalized:
+                payload["nifty_point_pyramiding_enabled"] = normalized
+                updated = True
+        if nifty_point_pyramiding_points is not None:
+            normalized = round(max(float(nifty_point_pyramiding_points), 0.0), 2)
+            if payload.get("nifty_point_pyramiding_points") != normalized:
+                payload["nifty_point_pyramiding_points"] = normalized
+                updated = True
+        if nifty_trade_bias and nifty_trade_bias.strip():
+            normalized = self._normalize_nifty_trade_bias(nifty_trade_bias)
+            if payload.get("nifty_trade_bias") != normalized:
+                payload["nifty_trade_bias"] = normalized
                 updated = True
         if nifty_option_trade_mode and nifty_option_trade_mode.strip():
             normalized = self._normalize_nifty_option_trade_mode(nifty_option_trade_mode)
@@ -373,6 +391,25 @@ class CredentialStore:
         payload = self.load()
         return self._normalize_nifty_option_trade_mode(payload.get("nifty_option_trade_mode") or settings.nifty_option_trade_mode)
 
+    def get_nifty_point_pyramiding_enabled(self, settings: Settings) -> bool:
+        payload = self.load()
+        return self._coerce_bool(
+            payload.get("nifty_point_pyramiding_enabled"),
+            bool(settings.nifty_point_pyramiding_enabled),
+        )
+
+    def get_nifty_point_pyramiding_points(self, settings: Settings) -> float:
+        payload = self.load()
+        return self._coerce_float(
+            payload.get("nifty_point_pyramiding_points"),
+            float(settings.nifty_point_pyramiding_points),
+            minimum=0.0,
+        )
+
+    def get_nifty_trade_bias(self, settings: Settings) -> str:
+        payload = self.load()
+        return self._normalize_nifty_trade_bias(payload.get("nifty_trade_bias") or settings.nifty_trade_bias)
+
     def get_ui_preferences(self) -> tuple[InstrumentMode, str | None, list[str]]:
         payload = self.load()
         raw_mode = str(payload.get("instrument_mode") or InstrumentMode.nifty.value).strip().lower()
@@ -427,6 +464,9 @@ class CredentialStore:
             nifty_target_points=self.get_nifty_target_points(settings),
             pyramiding_enabled=self.get_pyramiding_enabled(settings),
             intelligent_pyramiding_enabled=self.get_intelligent_pyramiding_enabled(settings),
+            nifty_point_pyramiding_enabled=self.get_nifty_point_pyramiding_enabled(settings),
+            nifty_point_pyramiding_points=self.get_nifty_point_pyramiding_points(settings),
+            nifty_trade_bias=self.get_nifty_trade_bias(settings),
             nifty_option_trade_mode=self.get_nifty_option_trade_mode(settings),
             dhan_credential_message=self.resolve_dhan_credentials(
                 payload.get("client_id") or settings.dhan_client_id,
@@ -459,6 +499,15 @@ class CredentialStore:
         if normalized in {"buy", "buying", "option-buying"}:
             return "buying"
         return "selling"
+
+    @staticmethod
+    def _normalize_nifty_trade_bias(value: object) -> str:
+        normalized = str(value or "both").strip().lower()
+        if normalized in {"long", "buy", "bullish", "ce", "call"}:
+            return "long"
+        if normalized in {"short", "sell", "bearish", "pe", "put"}:
+            return "short"
+        return "both"
 
     @staticmethod
     def _coerce_bool(value: object, default: bool) -> bool:

@@ -4152,6 +4152,20 @@ class HeuristicDecisionEngine:
 
     def decide_entry(self, context: StrategyContext, observation: Observation, candidates: list[SetupCandidate] | None = None) -> TradeDecision:
         candidates = candidates if candidates is not None else self.build_candidates(context, observation)
+        original_candidate_count = len(candidates)
+        candidates = self._filter_nifty_trade_bias_candidates(context, candidates)
+        if original_candidate_count and not candidates and self._is_nifty_mode(context):
+            return TradeDecision(
+                action=TradeAction.no_trade,
+                confidence=0.48,
+                reason=(
+                    f"NIFTY bias is set to {context.nifty_trade_bias}, so opposite-side heuristic setups "
+                    "are ignored until the bias is changed back to both."
+                ),
+                decision_source="heuristic",
+                market_state=observation.day_type,
+                rule_ids_used=["R37", "R50", "R57", "R69"],
+            )
         if context.pending_setup is not None:
             pending_decision = self.evaluate_pending_setup(context, observation, candidates)
             if pending_decision is not None:
@@ -5869,7 +5883,11 @@ class HeuristicDecisionEngine:
                 )
 
         pyramid_count = max(int(trade.pyramid_count or 0), 0)
-        if context.intelligent_pyramiding_enabled and pyramid_count < 2:
+        if (
+            context.intelligent_pyramiding_enabled
+            and pyramid_count < 2
+            and not (nifty_mode_trade and context.nifty_point_pyramiding_enabled)
+        ):
             base_quantity = max(int(trade.base_quantity or trade.quantity or 1), 1)
             same_side = self.select_best_candidate(
                 [candidate for candidate in candidates if (candidate.option_type == "CE") == bullish_trade]
@@ -5961,6 +5979,44 @@ class HeuristicDecisionEngine:
 
         elif context.pyramiding_enabled and pyramid_count < 2:
             base_quantity = max(int(trade.base_quantity or trade.quantity or 1), 1)
+            point_pyramiding_active = (
+                nifty_mode_trade
+                and context.nifty_point_pyramiding_enabled
+                and context.nifty_point_pyramiding_points > 0
+            )
+            if point_pyramiding_active:
+                step_points = max(float(context.nifty_point_pyramiding_points), 0.0)
+                next_add_number = pyramid_count + 1
+                trigger_spot = (
+                    trade.entry_spot_price + (step_points * next_add_number)
+                    if bullish_trade
+                    else trade.entry_spot_price - (step_points * next_add_number)
+                )
+                trigger_tagged = (
+                    context.current_candle.high >= trigger_spot
+                    if bullish_trade
+                    else context.current_candle.low <= trigger_spot
+                )
+                already_added_this_candle = trade.last_pyramid_time == context.current_candle.timestamp
+                if trigger_tagged and not already_added_this_candle:
+                    return TradeDecision(
+                        action=TradeAction.add_position,
+                        confidence=0.86,
+                        reason=(
+                            f"NIFTY point-wise pyramiding add {next_add_number}/2 is allowed because spot moved "
+                            f"{step_points * next_add_number:.2f} points in favor from entry "
+                            f"{trade.entry_spot_price:.2f} and tagged {trigger_spot:.2f}. Add quantity matches "
+                            "the initial entry size."
+                        ),
+                        decision_source="heuristic",
+                        option_type=trade.option_type,
+                        add_quantity=base_quantity,
+                        invalidation_level=round(trade.invalidation_level, 2) if trade.invalidation_level is not None else None,
+                        target_spot_price=trade.target_spot_price,
+                        market_state=observation.day_type,
+                        setup_type=trade.setup_type,
+                        rule_ids_used=["R41", "R42", "R63", "R74", "R99"],
+                    )
             required_progress = 1.0 + (pyramid_count * 0.6)
             stop_is_protected = (
                 trade.invalidation_level is not None
@@ -5972,7 +6028,7 @@ class HeuristicDecisionEngine:
             same_side = self.select_best_candidate(
                 [candidate for candidate in candidates if (candidate.option_type == "CE") == bullish_trade]
             )
-            if same_side is not None:
+            if same_side is not None and not point_pyramiding_active:
                 enter_threshold, _, allow_only_exceptional = self._effective_entry_thresholds(context, observation, same_side)
                 target_room = (
                     same_side.target_spot_price - current_spot
@@ -6086,6 +6142,20 @@ class HeuristicDecisionEngine:
         if not candidates:
             return None
         return max(candidates, key=lambda item: item.score)
+
+    def _filter_nifty_trade_bias_candidates(
+        self,
+        context: StrategyContext,
+        candidates: list[SetupCandidate],
+    ) -> list[SetupCandidate]:
+        if not self._is_nifty_mode(context):
+            return candidates
+        bias = (context.nifty_trade_bias or "both").strip().lower()
+        if bias == "long":
+            return [candidate for candidate in candidates if candidate.option_type == "CE"]
+        if bias == "short":
+            return [candidate for candidate in candidates if candidate.option_type == "PE"]
+        return candidates
 
     def _active_trade_opposite_liquidity_reversal(
         self,

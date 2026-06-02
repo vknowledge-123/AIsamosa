@@ -202,6 +202,9 @@ class StrategyContext(BaseModel):
     nifty_target_points: float = 90.0
     pyramiding_enabled: bool = False
     intelligent_pyramiding_enabled: bool = False
+    nifty_point_pyramiding_enabled: bool = False
+    nifty_point_pyramiding_points: float = 50.0
+    nifty_trade_bias: str = "both"
     nifty_option_trade_mode: str = "selling"
     stock_trade_bias: str = "both"
 
@@ -398,6 +401,9 @@ class CredentialSummary(BaseModel):
     nifty_target_points: float = 90.0
     pyramiding_enabled: bool = False
     intelligent_pyramiding_enabled: bool = False
+    nifty_point_pyramiding_enabled: bool = False
+    nifty_point_pyramiding_points: float = 50.0
+    nifty_trade_bias: str = "both"
     nifty_option_trade_mode: str = "selling"
     dhan_credential_message: str | None = None
     storage_path: str
