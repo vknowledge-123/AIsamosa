@@ -188,6 +188,14 @@
           <button type="submit">Replay Selected Historical Session</button>
           <p class="caption">Replay still loads 1-minute candles, but entries and exits use only completed candles of the selected duration.</p>
         </form>
+        <form id="historicalRangeReplayForm" class="stack-form">
+          <label>Nifty Bulk Replay Start</label>
+          <input type="date" name="replay_start_date" required />
+          <label>Nifty Bulk Replay End</label>
+          <input type="date" name="replay_end_date" required />
+          <button type="submit">Replay Nifty Date Range</button>
+          <p class="caption">Bulk replay skips holidays and automatically uses the latest available previous trading day for each replay day.</p>
+        </form>
         <form id="candleUploadForm" class="stack-form">
           <label>Upload candle CSV</label>
           <input type="file" name="file" accept=".csv" required />

@@ -278,6 +278,34 @@ async def start_simulate_historical(
     }
 
 
+@app.post("/api/simulation/historical-range/start")
+async def start_simulate_historical_range(
+    client_id: str = Form(default=""),
+    access_token: str = Form(default=""),
+    replay_start_date: str = Form(...),
+    replay_end_date: str = Form(...),
+    decision_duration_minutes: int = Form(default=1),
+):
+    try:
+        state = await run_in_threadpool(
+            engine.start_simulate_historical_range_async,
+            client_id=client_id,
+            access_token=access_token,
+            replay_start_date=replay_start_date,
+            replay_end_date=replay_end_date,
+            replay_decision_duration_minutes=decision_duration_minutes,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {
+        "message": (
+            f"Started background NIFTY historical range replay from {replay_start_date} to {replay_end_date} "
+            f"using {decision_duration_minutes}-minute replay decisions."
+        ),
+        "state": state,
+    }
+
+
 @app.post("/api/upload/candles")
 async def upload_candles(file: UploadFile = File(...)):
     if not file.filename:

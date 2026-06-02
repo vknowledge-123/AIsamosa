@@ -4849,6 +4849,95 @@ class AppIntegrationTests(unittest.TestCase):
 
         self.assertEqual(evaluated_timestamps, ["2026-05-14T09:19:00"])
 
+    def test_nifty_historical_bundle_auto_uses_latest_available_previous_context(self) -> None:
+        replay_candles = [
+            Candle(timestamp="2026-02-09T09:15:00", open=100, high=102, low=99, close=101, volume=1000),
+        ]
+        previous_candles = [
+            Candle(timestamp="2026-02-05T09:15:00", open=96, high=99, low=95, close=98, volume=1000),
+        ]
+        with patch.object(
+            self.test_engine.chart_service,
+            "fetch_session_day_candles",
+            return_value=(replay_candles, "historical"),
+        ) as replay_mock:
+            with patch.object(
+                self.test_engine.chart_service,
+                "fetch_latest_available_session_day_candles",
+                return_value=(previous_candles, "intraday-fallback", date(2026, 2, 5)),
+            ) as previous_mock:
+                bundle = self.test_engine._fetch_historical_bundle_with_previous_fallback(
+                    client_id="cid",
+                    access_token="tok",
+                    replay_session_day=date(2026, 2, 9),
+                    spec=self.test_engine.instrument_spec,
+                )
+
+        self.assertEqual(bundle.replay_session_day, date(2026, 2, 9))
+        self.assertEqual(bundle.previous_context_day, date(2026, 2, 5))
+        self.assertEqual(bundle.previous_day_candles, previous_candles)
+        self.assertEqual(replay_mock.call_args.args[3], date(2026, 2, 9))
+        self.assertEqual(previous_mock.call_args.args[3], date(2026, 2, 6))
+
+    def test_nifty_bulk_historical_replay_skips_holidays_and_keeps_datewise_trades(self) -> None:
+        self.test_engine.set_instrument_mode("nifty")
+        self.test_engine.operating_mode = OperatingMode.heuristic
+
+        def make_bundle(day: date) -> DhanSessionBundle:
+            previous_day = day - timedelta(days=1)
+            return DhanSessionBundle(
+                previous_day_candles=[
+                    Candle(timestamp=datetime.combine(previous_day, datetime.min.time()).replace(hour=9, minute=15), open=95, high=98, low=94, close=97, volume=1000),
+                ],
+                intraday_candles=[
+                    Candle(timestamp=datetime.combine(day, datetime.min.time()).replace(hour=9, minute=15), open=100, high=103, low=99, close=102, volume=1000),
+                    Candle(timestamp=datetime.combine(day, datetime.min.time()).replace(hour=9, minute=16), open=102, high=104, low=101, close=103, volume=1000),
+                ],
+                live_open_candle=None,
+                previous_day_source="historical",
+                replay_session_day=day,
+                intraday_source="historical",
+                previous_context_day=previous_day,
+            )
+
+        def fake_fetch(**kwargs):
+            replay_day = kwargs["replay_session_day"]
+            if replay_day == date(2026, 2, 4):
+                raise DhanChartEmptyDataError("festival holiday")
+            return make_bundle(replay_day), make_bundle(replay_day)
+
+        def fake_heuristic(context):
+            if context.active_trade is None:
+                return TradeDecision(
+                    action=TradeAction.enter_call,
+                    confidence=0.9,
+                    reason=f"test entry {context.current_candle.timestamp.date()}",
+                    option_type="CE",
+                    invalidation_level=context.current_candle.close - 40,
+                    target_spot_price=context.current_candle.close + 80,
+                    setup_type="test_bulk_replay",
+                )
+            return TradeDecision(action=TradeAction.hold, confidence=0.5, reason="hold")
+
+        with patch.object(
+            self.test_engine,
+            "_fetch_nifty_and_banknifty_historical_bundles_with_previous_fallback",
+            side_effect=fake_fetch,
+        ):
+            with patch.object(self.test_engine, "heuristic_decision", side_effect=fake_heuristic):
+                state = self.test_engine.simulate_historical_range_session(
+                    client_id="cid",
+                    access_token="tok",
+                    replay_start_date="2026-02-03",
+                    replay_end_date="2026-02-05",
+                    replay_decision_duration_minutes=1,
+                )
+
+        trade_dates = [trade.entry_time.date().isoformat() for trade in state.trade_history]
+        self.assertEqual(trade_dates, ["2026-02-05", "2026-02-03"])
+        self.assertEqual(state.data_sync.replay_session_day, date(2026, 2, 5))
+        self.assertIn("Skipped 1", state.data_sync.message or "")
+
     def test_nifty_replay_entries_use_spot_pricing_not_option_pricing(self) -> None:
         decision = TradeDecision(
             action=TradeAction.enter_put,

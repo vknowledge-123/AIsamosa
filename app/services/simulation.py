@@ -39,7 +39,7 @@ from app.services.ai_service import AIDecisionService
 from app.services.credential_store import CredentialStore
 from app.services.dhan_adapter import DhanMarketFeedAdapter, resolve_quote_subscription
 from app.services.dhan_execution import DhanExecutionError, DhanExecutionService
-from app.services.dhan_history import DhanChartService
+from app.services.dhan_history import DhanChartEmptyDataError, DhanChartService, DhanSessionBundle
 from app.services.dhan_order_updates import DhanOrderUpdateAdapter
 from app.services.instruments import BANKNIFTY_INSTRUMENT, NIFTY_INSTRUMENT, InstrumentSpec, build_stock_instrument, get_instrument_spec
 from app.services.dhan_options import DhanOptionQuoteError, DhanOptionQuoteService, OptionContract, OptionQuote
@@ -453,6 +453,61 @@ class SimulationEngine:
                 security_id=spec.security_id,
                 exchange_segment=spec.exchange_segment,
                 instrument_type=spec.instrument_type,
+            )
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            nifty_future = executor.submit(fetch, self.instrument_spec)
+            banknifty_future = executor.submit(fetch, self.companion_instrument_spec)
+            return nifty_future.result(), banknifty_future.result()
+
+    def _fetch_historical_bundle_with_previous_fallback(
+        self,
+        *,
+        client_id: str,
+        access_token: str,
+        replay_session_day: date,
+        spec: InstrumentSpec,
+    ) -> DhanSessionBundle:
+        replay_candles, replay_source = self.chart_service.fetch_session_day_candles(
+            client_id,
+            access_token,
+            spec.security_id,
+            replay_session_day,
+            spec.exchange_segment,
+            spec.instrument_type,
+        )
+        previous_candidate = self.chart_service._previous_trading_day(replay_session_day)
+        previous_candles, previous_source, previous_context_day = self.chart_service.fetch_latest_available_session_day_candles(
+            client_id,
+            access_token,
+            spec.security_id,
+            previous_candidate,
+            spec.exchange_segment,
+            spec.instrument_type,
+        )
+        return DhanSessionBundle(
+            previous_day_candles=previous_candles,
+            intraday_candles=replay_candles,
+            live_open_candle=None,
+            previous_day_source=previous_source,
+            replay_session_day=replay_session_day,
+            intraday_source=replay_source,
+            previous_context_day=previous_context_day,
+        )
+
+    def _fetch_nifty_and_banknifty_historical_bundles_with_previous_fallback(
+        self,
+        *,
+        client_id: str,
+        access_token: str,
+        replay_session_day: date,
+    ) -> tuple[DhanSessionBundle, DhanSessionBundle]:
+        def fetch(spec: InstrumentSpec) -> DhanSessionBundle:
+            return self._fetch_historical_bundle_with_previous_fallback(
+                client_id=client_id,
+                access_token=access_token,
+                replay_session_day=replay_session_day,
+                spec=spec,
             )
 
         with ThreadPoolExecutor(max_workers=2) as executor:
@@ -2389,6 +2444,80 @@ class SimulationEngine:
         worker.start()
         return self.get_state()
 
+    def start_simulate_historical_range_async(
+        self,
+        *,
+        client_id: str | None = None,
+        access_token: str | None = None,
+        replay_start_date: str,
+        replay_end_date: str,
+        replay_decision_duration_minutes: int = 1,
+    ) -> DashboardState:
+        client, token = self._available_dhan_credentials(client_id, access_token)
+        if not client or not token:
+            raise ValueError("Dhan client ID and access token are required to simulate historical range data")
+        start_day = self._parse_replay_date(replay_start_date, field_name="replay_start_date")
+        end_day = self._parse_replay_date(replay_end_date, field_name="replay_end_date")
+        if end_day < start_day:
+            raise ValueError("Replay end date must be on or after replay start date.")
+        if (end_day - start_day).days > 90:
+            raise ValueError("Bulk NIFTY replay range cannot exceed 90 calendar days.")
+        if self.instrument_mode != InstrumentMode.nifty or self.instrument_spec.symbol != "NIFTY":
+            raise ValueError("Bulk historical replay is currently available for NIFTY mode only.")
+        self._remember_dhan_credentials(client, token)
+        started_at = datetime.now()
+        job_id = uuid.uuid4().hex
+        with self.lock:
+            self._ensure_no_running_operation_locked()
+            self._operation_job_token = job_id
+            self._set_operation_job_locked(
+                job_id=job_id,
+                job_type="simulate-historical-range",
+                status="running",
+                message=(
+                    f"Bulk NIFTY replay started for {start_day.isoformat()} to {end_day.isoformat()} "
+                    "with automatic previous-trading-day context."
+                ),
+                started_at=started_at,
+            )
+            self.data_sync = DataSyncState(
+                status="syncing",
+                source="dhan-rest",
+                message=(
+                    f"Background bulk NIFTY replay started for {start_day.isoformat()} to {end_day.isoformat()}."
+                ),
+                last_synced_at=self.data_sync.last_synced_at,
+                replay_session_day=start_day,
+                previous_context_day=None,
+                previous_day_candles=self.data_sync.previous_day_candles,
+                intraday_candles=self.data_sync.intraday_candles,
+                total_loaded=self.data_sync.total_loaded,
+                has_live_open_candle=False,
+            )
+            self._mark_state_dirty_locked()
+        worker = threading.Thread(
+            target=self._run_operation_job,
+            kwargs={
+                "job_id": job_id,
+                "job_type": "simulate-historical-range",
+                "target": lambda: self.simulate_historical_range_session(
+                    client_id=client,
+                    access_token=token,
+                    replay_start_date=replay_start_date,
+                    replay_end_date=replay_end_date,
+                    replay_decision_duration_minutes=replay_decision_duration_minutes,
+                ),
+                "success_message": (
+                    f"Background bulk NIFTY replay completed for {start_day.isoformat()} to {end_day.isoformat()}."
+                ),
+                "error_prefix": "Background bulk NIFTY replay failed",
+            },
+            name="simulate-historical-range-job",
+            daemon=True,
+        )
+        worker.start()
+        return self.get_state()
+
     def sync_dhan_context(self, client_id: str | None = None, access_token: str | None = None) -> DashboardState:
         client, token = self._available_dhan_credentials(client_id, access_token)
         if not client or not token:
@@ -2789,6 +2918,166 @@ class SimulationEngine:
         finally:
             self._end_replay_simulation()
         return self.get_state()
+
+    def simulate_historical_range_session(
+        self,
+        *,
+        client_id: str | None = None,
+        access_token: str | None = None,
+        replay_start_date: str,
+        replay_end_date: str,
+        replay_decision_duration_minutes: int = 1,
+    ) -> DashboardState:
+        client, token = self._available_dhan_credentials(client_id, access_token)
+        if not client or not token:
+            raise ValueError("Dhan client ID and access token are required to simulate historical range data")
+        if self.instrument_mode != InstrumentMode.nifty or self.instrument_spec.symbol != "NIFTY":
+            raise ValueError("Bulk historical replay is currently available for NIFTY mode only.")
+        start_day = self._parse_replay_date(replay_start_date, field_name="replay_start_date")
+        end_day = self._parse_replay_date(replay_end_date, field_name="replay_end_date")
+        if end_day < start_day:
+            raise ValueError("Replay end date must be on or after replay start date.")
+        if (end_day - start_day).days > 90:
+            raise ValueError("Bulk NIFTY replay range cannot exceed 90 calendar days.")
+
+        self._remember_dhan_credentials(client, token)
+        replay_decision_duration_minutes = self._normalize_replay_decision_duration_minutes(
+            replay_decision_duration_minutes
+        )
+        replay_days = self._weekday_range(start_day, end_day)
+        if not replay_days:
+            raise ValueError("Selected replay range has no weekday trading sessions.")
+
+        aggregate_trades: list[SimulatedTrade] = []
+        replayed_days: list[date] = []
+        skipped_days: list[str] = []
+        last_bundle: DhanSessionBundle | None = None
+        last_end_index: int | None = None
+        self._begin_replay_simulation()
+        try:
+            for replay_day in replay_days:
+                try:
+                    if self._use_banknifty_companion():
+                        bundle, companion_bundle = self._fetch_nifty_and_banknifty_historical_bundles_with_previous_fallback(
+                            client_id=client,
+                            access_token=token,
+                            replay_session_day=replay_day,
+                        )
+                    else:
+                        bundle = self._fetch_historical_bundle_with_previous_fallback(
+                            client_id=client,
+                            access_token=token,
+                            replay_session_day=replay_day,
+                            spec=self.instrument_spec,
+                        )
+                        companion_bundle = None
+                except DhanChartEmptyDataError as exc:
+                    skipped_days.append(f"{replay_day.isoformat()} no candles ({exc})")
+                    continue
+
+                with self.lock:
+                    intraday_count = len(bundle.intraday_candles)
+                    if intraday_count == 0:
+                        skipped_days.append(f"{replay_day.isoformat()} no intraday candles")
+                        continue
+                    start_index, end_index = self._load_dhan_bundle(bundle, replay_from_session_start=True)
+                    if companion_bundle is not None:
+                        self._load_companion_bundle_locked(companion_bundle, replay_from_session_start=True)
+                    self.data_sync = DataSyncState(
+                        status="syncing",
+                        source="dhan-rest",
+                        message=(
+                            f"Bulk NIFTY replay running: {replay_day.isoformat()} "
+                            f"with previous context {bundle.previous_context_day.isoformat() if bundle.previous_context_day else '-'}."
+                        ),
+                        last_synced_at=datetime.now(),
+                        replay_session_day=replay_day,
+                        previous_context_day=bundle.previous_context_day,
+                        previous_day_candles=len(bundle.previous_day_candles),
+                        intraday_candles=intraday_count,
+                        total_loaded=len(bundle.previous_day_candles) + intraday_count,
+                        has_live_open_candle=False,
+                    )
+                    self._mark_state_dirty_locked()
+
+                for evaluation_index in range(start_index, end_index + 1):
+                    self._evaluate_index(
+                        evaluation_index,
+                        source="replay",
+                        replay_decision_duration_minutes=replay_decision_duration_minutes,
+                    )
+
+                with self.lock:
+                    last_candle = self.candles[end_index] if 0 <= end_index < len(self.candles) else None
+                    if self.active_trade and last_candle:
+                        self.close_active_trade(last_candle, "Replay completed at the final available session candle.")
+                    aggregate_trades.extend(trade.model_copy(deep=True) for trade in self.trade_history)
+                    replayed_days.append(replay_day)
+                    last_bundle = bundle
+                    last_end_index = end_index
+                    self.rulebook_service.learning_log.insert(
+                        0,
+                        (
+                            f"Bulk NIFTY replay completed {replay_day.isoformat()} with previous context "
+                            f"{bundle.previous_context_day.isoformat() if bundle.previous_context_day else '-'}: "
+                            f"{len(self.trade_history)} trade(s)."
+                        ),
+                    )
+                    self._mark_state_dirty_locked()
+        finally:
+            self._end_replay_simulation()
+
+        if not replayed_days:
+            skipped_text = "; ".join(skipped_days[:4]) if skipped_days else "No replayable candles found."
+            raise ValueError(f"No NIFTY trading days were replayed in the selected range. {skipped_text}")
+
+        with self.lock:
+            self.trade_history = aggregate_trades
+            self.active_trade = None
+            self.realized_pnl = round(sum(float(trade.booked_pnl or 0.0) for trade in self.trade_history), 2)
+            self.balance = round(self.settings.simulation_starting_balance + self.realized_pnl, 2)
+            skipped_suffix = f" Skipped {len(skipped_days)} holiday/no-data day(s)." if skipped_days else ""
+            previous_context_day = last_bundle.previous_context_day if last_bundle is not None else None
+            replay_session_day = replayed_days[-1]
+            previous_count = len(last_bundle.previous_day_candles) if last_bundle is not None else 0
+            intraday_count = len(last_bundle.intraday_candles) if last_bundle is not None else 0
+            self.data_sync = DataSyncState(
+                status="ready",
+                source="dhan-rest",
+                message=(
+                    f"Bulk NIFTY replay completed for {len(replayed_days)} trading day(s): "
+                    f"{replayed_days[0].isoformat()} to {replayed_days[-1].isoformat()}."
+                    f"{skipped_suffix}"
+                ),
+                last_synced_at=datetime.now(),
+                replay_session_day=replay_session_day,
+                previous_context_day=previous_context_day,
+                previous_day_candles=previous_count,
+                intraday_candles=intraday_count,
+                total_loaded=previous_count + intraday_count,
+                has_live_open_candle=False,
+            )
+            self.rulebook_service.learning_log.insert(
+                0,
+                (
+                    f"Bulk NIFTY replay finished: {len(replayed_days)} trading day(s), "
+                    f"{len(self.trade_history)} total trade(s), realized P&L {self.realized_pnl:.2f}."
+                    f"{skipped_suffix}"
+                ),
+            )
+            if last_end_index is not None:
+                self.current_index = last_end_index
+            self._mark_state_dirty_locked()
+        return self.get_state()
+
+    def _weekday_range(self, start_day: date, end_day: date) -> list[date]:
+        days: list[date] = []
+        current = start_day
+        while current <= end_day:
+            if current.weekday() < 5:
+                days.append(current)
+            current += timedelta(days=1)
+        return days
 
     def _parse_replay_date(self, raw_value: str, *, field_name: str) -> date:
         value = (raw_value or "").strip()

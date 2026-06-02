@@ -257,6 +257,7 @@ function localIsoDate(value) {
 
 function setHistoricalReplayDefaults() {
   const form = document.getElementById("historicalReplayForm");
+  const rangeForm = document.getElementById("historicalRangeReplayForm");
   if (!form) {
     return;
   }
@@ -278,6 +279,16 @@ function setHistoricalReplayDefaults() {
   }
   if (!previousField.value) {
     previousField.value = localIsoDate(previous);
+  }
+  if (rangeForm) {
+    const startField = rangeForm.elements.replay_start_date;
+    const endField = rangeForm.elements.replay_end_date;
+    if (startField && !startField.value) {
+      startField.value = localIsoDate(previous);
+    }
+    if (endField && !endField.value) {
+      endField.value = localIsoDate(replay);
+    }
   }
 }
 
@@ -696,6 +707,57 @@ function renderTrade(trade) {
   `;
 }
 
+function tradeEntryDateLabel(trade) {
+  const parsed = toIstDate(trade.entry_time);
+  if (!parsed) {
+    return "-";
+  }
+  return parsed.toLocaleDateString("en-IN", {
+    timeZone: "Asia/Kolkata",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  });
+}
+
+function renderTradeHistoryList(trades) {
+  elements.tradeHistory.innerHTML = "";
+  if (!trades || trades.length === 0) {
+    elements.tradeHistory.innerHTML = `<div class="list-item empty-state">No items yet.</div>`;
+    return;
+  }
+  let currentDate = null;
+  trades.forEach((trade) => {
+    const dateLabel = tradeEntryDateLabel(trade);
+    if (dateLabel !== currentDate) {
+      currentDate = dateLabel;
+      elements.tradeHistory.insertAdjacentHTML("beforeend", `
+        <div class="list-item">
+          <strong>${dateLabel}</strong>
+          <span class="pill">Replay Day</span>
+        </div>
+      `);
+    }
+    elements.tradeHistory.insertAdjacentHTML("beforeend", `
+      <div class="list-item">
+        <strong>${trade.symbol}</strong>
+        <p>${trade.status} | ${trade.direction} | ${trade.price_mode === "cash" ? "Cash" : "Option"} | Entry ${money(trade.entry_price)} | Exit ${money(trade.exit_price)}</p>
+        <p>Setup ${trade.setup_type || "-"} | Score ${trade.setup_score != null ? trade.setup_score.toFixed(1) : "-"} | State ${trade.market_state || "-"}</p>
+        <p>Total Qty ${trade.quantity} | Base Qty ${trade.base_quantity || trade.quantity} | Open Qty ${trade.open_quantity ?? 0} | Closed Qty ${trade.closed_quantity || 0} | Pyramid Adds ${trade.pyramid_count || 0}/2 | Booked P&amp;L ${money(trade.booked_pnl)}</p>
+        <p>Add Legs ${(trade.pyramid_legs || []).map((leg) => `#${leg.add_number} ${leg.status} qty ${leg.open_quantity}/${leg.quantity} stop ${money(leg.invalidation_level)}`).join(" | ") || "No add legs"}</p>
+        <p>Target ${money(trade.target_price)} | Stop ${money(trade.stop_price)} | Invalidation ${money(trade.invalidation_level)} | First Target ${money(trade.first_target_price)}</p>
+        <p>Broker ${trade.broker_status || "-"} | Entry Order ${trade.broker_order_id || "-"} | Exit Order ${trade.broker_exit_order_id || "-"} | Product ${trade.broker_product_type || "-"}</p>
+        <p>Entry Time ${formatIstDateTime(trade.entry_time)} | Exit Time ${formatIstDateTime(trade.exit_time)} | Latest Quote ${formatIstDateTime(trade.current_quote_time)}</p>
+        <p>Entry Source ${trade.entry_quote_source || "-"} | Current Source ${trade.current_quote_source || "-"} | Exit Source ${trade.exit_quote_source || "-"}</p>
+        <p>Entry Spot ${money(trade.entry_spot_price)} | Target Spot ${money(trade.target_spot_price)} | Trade Security ${trade.trade_security_id || trade.option_security_id || "-"}</p>
+        <p>Entry Logic ${trade.entry_notes || trade.notes || "No entry notes"}</p>
+        <p>Exit Logic ${trade.exit_notes || (trade.status === "OPEN" ? "Trade is still open." : trade.notes || "No exit notes")}</p>
+        <p>P&amp;L ${money(trade.pnl)} | ${trade.broker_status_message || "No broker message"}</p>
+      </div>
+    `);
+  });
+}
+
 function renderPendingSetup(setup, state) {
   if (!setup || ["consumed", "invalidated"].includes(setup.status)) {
     const extra = setup && ["consumed", "invalidated"].includes(setup.status)
@@ -1030,23 +1092,7 @@ function renderState(state) {
 
   renderTrade(state.active_trade);
 
-  renderList(elements.tradeHistory, state.trade_history, (trade) => `
-    <div class="list-item">
-      <strong>${trade.symbol}</strong>
-      <p>${trade.status} | ${trade.direction} | ${trade.price_mode === "cash" ? "Cash" : "Option"} | Entry ${money(trade.entry_price)} | Exit ${money(trade.exit_price)}</p>
-      <p>Setup ${trade.setup_type || "-"} | Score ${trade.setup_score != null ? trade.setup_score.toFixed(1) : "-"} | State ${trade.market_state || "-"}</p>
-      <p>Total Qty ${trade.quantity} | Base Qty ${trade.base_quantity || trade.quantity} | Open Qty ${trade.open_quantity ?? 0} | Closed Qty ${trade.closed_quantity || 0} | Pyramid Adds ${trade.pyramid_count || 0}/2 | Booked P&amp;L ${money(trade.booked_pnl)}</p>
-      <p>Add Legs ${(trade.pyramid_legs || []).map((leg) => `#${leg.add_number} ${leg.status} qty ${leg.open_quantity}/${leg.quantity} stop ${money(leg.invalidation_level)}`).join(" | ") || "No add legs"}</p>
-      <p>Target ${money(trade.target_price)} | Stop ${money(trade.stop_price)} | Invalidation ${money(trade.invalidation_level)} | First Target ${money(trade.first_target_price)}</p>
-      <p>Broker ${trade.broker_status || "-"} | Entry Order ${trade.broker_order_id || "-"} | Exit Order ${trade.broker_exit_order_id || "-"} | Product ${trade.broker_product_type || "-"}</p>
-      <p>Entry Time ${formatIstDateTime(trade.entry_time)} | Exit Time ${formatIstDateTime(trade.exit_time)} | Latest Quote ${formatIstDateTime(trade.current_quote_time)}</p>
-      <p>Entry Source ${trade.entry_quote_source || "-"} | Current Source ${trade.current_quote_source || "-"} | Exit Source ${trade.exit_quote_source || "-"}</p>
-      <p>Entry Spot ${money(trade.entry_spot_price)} | Target Spot ${money(trade.target_spot_price)} | Trade Security ${trade.trade_security_id || trade.option_security_id || "-"}</p>
-      <p>Entry Logic ${trade.entry_notes || trade.notes || "No entry notes"}</p>
-      <p>Exit Logic ${trade.exit_notes || (trade.status === "OPEN" ? "Trade is still open." : trade.notes || "No exit notes")}</p>
-      <p>P&amp;L ${money(trade.pnl)} | ${trade.broker_status_message || "No broker message"}</p>
-    </div>
-  `);
+  renderTradeHistoryList(state.trade_history || []);
 
   renderList(elements.heuristicNarrative, state.heuristic_narrative, (event) => `
     <div class="list-item">
@@ -1262,6 +1308,22 @@ document.getElementById("historicalReplayForm").addEventListener("submit", (even
     formData.append("decision_duration_minutes", form.elements.decision_duration_minutes.value || "5");
     formData.append("stock_replay_scope", form.elements.stock_replay_scope?.value || "active");
     await postForm("/api/simulation/historical/start", formData);
+  });
+});
+
+document.getElementById("historicalRangeReplayForm").addEventListener("submit", (event) => {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const replayForm = document.getElementById("historicalReplayForm");
+  runAction(async () => {
+    const credentials = currentDhanCredentials();
+    const formData = new FormData();
+    formData.append("client_id", credentials.client_id);
+    formData.append("access_token", credentials.access_token);
+    formData.append("replay_start_date", form.elements.replay_start_date.value || "");
+    formData.append("replay_end_date", form.elements.replay_end_date.value || "");
+    formData.append("decision_duration_minutes", replayForm.elements.decision_duration_minutes.value || "5");
+    await postForm("/api/simulation/historical-range/start", formData);
   });
 });
 
