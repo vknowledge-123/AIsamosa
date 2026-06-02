@@ -4671,11 +4671,19 @@ class HeuristicDecisionEngine:
     def build_candidates(self, context: StrategyContext, observation: Observation) -> list[SetupCandidate]:
         candidates: list[SetupCandidate] = []
         for event in observation.sell_sweeps[:3]:
-            candidate = self.build_candidate_from_event(context, observation, event, option_type="CE", direction="LONG_CALL")
+            candidate = (
+                self._build_nifty_stock_style_candidate_from_event(context, observation, event, option_type="CE", direction="LONG_CALL")
+                if self._is_nifty_mode(context)
+                else self.build_candidate_from_event(context, observation, event, option_type="CE", direction="LONG_CALL")
+            )
             if candidate is not None:
                 candidates.append(candidate)
         for event in observation.buy_sweeps[:3]:
-            candidate = self.build_candidate_from_event(context, observation, event, option_type="PE", direction="LONG_PUT")
+            candidate = (
+                self._build_nifty_stock_style_candidate_from_event(context, observation, event, option_type="PE", direction="LONG_PUT")
+                if self._is_nifty_mode(context)
+                else self.build_candidate_from_event(context, observation, event, option_type="PE", direction="LONG_PUT")
+            )
             if candidate is not None:
                 candidates.append(candidate)
         previous_close_candidates = (
@@ -4685,7 +4693,7 @@ class HeuristicDecisionEngine:
         )
         candidates.extend(previous_close_candidates)
         candidates.extend(self.build_stock_continuation_candidates(context, observation))
-        companion_candidates = self.build_companion_index_candidates(context, observation)
+        companion_candidates = [] if self._is_nifty_mode(context) else self.build_companion_index_candidates(context, observation)
         candidates.extend(companion_candidates)
         if not context.instrument.supports_options:
             stock_bias = (context.stock_trade_bias or "both").strip().lower()
@@ -5107,6 +5115,196 @@ class HeuristicDecisionEngine:
                 )
             )
         return candidates
+
+    def _build_nifty_stock_style_candidate_from_event(
+        self,
+        context: StrategyContext,
+        observation: Observation,
+        event: SweepEvent,
+        *,
+        option_type: str,
+        direction: str,
+    ) -> SetupCandidate | None:
+        if not self._is_nifty_mode(context):
+            return None
+        session = context.session_candles
+        current = context.current_candle
+        reclaim_index = event.reclaim_index
+        if reclaim_index is None or reclaim_index >= len(session):
+            return None
+        reclaim_candle = session[reclaim_index]
+        continuation_slice = session[reclaim_index + 1 : min(len(session), reclaim_index + 4)]
+        current_strength = self.candle_strength(current)
+        reclaim_strength = self.candle_strength(reclaim_candle)
+        hold_count = 0
+        continuation_count = 0
+        follow_through = False
+        if option_type == "CE":
+            for candle in continuation_slice:
+                if candle.close > event.defended_level:
+                    hold_count += 1
+                if candle.close > reclaim_candle.high:
+                    continuation_count += 1
+                    follow_through = True
+        else:
+            for candle in continuation_slice:
+                if candle.close < event.defended_level:
+                    hold_count += 1
+                if candle.close < reclaim_candle.low:
+                    continuation_count += 1
+                    follow_through = True
+
+        level_label = event.level_label.lower()
+        confluence_levels = observation.mapped_sell_liquidity if option_type == "CE" else observation.mapped_buy_liquidity
+        confluence_labels = [
+            label.lower()
+            for label, price, _ in confluence_levels
+            if label != event.level_label and abs(price - event.level_price) <= max(observation.atr * 0.14, 0.3)
+        ]
+        setup_type = "nifty_stock_style_bullish_reclaim" if option_type == "CE" else "nifty_stock_style_bearish_rejection"
+        score = 58.0
+        notes = list(event.notes)
+        notes.append(
+            "NIFTY entry uses stock-style heuristic analysis only: clean sweep, reclaim, defended level, candle quality, and room."
+        )
+        notes.append("NIFTY market-mechanics profiles, regime blockers, and companion-index round rules are ignored for entry.")
+        rule_ids = ["R25", "R26", "R27", "R28", "R36", "R58", "R63", "R79", "R105"]
+
+        if event.primary:
+            score += 14
+            notes.append("Primary liquidity was swept.")
+            rule_ids.extend(["R3", "R59", "R77"])
+        elif self._is_obvious_stop_pool_label(event.level_label):
+            score += 8
+            notes.append("Obvious stop-pool liquidity was swept.")
+            rule_ids.extend(["R59", "R77"])
+        if "round number" in level_label:
+            score += 8
+            notes.append("Round-number liquidity adds stock-style location quality.")
+            rule_ids.extend(["R2", "R78", "R84"])
+        if "equal high cluster" in level_label or "equal low cluster" in level_label:
+            score += 8
+            notes.append("Double top/bottom or equal-level liquidity adds trap potential.")
+            rule_ids.extend(["R3", "R25", "R26", "R77"])
+        if "day high" in level_label or "day low" in level_label or "session extreme" in level_label:
+            score += 7
+            notes.append("Day high/day low liquidity improves the reclaim location.")
+            rule_ids.extend(["R2", "R3", "R77"])
+        if "opening range" in level_label or "first 15m" in level_label:
+            score += 6
+            notes.append("Opening-range liquidity gives a clean intraday reference.")
+            rule_ids.extend(["R2", "R3", "R60"])
+        if "pivot " in level_label or level_label == "pivot point":
+            score += 5
+            notes.append("Pivot liquidity adds a secondary stock-style reference.")
+            rule_ids.extend(["R2", "R72", "R79"])
+        if confluence_labels:
+            score += min(8, 3 + len(confluence_labels) * 2)
+            notes.append("Nearby liquidity confluence supports the sweep/reclaim.")
+            rule_ids.extend(["R3", "R77"])
+        if reclaim_strength >= 0.55:
+            score += 10
+            notes.append("Reclaim or rejection candle has healthy body quality.")
+            rule_ids.append("R89")
+        elif reclaim_strength >= 0.38:
+            score += 4
+            notes.append("Reclaim body is acceptable for early stock-style timing.")
+            rule_ids.extend(["R137", "R138"])
+        else:
+            score -= 8
+            notes.append("Reclaim body is weak, so confidence is reduced.")
+        same_candle_reclaim = event.reclaim_index == event.sweep_index
+        if follow_through:
+            score += 10
+            notes.append("Follow-through confirmed after reclaim.")
+            rule_ids.append("R89")
+        elif same_candle_reclaim:
+            score += 8
+            notes.append("Sweep and reclaim happened on the current candle, so entry does not wait for extra NIFTY confirmation.")
+            rule_ids.extend(["R140", "R141"])
+        elif hold_count >= 1:
+            score += 5
+            notes.append("Defended level held after reclaim.")
+            rule_ids.extend(["R33", "R34"])
+        if current_strength >= 0.45:
+            score += 5
+        elif current_strength < 0.28:
+            score -= 6
+            notes.append("Latest candle body is weak for immediate entry.")
+        if observation.strong_intent:
+            score += 5
+            notes.append("Directional intent is strong enough for stock-style timing.")
+        if observation.weak_intent:
+            score -= 5
+        if observation.two_sided_participation:
+            score += 3
+        ledger_adjustment, ledger_note, ledger_rules = self._liquidity_ledger_score_adjustment(
+            observation,
+            option_type=option_type,
+        )
+        score += ledger_adjustment
+        if ledger_note:
+            notes.append(ledger_note)
+            rule_ids.extend(ledger_rules)
+
+        risk_seed = max(abs(reclaim_candle.close - event.trigger_price), observation.atr * 0.75, 0.01)
+        if option_type == "CE":
+            target_spot = self.next_upside_target(context, max(current.close, reclaim_candle.close), risk_seed)
+            invalidation = min(event.trigger_price, event.defended_level - observation.atr * 0.18)
+            plan_risk = max(current.close - invalidation, observation.atr * 0.25, 0.01)
+            first_target = current.close + plan_risk
+            ready_to_enter = (
+                current.close > event.defended_level
+                and current.close > current.open
+                and (same_candle_reclaim or follow_through or hold_count >= 1 or reclaim_strength >= 0.38)
+            )
+            trigger_basis = "stock_style_close_above"
+            trigger_price = round(max(event.defended_level, current.low), 2)
+        else:
+            target_spot = self.next_downside_target(context, min(current.close, reclaim_candle.close), risk_seed)
+            invalidation = max(event.trigger_price, event.defended_level + observation.atr * 0.18)
+            plan_risk = max(invalidation - current.close, observation.atr * 0.25, 0.01)
+            first_target = current.close - plan_risk
+            ready_to_enter = (
+                current.close < event.defended_level
+                and current.close < current.open
+                and (same_candle_reclaim or follow_through or hold_count >= 1 or reclaim_strength >= 0.38)
+            )
+            trigger_basis = "stock_style_close_below"
+            trigger_price = round(min(event.defended_level, current.high), 2)
+
+        room = abs(target_spot - current.close)
+        if room >= plan_risk * 1.45:
+            score += 7
+            notes.append("There is enough room toward the next liquidity shelf.")
+            rule_ids.extend(["R44", "R98"])
+        else:
+            score -= 8
+            notes.append("Room is tight versus the stock-style entry risk.")
+            rule_ids.extend(["R55", "R98"])
+        if ready_to_enter:
+            score += 7
+            notes.append("Stock-style NIFTY entry is ready immediately after the reclaim.")
+        else:
+            score -= 10
+            notes.append("Stock-style NIFTY setup is armed but not ready until price closes through the defended side.")
+
+        return SetupCandidate(
+            setup_type=setup_type,
+            direction=direction,
+            option_type=option_type,
+            trigger_basis=trigger_basis,
+            trigger_price=round(trigger_price, 2),
+            invalidation_level=round(invalidation, 2),
+            defended_level=round(event.defended_level, 2),
+            target_spot_price=round(target_spot, 2),
+            first_target_price=round(first_target, 2),
+            score=max(0.0, min(score, 100.0)),
+            ready_to_enter=ready_to_enter,
+            notes=notes,
+            rule_ids=list(dict.fromkeys(rule_ids)),
+            event=event,
+        )
 
     def build_candidate_from_event(
         self,
@@ -6710,11 +6908,17 @@ class HeuristicDecisionEngine:
     def _candidate_reason(self, candidate: SetupCandidate, observation: Observation, *, enter_now: bool) -> str:
         action_phrase = "Entry is allowed now" if enter_now else "Setup should stay armed"
         joined_notes = " ".join(candidate.notes[:4])
+        stock_style_nifty = candidate.setup_type.startswith("nifty_stock_style_")
         mechanics = (
             f" Mechanics: {observation.nifty_market_mechanics_summary}"
-            if observation.nifty_market_mechanics_summary
+            if observation.nifty_market_mechanics_summary and not stock_style_nifty
             else ""
         )
+        if stock_style_nifty:
+            return (
+                f"{action_phrase} because stock-style NIFTY analysis shows a {candidate.setup_type} with "
+                f"score {candidate.score:.1f}/100. {joined_notes}"
+            )
         return (
             f"{action_phrase} because {observation.day_type} conditions show a {candidate.setup_type} with "
             f"score {candidate.score:.1f}/100. Regime reads {observation.range_state} / "

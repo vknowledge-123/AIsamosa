@@ -6728,6 +6728,75 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertIsNotNone(reason)
         self.assertIn("wait-for-structure", reason or "")
 
+    def test_nifty_uses_stock_style_sweep_reclaim_entry_builder(self) -> None:
+        candles = [
+            Candle(timestamp=datetime(2026, 6, 2, 9, 15), open=23980.0, high=23988.0, low=23948.0, close=23962.0, volume=1500),
+            Candle(timestamp=datetime(2026, 6, 2, 9, 16), open=23962.0, high=23992.0, low=23940.0, close=23986.0, volume=2200),
+        ]
+        context = self._build_context(candles)
+        event = SweepEvent(
+            side="sell",
+            level_label="First 15m Low",
+            level_price=23950.0,
+            sweep_index=1,
+            reclaim_index=1,
+            trigger_index=1,
+            sweep_price=23940.0,
+            defended_level=23950.0,
+            trigger_price=23986.0,
+            invalidation_level=23936.0,
+            primary=True,
+            quality="tradable",
+            notes=["First 15m Low swept.", "Sweep and reclaim happened on the same candle."],
+        )
+        observation = self._build_observation(
+            atr=20.0,
+            sell_sweeps=[event],
+            buy_sweeps=[],
+            nifty_expected_behavior="large_gap_reset_wait_for_new_structure",
+            nifty_risk_mode="wait_for_acceptance",
+            nifty_market_mechanics_summary="Old complex mechanics should not appear in stock-style entry reason.",
+        )
+
+        candidates = self.test_engine.heuristic_engine.build_candidates(context, observation)
+
+        self.assertTrue(candidates)
+        self.assertEqual(candidates[0].setup_type, "nifty_stock_style_bullish_reclaim")
+        self.assertTrue(candidates[0].ready_to_enter)
+        reason = self.test_engine.heuristic_engine._candidate_reason(candidates[0], observation, enter_now=True)
+        self.assertIn("stock-style NIFTY analysis", reason)
+        self.assertNotIn("Mechanics:", reason)
+
+    def test_nifty_build_candidates_skips_companion_round_entries(self) -> None:
+        candles = [
+            Candle(timestamp=datetime(2026, 6, 2, 9, 15), open=24000.0, high=24020.0, low=23980.0, close=24010.0, volume=1500),
+            Candle(timestamp=datetime(2026, 6, 2, 9, 16), open=24010.0, high=24030.0, low=23990.0, close=24020.0, volume=1800),
+            Candle(timestamp=datetime(2026, 6, 2, 9, 17), open=24020.0, high=24025.0, low=23970.0, close=24005.0, volume=2100),
+        ]
+        bank_candles = [
+            Candle(timestamp=datetime(2026, 6, 2, 9, 15), open=52000.0, high=52025.0, low=51960.0, close=52010.0, volume=1500),
+            Candle(timestamp=datetime(2026, 6, 2, 9, 16), open=52010.0, high=52020.0, low=51940.0, close=51980.0, volume=1800),
+            Candle(timestamp=datetime(2026, 6, 2, 9, 17), open=51980.0, high=52030.0, low=51935.0, close=52025.0, volume=2100),
+        ]
+        context = self._build_context(candles).model_copy(
+            update={
+                "companion_symbol": "BANKNIFTY",
+                "companion_current_candle": bank_candles[-1],
+                "companion_recent_candles": bank_candles,
+                "companion_session_candles": bank_candles,
+            }
+        )
+        observation = self._build_observation(
+            atr=20.0,
+            sell_sweeps=[],
+            buy_sweeps=[],
+            previous_close_touched=False,
+        )
+
+        candidates = self.test_engine.heuristic_engine.build_candidates(context, observation)
+
+        self.assertFalse(any(candidate.setup_type.startswith("companion_round") for candidate in candidates))
+
     def test_buyers_in_profit_gap_up_blocks_round_long_without_auction_acceptance(self) -> None:
         candles = [
             Candle(timestamp=datetime(2026, 2, 26, 9, 15), open=25556.3, high=25567.6, low=25524.25, close=25565.65, volume=8418766),
