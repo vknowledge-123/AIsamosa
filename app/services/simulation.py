@@ -158,6 +158,7 @@ class SimulationEngine:
         self.stock_watch_meta: dict[str, dict] = {}
         self.stock_sessions: dict[str, StockRuntimeSession] = {}
         self.selected_stock_symbol: str | None = None
+        self._bulk_replay_trade_history: list[SimulatedTrade] = []
         self._runtime_dhan_client_id = ""
         self._runtime_dhan_access_token = ""
         self.live_trading_enabled = False
@@ -1291,6 +1292,7 @@ class SimulationEngine:
         self.current_index = -1
         self.active_trade = None
         self.trade_history = []
+        self._bulk_replay_trade_history = []
         self.decision = None
         self.realized_pnl = 0.0
         self.balance = self.settings.simulation_starting_balance
@@ -1331,6 +1333,7 @@ class SimulationEngine:
         self.pending_setup = session.pending_setup.model_copy(deep=True) if session.pending_setup is not None else None
         self.active_trade = session.active_trade.model_copy(deep=True) if session.active_trade is not None else None
         self.trade_history = [trade.model_copy(deep=True) for trade in session.trade_history]
+        self._bulk_replay_trade_history = []
         self.decision = session.decision.model_copy(deep=True) if session.decision is not None else None
         self.realized_pnl = session.realized_pnl
         self.balance = session.balance or self.settings.simulation_starting_balance
@@ -1371,6 +1374,7 @@ class SimulationEngine:
         *,
         replay_from_session_start: bool,
         replay_decision_duration_minutes: int = 1,
+        companion_bundle=None,
     ) -> None:
         def operation():
             if replay_from_session_start:
@@ -1378,6 +1382,11 @@ class SimulationEngine:
             try:
                 with self.lock:
                     result = self._load_dhan_bundle(bundle, replay_from_session_start=replay_from_session_start)
+                    if companion_bundle is not None:
+                        self._load_companion_bundle_locked(
+                            companion_bundle,
+                            replay_from_session_start=replay_from_session_start,
+                        )
                 if replay_from_session_start:
                     start_index, end_index = result
                     for evaluation_index in range(start_index, end_index + 1):
@@ -2235,6 +2244,37 @@ class SimulationEngine:
                 bundles[symbol] = (spec, bundle)
         return bundles
 
+    def _fetch_stock_historical_bundles_with_previous_fallback(
+        self,
+        symbols: list[str],
+        *,
+        client_id: str,
+        access_token: str,
+        replay_session_day: date,
+    ) -> tuple[dict[str, object], list[str]]:
+        def fetch(symbol: str):
+            spec = self._resolve_watchlist_symbol_if_needed(symbol)
+            bundle = self._fetch_historical_bundle_with_previous_fallback(
+                client_id=client_id,
+                access_token=access_token,
+                replay_session_day=replay_session_day,
+                spec=spec,
+            )
+            return symbol, spec, bundle
+
+        bundles: dict[str, object] = {}
+        skipped: list[str] = []
+        with ThreadPoolExecutor(max_workers=self._max_stock_sync_workers(len(symbols))) as executor:
+            future_symbols = {executor.submit(fetch, symbol): symbol for symbol in symbols}
+            for future in as_completed(future_symbols):
+                try:
+                    symbol, spec, bundle = future.result()
+                except DhanChartEmptyDataError as exc:
+                    skipped.append(f"{replay_session_day.isoformat()} {future_symbols[future]} no candles ({exc})")
+                    continue
+                bundles[symbol] = (spec, bundle)
+        return bundles, skipped
+
     def _apply_order_update_to_trade_locked(self, trade: SimulatedTrade | None, payload: dict) -> None:
         if trade is None:
             return
@@ -2506,6 +2546,7 @@ class SimulationEngine:
         replay_start_date: str,
         replay_end_date: str,
         replay_decision_duration_minutes: int = 1,
+        stock_replay_scope: str | None = "all",
     ) -> DashboardState:
         client, token = self._available_dhan_credentials(client_id, access_token)
         if not client or not token:
@@ -2515,21 +2556,26 @@ class SimulationEngine:
         if end_day < start_day:
             raise ValueError("Replay end date must be on or after replay start date.")
         if (end_day - start_day).days > 90:
-            raise ValueError("Bulk NIFTY replay range cannot exceed 90 calendar days.")
-        if self.instrument_mode != InstrumentMode.nifty or self.instrument_spec.symbol != "NIFTY":
-            raise ValueError("Bulk historical replay is currently available for NIFTY mode only.")
+            raise ValueError("Bulk historical replay range cannot exceed 90 calendar days.")
         self._remember_dhan_credentials(client, token)
         started_at = datetime.now()
         job_id = uuid.uuid4().hex
         with self.lock:
             self._ensure_no_running_operation_locked()
+            if self.instrument_mode == InstrumentMode.stock:
+                _, _, normalized_scope = self._stock_replay_symbols_for_scope_locked(stock_replay_scope)
+                replay_label = f"stock {self._stock_replay_scope_label(normalized_scope)}"
+            elif self.instrument_mode == InstrumentMode.nifty and self.instrument_spec.symbol == "NIFTY":
+                replay_label = "NIFTY"
+            else:
+                raise ValueError("Bulk historical replay is available for NIFTY mode or stock mode.")
             self._operation_job_token = job_id
             self._set_operation_job_locked(
                 job_id=job_id,
                 job_type="simulate-historical-range",
                 status="running",
                 message=(
-                    f"Bulk NIFTY replay started for {start_day.isoformat()} to {end_day.isoformat()} "
+                    f"Bulk {replay_label} replay started for {start_day.isoformat()} to {end_day.isoformat()} "
                     "with automatic previous-trading-day context."
                 ),
                 started_at=started_at,
@@ -2538,7 +2584,7 @@ class SimulationEngine:
                 status="syncing",
                 source="dhan-rest",
                 message=(
-                    f"Background bulk NIFTY replay started for {start_day.isoformat()} to {end_day.isoformat()}."
+                    f"Background bulk {replay_label} replay started for {start_day.isoformat()} to {end_day.isoformat()}."
                 ),
                 last_synced_at=self.data_sync.last_synced_at,
                 replay_session_day=start_day,
@@ -2560,11 +2606,12 @@ class SimulationEngine:
                     replay_start_date=replay_start_date,
                     replay_end_date=replay_end_date,
                     replay_decision_duration_minutes=replay_decision_duration_minutes,
+                    stock_replay_scope=stock_replay_scope,
                 ),
                 "success_message": (
-                    f"Background bulk NIFTY replay completed for {start_day.isoformat()} to {end_day.isoformat()}."
+                    f"Background bulk {replay_label} replay completed for {start_day.isoformat()} to {end_day.isoformat()}."
                 ),
-                "error_prefix": "Background bulk NIFTY replay failed",
+                "error_prefix": f"Background bulk {replay_label} replay failed",
             },
             name="simulate-historical-range-job",
             daemon=True,
@@ -2973,6 +3020,187 @@ class SimulationEngine:
             self._end_replay_simulation()
         return self.get_state()
 
+    def _simulate_stock_historical_range_session(
+        self,
+        *,
+        client_id: str,
+        access_token: str,
+        replay_days: list[date],
+        replay_decision_duration_minutes: int,
+        stock_replay_scope: str | None,
+    ) -> DashboardState:
+        with self.lock:
+            watched_symbols, selected, normalized_scope = self._stock_replay_symbols_for_scope_locked(stock_replay_scope)
+        scope_label = self._stock_replay_scope_label(normalized_scope)
+
+        aggregate_trades: list[SimulatedTrade] = []
+        replayed_days: list[date] = []
+        replayed_stock_sessions = 0
+        skipped_days: list[str] = []
+        last_bundle: DhanSessionBundle | None = None
+        last_symbol: str | None = None
+
+        self._begin_replay_simulation()
+        try:
+            for replay_day in replay_days:
+                try:
+                    bundles, skipped_symbols = self._fetch_stock_historical_bundles_with_previous_fallback(
+                        watched_symbols,
+                        client_id=client_id,
+                        access_token=access_token,
+                        replay_session_day=replay_day,
+                    )
+                except DhanChartEmptyDataError as exc:
+                    skipped_days.append(f"{replay_day.isoformat()} no stock candles ({exc})")
+                    continue
+
+                if skipped_symbols:
+                    skipped_days.extend(skipped_symbols[:4])
+
+                companion_bundle = None
+                try:
+                    companion_bundle = self._fetch_historical_bundle_with_previous_fallback(
+                        client_id=client_id,
+                        access_token=access_token,
+                        replay_session_day=replay_day,
+                        spec=NIFTY_INSTRUMENT,
+                    )
+                except DhanChartEmptyDataError as exc:
+                    skipped_days.append(f"{replay_day.isoformat()} NIFTY companion no candles ({exc})")
+
+                replayed_symbols_for_day: list[str] = []
+                for symbol in watched_symbols:
+                    fetched = bundles.get(symbol)
+                    if fetched is None:
+                        continue
+                    spec, bundle = fetched
+                    intraday_count = len(bundle.intraday_candles)
+                    if intraday_count == 0:
+                        skipped_days.append(f"{replay_day.isoformat()} {symbol} no intraday candles")
+                        continue
+
+                    with self.lock:
+                        self.data_sync = DataSyncState(
+                            status="syncing",
+                            source="dhan-rest",
+                            message=(
+                                f"Bulk stock replay running: {replay_day.isoformat()} {symbol} "
+                                f"with previous context {bundle.previous_context_day.isoformat() if bundle.previous_context_day else '-'}."
+                            ),
+                            last_synced_at=datetime.now(),
+                            replay_session_day=replay_day,
+                            previous_context_day=bundle.previous_context_day,
+                            previous_day_candles=len(bundle.previous_day_candles),
+                            intraday_candles=intraday_count,
+                            total_loaded=len(bundle.previous_day_candles) + intraday_count,
+                            has_live_open_candle=False,
+                        )
+                        self.stock_watch_meta.setdefault(symbol, {}).update(
+                            {
+                                "history_status": "syncing",
+                                "previous_day_candles": len(bundle.previous_day_candles),
+                                "intraday_candles": intraday_count,
+                                "total_loaded": len(bundle.previous_day_candles) + intraday_count,
+                            }
+                        )
+                        self._mark_state_dirty_locked()
+
+                    self._apply_bundle_to_stock_session(
+                        symbol,
+                        bundle,
+                        replay_from_session_start=True,
+                        replay_decision_duration_minutes=replay_decision_duration_minutes,
+                        companion_bundle=companion_bundle,
+                    )
+
+                    with self.lock:
+                        session = self.stock_sessions.get(symbol)
+                        if session is None:
+                            continue
+                        day_trades = [trade.model_copy(deep=True) for trade in session.trade_history]
+                        aggregate_trades.extend(day_trades)
+                        self.stock_watch_meta.setdefault(symbol, {}).update(
+                            {
+                                "history_status": "ready",
+                                "previous_day_candles": len(bundle.previous_day_candles),
+                                "intraday_candles": intraday_count,
+                                "total_loaded": len(bundle.previous_day_candles) + intraday_count,
+                            }
+                        )
+                        self.rulebook_service.learning_log.insert(
+                            0,
+                            (
+                                f"Bulk stock replay completed {replay_day.isoformat()} for {spec.label}: "
+                                f"{len(day_trades)} trade(s), previous context "
+                                f"{bundle.previous_context_day.isoformat() if bundle.previous_context_day else '-'}."
+                            ),
+                        )
+                        self._mark_state_dirty_locked()
+                    replayed_symbols_for_day.append(symbol)
+                    replayed_stock_sessions += 1
+                    last_bundle = bundle
+                    last_symbol = symbol
+
+                if replayed_symbols_for_day:
+                    replayed_days.append(replay_day)
+                else:
+                    skipped_days.append(f"{replay_day.isoformat()} no replayable stocks under {scope_label} scope")
+        finally:
+            self._end_replay_simulation()
+
+        if not replayed_days:
+            skipped_text = "; ".join(skipped_days[:4]) if skipped_days else "No replayable stock candles found."
+            raise ValueError(f"No stock trading days were replayed in the selected range. {skipped_text}")
+
+        aggregate_trades.sort(key=lambda trade: trade.entry_time)
+        with self.lock:
+            if selected:
+                self.selected_stock_symbol = selected
+                self._load_stock_session_locked(selected)
+            self._bulk_replay_trade_history = [trade.model_copy(deep=True) for trade in aggregate_trades]
+            self.active_trade = None
+            aggregate_realized_pnl = round(sum(float(trade.booked_pnl or 0.0) for trade in aggregate_trades), 2)
+            self.replay_pnl_summary = self._build_replay_pnl_summary(
+                aggregate_trades,
+                replayed_days=replayed_days,
+                skipped_count=len(skipped_days),
+                use_daily_cap=False,
+            )
+            skipped_suffix = f" Skipped {len(skipped_days)} holiday/no-data stock item(s)." if skipped_days else ""
+            previous_context_day = last_bundle.previous_context_day if last_bundle is not None else None
+            previous_count = len(last_bundle.previous_day_candles) if last_bundle is not None else 0
+            intraday_count = len(last_bundle.intraday_candles) if last_bundle is not None else 0
+            self.data_sync = DataSyncState(
+                status="ready",
+                source="dhan-rest",
+                message=(
+                    f"Bulk stock replay completed for {len(replayed_days)} trading day(s), "
+                    f"{replayed_stock_sessions} stock-session(s), {len(aggregate_trades)} trade(s): "
+                    f"{replayed_days[0].isoformat()} to {replayed_days[-1].isoformat()} under {scope_label} scope."
+                    f"{skipped_suffix}"
+                ),
+                last_synced_at=datetime.now(),
+                replay_session_day=replayed_days[-1],
+                previous_context_day=previous_context_day,
+                previous_day_candles=previous_count,
+                intraday_candles=intraday_count,
+                total_loaded=previous_count + intraday_count,
+                has_live_open_candle=False,
+            )
+            if last_symbol:
+                self.stock_watch_meta.setdefault(last_symbol, {}).update({"history_status": "ready"})
+            self.rulebook_service.learning_log.insert(
+                0,
+                (
+                    f"Bulk stock replay finished: {len(replayed_days)} trading day(s), "
+                    f"{replayed_stock_sessions} stock-session(s), {len(aggregate_trades)} total trade(s), "
+                    f"P&L {aggregate_realized_pnl:.2f}."
+                    f"{skipped_suffix}"
+                ),
+            )
+            self._mark_state_dirty_locked()
+        return self.get_state()
+
     def simulate_historical_range_session(
         self,
         *,
@@ -2981,18 +3209,17 @@ class SimulationEngine:
         replay_start_date: str,
         replay_end_date: str,
         replay_decision_duration_minutes: int = 1,
+        stock_replay_scope: str | None = "all",
     ) -> DashboardState:
         client, token = self._available_dhan_credentials(client_id, access_token)
         if not client or not token:
             raise ValueError("Dhan client ID and access token are required to simulate historical range data")
-        if self.instrument_mode != InstrumentMode.nifty or self.instrument_spec.symbol != "NIFTY":
-            raise ValueError("Bulk historical replay is currently available for NIFTY mode only.")
         start_day = self._parse_replay_date(replay_start_date, field_name="replay_start_date")
         end_day = self._parse_replay_date(replay_end_date, field_name="replay_end_date")
         if end_day < start_day:
             raise ValueError("Replay end date must be on or after replay start date.")
         if (end_day - start_day).days > 90:
-            raise ValueError("Bulk NIFTY replay range cannot exceed 90 calendar days.")
+            raise ValueError("Bulk historical replay range cannot exceed 90 calendar days.")
 
         self._remember_dhan_credentials(client, token)
         replay_decision_duration_minutes = self._normalize_replay_decision_duration_minutes(
@@ -3001,6 +3228,18 @@ class SimulationEngine:
         replay_days = self._weekday_range(start_day, end_day)
         if not replay_days:
             raise ValueError("Selected replay range has no weekday trading sessions.")
+
+        if self.instrument_mode == InstrumentMode.stock:
+            return self._simulate_stock_historical_range_session(
+                client_id=client,
+                access_token=token,
+                replay_days=replay_days,
+                replay_decision_duration_minutes=replay_decision_duration_minutes,
+                stock_replay_scope=stock_replay_scope,
+            )
+
+        if self.instrument_mode != InstrumentMode.nifty or self.instrument_spec.symbol != "NIFTY":
+            raise ValueError("Bulk historical replay is available for NIFTY mode or stock mode.")
 
         aggregate_trades: list[SimulatedTrade] = []
         replayed_days: list[date] = []
@@ -3146,8 +3385,9 @@ class SimulationEngine:
         *,
         replayed_days: list[date],
         skipped_count: int,
+        use_daily_cap: bool | None = None,
     ) -> ReplayPnlSummaryState:
-        cap_enabled = self._nifty_daily_max_loss_enabled()
+        cap_enabled = self._nifty_daily_max_loss_enabled() if use_daily_cap is None else bool(use_daily_cap)
         daily_cap = round(max(self._nifty_daily_max_loss(), 0.0), 2)
         trades_by_day: dict[date, list[SimulatedTrade]] = {day: [] for day in replayed_days}
         for trade in trades:
@@ -3307,6 +3547,7 @@ class SimulationEngine:
         self.current_index = previous_day_count - 1 if replay_from_session_start and previous_day_count else -1
         self.active_trade = None
         self.trade_history = []
+        self._bulk_replay_trade_history = []
         self.decision = None
         self.realized_pnl = 0.0
         self.balance = self.settings.simulation_starting_balance
@@ -3475,7 +3716,8 @@ class SimulationEngine:
             active_trade = self.active_trade.model_copy(deep=True) if self.active_trade is not None else None
             decision = self.decision.model_copy(deep=True) if self.decision is not None else None
             pending_setup = self.pending_setup.model_copy(deep=True) if self.pending_setup is not None else None
-            trade_history = [trade.model_copy(deep=True) for trade in reversed(self.trade_history)]
+            display_trade_history = self._bulk_replay_trade_history or self.trade_history
+            trade_history = [trade.model_copy(deep=True) for trade in reversed(display_trade_history)]
             signal_history = [event.model_copy(deep=True) for event in reversed(self.signal_history)]
             heuristic_trace = self.heuristic_engine.trace_snapshot()
             heuristic_narrative = self.heuristic_engine.narrative_snapshot()

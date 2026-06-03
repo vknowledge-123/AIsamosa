@@ -791,7 +791,7 @@ function renderReplayPnlSummary(summary) {
     : "Disabled";
   elements.replayPnlDaysValue.textContent = `${summary?.replayed_days || 0} / ${summary?.total_trades || 0}`;
   if (!hasSummary || !summary.daily || summary.daily.length === 0) {
-    elements.replayPnlDailyList.innerHTML = `<div class="list-item empty-state">Run a NIFTY bulk replay to see day-wise P&amp;L.</div>`;
+    elements.replayPnlDailyList.innerHTML = `<div class="list-item empty-state">Run a bulk replay to see day-wise P&amp;L.</div>`;
     return;
   }
   elements.replayPnlDailyList.innerHTML = summary.daily.map((day) => `
@@ -1378,6 +1378,7 @@ document.getElementById("historicalRangeReplayForm").addEventListener("submit", 
     formData.append("replay_start_date", form.elements.replay_start_date.value || "");
     formData.append("replay_end_date", form.elements.replay_end_date.value || "");
     formData.append("decision_duration_minutes", replayForm.elements.decision_duration_minutes.value || "5");
+    formData.append("stock_replay_scope", replayForm.elements.stock_replay_scope?.value || "all");
     await postForm("/api/simulation/historical-range/start", formData);
   });
 });

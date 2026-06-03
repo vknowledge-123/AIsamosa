@@ -4946,6 +4946,96 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertEqual(state.data_sync.replay_session_day, date(2026, 2, 5))
         self.assertIn("Skipped 1", state.data_sync.message or "")
 
+    def test_stock_bulk_historical_replay_skips_holidays_and_aggregates_watchlist_trades(self) -> None:
+        self.test_engine.set_instrument_mode("stock")
+        self.test_engine.operating_mode = OperatingMode.heuristic
+        sbin_spec = build_stock_instrument("SBIN", "3045", label="SBIN")
+        tcs_spec = build_stock_instrument("TCS", "11536", label="TCS")
+        with self.test_engine.lock:
+            self.test_engine.stock_watchlist = {"SBIN": sbin_spec, "TCS": tcs_spec}
+            self.test_engine.stock_sessions = {
+                "SBIN": self.test_engine._build_stock_runtime_session(sbin_spec),
+                "TCS": self.test_engine._build_stock_runtime_session(tcs_spec),
+            }
+            self.test_engine.selected_stock_symbol = "SBIN"
+            self.test_engine.instrument_spec = sbin_spec
+
+        def make_bundle(day: date, symbol: str = "SBIN") -> DhanSessionBundle:
+            previous_day = day - timedelta(days=1)
+            offset = 10 if symbol == "TCS" else 0
+            return DhanSessionBundle(
+                previous_day_candles=[
+                    Candle(timestamp=datetime.combine(previous_day, datetime.min.time()).replace(hour=9, minute=15), open=95 + offset, high=98 + offset, low=94 + offset, close=97 + offset, volume=1000000),
+                ],
+                intraday_candles=[
+                    Candle(
+                        timestamp=datetime.combine(day, datetime.min.time()).replace(hour=9, minute=15 + minute),
+                        open=100 + offset + minute,
+                        high=103 + offset + minute,
+                        low=99 + offset + minute,
+                        close=102 + offset + minute,
+                        volume=1000000,
+                    )
+                    for minute in range(6)
+                ],
+                live_open_candle=None,
+                previous_day_source="historical",
+                replay_session_day=day,
+                intraday_source="historical",
+                previous_context_day=previous_day,
+            )
+
+        def fake_stock_fetch(symbols, **kwargs):
+            replay_day = kwargs["replay_session_day"]
+            if replay_day == date(2026, 2, 4):
+                raise DhanChartEmptyDataError("festival holiday")
+            return ({symbol: (self.test_engine.stock_watchlist[symbol], make_bundle(replay_day, symbol)) for symbol in symbols}, [])
+
+        def fake_heuristic(context):
+            if context.active_trade is None:
+                return TradeDecision(
+                    action=TradeAction.enter_call,
+                    confidence=0.9,
+                    reason=f"stock range entry {context.instrument.symbol} {context.current_candle.timestamp.date()}",
+                    option_type="CE",
+                    invalidation_level=context.current_candle.close - 4,
+                    target_spot_price=context.current_candle.close + 8,
+                    setup_type="test_stock_bulk_replay",
+                )
+            return TradeDecision(action=TradeAction.hold, confidence=0.5, reason="hold")
+
+        with patch.object(
+            self.test_engine,
+            "_fetch_stock_historical_bundles_with_previous_fallback",
+            side_effect=fake_stock_fetch,
+        ):
+            with patch.object(
+                self.test_engine,
+                "_fetch_historical_bundle_with_previous_fallback",
+                side_effect=lambda **kwargs: make_bundle(kwargs["replay_session_day"]),
+            ):
+                with patch.object(self.test_engine, "heuristic_decision", side_effect=fake_heuristic):
+                    state = self.test_engine.simulate_historical_range_session(
+                        client_id="cid",
+                        access_token="tok",
+                        replay_start_date="2026-02-03",
+                        replay_end_date="2026-02-05",
+                        replay_decision_duration_minutes=1,
+                        stock_replay_scope="all",
+                    )
+
+        trade_dates = sorted(trade.entry_time.date().isoformat() for trade in state.trade_history)
+        self.assertEqual(trade_dates, ["2026-02-03", "2026-02-03", "2026-02-05", "2026-02-05"])
+        self.assertEqual({trade.instrument_label for trade in state.trade_history}, {"SBIN", "TCS"})
+        self.assertEqual(state.replay_pnl_summary.replayed_days, 2)
+        self.assertEqual(state.replay_pnl_summary.total_trades, 4)
+        self.assertFalse(state.replay_pnl_summary.daily_max_loss_enabled)
+        self.assertIn("Bulk stock replay completed", state.data_sync.message or "")
+        self.assertIn("Skipped 1", state.data_sync.message or "")
+        by_symbol = {item.symbol: item for item in state.stock_watchlist}
+        self.assertEqual(by_symbol["SBIN"].trade_count, 1)
+        self.assertEqual(by_symbol["TCS"].trade_count, 1)
+
     def test_nifty_replay_entries_use_spot_pricing_not_option_pricing(self) -> None:
         decision = TradeDecision(
             action=TradeAction.enter_put,

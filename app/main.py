@@ -285,6 +285,7 @@ async def start_simulate_historical_range(
     replay_start_date: str = Form(...),
     replay_end_date: str = Form(...),
     decision_duration_minutes: int = Form(default=1),
+    stock_replay_scope: str = Form(default="all"),
 ):
     try:
         state = await run_in_threadpool(
@@ -294,12 +295,13 @@ async def start_simulate_historical_range(
             replay_start_date=replay_start_date,
             replay_end_date=replay_end_date,
             replay_decision_duration_minutes=decision_duration_minutes,
+            stock_replay_scope=stock_replay_scope,
         )
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {
         "message": (
-            f"Started background NIFTY historical range replay from {replay_start_date} to {replay_end_date} "
+            f"Started background historical range replay from {replay_start_date} to {replay_end_date} "
             f"using {decision_duration_minutes}-minute replay decisions."
         ),
         "state": state,
