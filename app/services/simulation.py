@@ -307,6 +307,12 @@ class SimulationEngine:
     def _stock_min_5m_turnover(self) -> float:
         return max(float(getattr(self.settings, "stock_min_5m_turnover", 30000000.0)), 0.0)
 
+    def _stock_percent_pyramiding_enabled(self) -> bool:
+        return self.credential_store.get_stock_percent_pyramiding_enabled(self.settings)
+
+    def _stock_percent_pyramiding_step(self) -> float:
+        return self.credential_store.get_stock_percent_pyramiding_step(self.settings)
+
     def _nifty_expiry_preference(self) -> str:
         return self.credential_store.get_nifty_expiry_preference(self.settings)
 
@@ -697,6 +703,8 @@ class SimulationEngine:
             nifty_daily_max_loss=self._nifty_daily_max_loss(),
             pyramiding_enabled=self.credential_store.get_pyramiding_enabled(self.settings),
             intelligent_pyramiding_enabled=self.credential_store.get_intelligent_pyramiding_enabled(self.settings),
+            stock_percent_pyramiding_enabled=self._stock_percent_pyramiding_enabled(),
+            stock_percent_pyramiding_step=self._stock_percent_pyramiding_step(),
             nifty_point_pyramiding_enabled=self._nifty_point_pyramiding_enabled(),
             nifty_point_pyramiding_points=self._nifty_point_pyramiding_points(),
             nifty_trade_bias=self._nifty_trade_bias(),
@@ -3227,6 +3235,8 @@ class SimulationEngine:
         nifty_daily_max_loss: float | None = None,
         pyramiding_enabled: bool | None = None,
         intelligent_pyramiding_enabled: bool | None = None,
+        stock_percent_pyramiding_enabled: bool | None = None,
+        stock_percent_pyramiding_step: float | None = None,
         nifty_point_pyramiding_enabled: bool | None = None,
         nifty_point_pyramiding_points: float | None = None,
         nifty_trade_bias: str | None = None,
@@ -3260,6 +3270,8 @@ class SimulationEngine:
                 nifty_daily_max_loss=nifty_daily_max_loss,
                 pyramiding_enabled=pyramiding_enabled,
                 intelligent_pyramiding_enabled=intelligent_pyramiding_enabled,
+                stock_percent_pyramiding_enabled=stock_percent_pyramiding_enabled,
+                stock_percent_pyramiding_step=stock_percent_pyramiding_step,
                 nifty_point_pyramiding_enabled=nifty_point_pyramiding_enabled,
                 nifty_point_pyramiding_points=nifty_point_pyramiding_points,
                 nifty_trade_bias=nifty_trade_bias,
@@ -3443,6 +3455,8 @@ class SimulationEngine:
             nifty_daily_max_loss=self._nifty_daily_max_loss(),
             pyramiding_enabled=self.credential_store.get_pyramiding_enabled(self.settings),
             intelligent_pyramiding_enabled=self.credential_store.get_intelligent_pyramiding_enabled(self.settings),
+            stock_percent_pyramiding_enabled=self._stock_percent_pyramiding_enabled(),
+            stock_percent_pyramiding_step=self._stock_percent_pyramiding_step(),
             nifty_point_pyramiding_enabled=self._nifty_point_pyramiding_enabled(),
             nifty_point_pyramiding_points=self._nifty_point_pyramiding_points(),
             nifty_trade_bias=self._nifty_trade_bias(),

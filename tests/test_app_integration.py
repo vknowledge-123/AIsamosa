@@ -255,6 +255,8 @@ class AppIntegrationTests(unittest.TestCase):
                 "nifty_daily_max_loss": "125",
                 "pyramiding_enabled": "true",
                 "intelligent_pyramiding_enabled": "true",
+                "stock_percent_pyramiding_enabled": "true",
+                "stock_percent_pyramiding_step": "1.5",
                 "nifty_point_pyramiding_enabled": "true",
                 "nifty_point_pyramiding_points": "55",
                 "nifty_trade_bias": "long",
@@ -286,6 +288,8 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertEqual(summary["nifty_daily_max_loss"], 125.0)
         self.assertTrue(summary["pyramiding_enabled"])
         self.assertTrue(summary["intelligent_pyramiding_enabled"])
+        self.assertTrue(summary["stock_percent_pyramiding_enabled"])
+        self.assertEqual(summary["stock_percent_pyramiding_step"], 1.5)
         self.assertTrue(summary["nifty_point_pyramiding_enabled"])
         self.assertEqual(summary["nifty_point_pyramiding_points"], 55.0)
         self.assertEqual(summary["nifty_trade_bias"], "long")
@@ -5907,6 +5911,54 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertEqual(decision.action, TradeAction.add_position)
         self.assertEqual(decision.add_quantity, 3)
         self.assertIn("point-wise pyramiding add 1/2", decision.reason.lower())
+
+    def test_stock_percent_pyramiding_adds_equal_base_quantity_after_percent_move(self) -> None:
+        candles = [
+            self._make_candle(0, 100.0, 100.5, 99.5, 100.0),
+            self._make_candle(1, 100.0, 101.15, 100.0, 101.05),
+        ]
+        trade = self._build_trade(
+            entry_time=candles[0].timestamp,
+            entry_spot_price=100.0,
+            invalidation_level=98.0,
+            setup_type="bullish_reclaim_watch",
+        )
+        trade.instrument_mode = InstrumentMode.stock
+        trade.instrument_label = "SBIN"
+        trade.price_mode = "cash"
+        trade.trade_security_id = "3045"
+        trade.symbol = "SBIN"
+        trade.direction = "LONG_STOCK"
+        trade.base_quantity = 25
+        trade.quantity = 25
+        trade.open_quantity = 25
+        context = self._build_context(candles, active_trade=trade).model_copy(
+            update={
+                "instrument": InstrumentState(
+                    mode=InstrumentMode.stock,
+                    label="SBIN",
+                    symbol="SBIN",
+                    security_id="3045",
+                    exchange_segment="NSE_EQ",
+                    instrument_type="EQUITY",
+                    supports_options=False,
+                    lot_size=1,
+                ),
+                "stock_percent_pyramiding_enabled": True,
+                "stock_percent_pyramiding_step": 1.0,
+                "stock_partial_profit_enabled": False,
+                "stock_trailing_stop_enabled": False,
+                "stock_heuristic_early_exit_enabled": False,
+            }
+        )
+        observation = self._build_observation(atr=2.0, day_type="gap-and-go")
+
+        with patch.object(self.test_engine.heuristic_engine, "build_candidates", return_value=[]):
+            decision = self.test_engine.heuristic_engine.manage_active_trade(context, observation, current_trade_price=101.05)
+
+        self.assertEqual(decision.action, TradeAction.add_position)
+        self.assertEqual(decision.add_quantity, 25)
+        self.assertIn("stock percentage pyramiding add 1/2", decision.reason.lower())
 
     def test_nifty_square_offs_near_next_100_point_round_shelf(self) -> None:
         candles = [

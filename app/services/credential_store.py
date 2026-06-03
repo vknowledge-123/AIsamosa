@@ -52,6 +52,8 @@ class CredentialStore:
         nifty_daily_max_loss: float | None = None,
         pyramiding_enabled: bool | None = None,
         intelligent_pyramiding_enabled: bool | None = None,
+        stock_percent_pyramiding_enabled: bool | None = None,
+        stock_percent_pyramiding_step: float | None = None,
         nifty_point_pyramiding_enabled: bool | None = None,
         nifty_point_pyramiding_points: float | None = None,
         nifty_trade_bias: str | None = None,
@@ -193,6 +195,16 @@ class CredentialStore:
             normalized = bool(intelligent_pyramiding_enabled)
             if payload.get("intelligent_pyramiding_enabled") != normalized:
                 payload["intelligent_pyramiding_enabled"] = normalized
+                updated = True
+        if stock_percent_pyramiding_enabled is not None:
+            normalized = bool(stock_percent_pyramiding_enabled)
+            if payload.get("stock_percent_pyramiding_enabled") != normalized:
+                payload["stock_percent_pyramiding_enabled"] = normalized
+                updated = True
+        if stock_percent_pyramiding_step is not None:
+            normalized = round(max(float(stock_percent_pyramiding_step), 0.0), 2)
+            if payload.get("stock_percent_pyramiding_step") != normalized:
+                payload["stock_percent_pyramiding_step"] = normalized
                 updated = True
         if nifty_point_pyramiding_enabled is not None:
             normalized = bool(nifty_point_pyramiding_enabled)
@@ -414,6 +426,21 @@ class CredentialStore:
             bool(settings.intelligent_pyramiding_enabled),
         )
 
+    def get_stock_percent_pyramiding_enabled(self, settings: Settings) -> bool:
+        payload = self.load()
+        return self._coerce_bool(
+            payload.get("stock_percent_pyramiding_enabled"),
+            bool(settings.stock_percent_pyramiding_enabled),
+        )
+
+    def get_stock_percent_pyramiding_step(self, settings: Settings) -> float:
+        payload = self.load()
+        return self._coerce_float(
+            payload.get("stock_percent_pyramiding_step"),
+            float(settings.stock_percent_pyramiding_step),
+            minimum=0.0,
+        )
+
     def get_nifty_option_trade_mode(self, settings: Settings) -> str:
         payload = self.load()
         return self._normalize_nifty_option_trade_mode(payload.get("nifty_option_trade_mode") or settings.nifty_option_trade_mode)
@@ -493,6 +520,8 @@ class CredentialStore:
             nifty_daily_max_loss=self.get_nifty_daily_max_loss(settings),
             pyramiding_enabled=self.get_pyramiding_enabled(settings),
             intelligent_pyramiding_enabled=self.get_intelligent_pyramiding_enabled(settings),
+            stock_percent_pyramiding_enabled=self.get_stock_percent_pyramiding_enabled(settings),
+            stock_percent_pyramiding_step=self.get_stock_percent_pyramiding_step(settings),
             nifty_point_pyramiding_enabled=self.get_nifty_point_pyramiding_enabled(settings),
             nifty_point_pyramiding_points=self.get_nifty_point_pyramiding_points(settings),
             nifty_trade_bias=self.get_nifty_trade_bias(settings),

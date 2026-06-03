@@ -431,6 +431,8 @@ async def save_credentials(
     nifty_daily_max_loss: float = Form(default=100.0),
     pyramiding_enabled: str = Form(default="false"),
     intelligent_pyramiding_enabled: str = Form(default="false"),
+    stock_percent_pyramiding_enabled: str = Form(default="false"),
+    stock_percent_pyramiding_step: float = Form(default=1.0),
     nifty_point_pyramiding_enabled: str = Form(default="false"),
     nifty_point_pyramiding_points: float = Form(default=50.0),
     nifty_trade_bias: str = Form(default="both"),
@@ -446,6 +448,7 @@ async def save_credentials(
     nifty_daily_loss_enabled = nifty_daily_max_loss_enabled.strip().lower() in {"1", "true", "yes", "on"}
     pyramid_enabled = pyramiding_enabled.strip().lower() in {"1", "true", "yes", "on"}
     intelligent_pyramid_enabled = intelligent_pyramiding_enabled.strip().lower() in {"1", "true", "yes", "on"}
+    stock_percent_pyramid_enabled = stock_percent_pyramiding_enabled.strip().lower() in {"1", "true", "yes", "on"}
     nifty_point_pyramid_enabled = nifty_point_pyramiding_enabled.strip().lower() in {"1", "true", "yes", "on"}
     state = await run_in_threadpool(
         engine.save_credentials,
@@ -475,6 +478,8 @@ async def save_credentials(
         nifty_daily_max_loss=nifty_daily_max_loss,
         pyramiding_enabled=pyramid_enabled,
         intelligent_pyramiding_enabled=intelligent_pyramid_enabled,
+        stock_percent_pyramiding_enabled=stock_percent_pyramid_enabled,
+        stock_percent_pyramiding_step=stock_percent_pyramiding_step,
         nifty_point_pyramiding_enabled=nifty_point_pyramid_enabled,
         nifty_point_pyramiding_points=nifty_point_pyramiding_points,
         nifty_trade_bias=nifty_trade_bias,

@@ -30,6 +30,8 @@ class Settings(BaseSettings):
     nifty_daily_max_loss: float = 100.0
     pyramiding_enabled: bool = False
     intelligent_pyramiding_enabled: bool = False
+    stock_percent_pyramiding_enabled: bool = False
+    stock_percent_pyramiding_step: float = 1.0
     nifty_point_pyramiding_enabled: bool = False
     nifty_point_pyramiding_points: float = 50.0
     nifty_trade_bias: str = "both"

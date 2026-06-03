@@ -6598,6 +6598,49 @@ class HeuristicDecisionEngine:
 
         pyramid_count = max(int(trade.pyramid_count or 0), 0)
         if (
+            stock_mode_trade
+            and context.stock_percent_pyramiding_enabled
+            and context.stock_percent_pyramiding_step > 0
+            and pyramid_count < 2
+        ):
+            base_quantity = max(int(trade.base_quantity or trade.quantity or 1), 1)
+            step_fraction = max(float(context.stock_percent_pyramiding_step), 0.0) / 100.0
+            next_add_number = pyramid_count + 1
+            cumulative_fraction = step_fraction * next_add_number
+            if cumulative_fraction < 1.0:
+                trigger_spot = (
+                    trade.entry_spot_price * (1.0 + cumulative_fraction)
+                    if bullish_trade
+                    else trade.entry_spot_price * (1.0 - cumulative_fraction)
+                )
+                trigger_tagged = (
+                    context.current_candle.high >= trigger_spot
+                    if bullish_trade
+                    else context.current_candle.low <= trigger_spot
+                )
+                already_added_this_candle = trade.last_pyramid_time == context.current_candle.timestamp
+                opposite_pressure = strongest_opposite.score if strongest_opposite is not None else 0.0
+                if trigger_tagged and not already_added_this_candle and opposite_pressure < 78:
+                    return TradeDecision(
+                        action=TradeAction.add_position,
+                        confidence=0.86,
+                        reason=(
+                            f"Stock percentage pyramiding add {next_add_number}/2 is allowed because price moved "
+                            f"{context.stock_percent_pyramiding_step * next_add_number:.2f}% in favor from entry "
+                            f"{trade.entry_spot_price:.2f} and tagged {trigger_spot:.2f}. Add quantity matches "
+                            "the initial entry size."
+                        ),
+                        decision_source="heuristic",
+                        option_type=trade.option_type,
+                        add_quantity=base_quantity,
+                        invalidation_level=round(trade.invalidation_level, 2) if trade.invalidation_level is not None else None,
+                        target_spot_price=trade.target_spot_price,
+                        market_state=observation.day_type,
+                        setup_type=trade.setup_type,
+                        rule_ids_used=["R41", "R42", "R63", "R74", "R99"],
+                    )
+
+        if (
             context.intelligent_pyramiding_enabled
             and pyramid_count < 2
             and not (nifty_mode_trade and context.nifty_point_pyramiding_enabled)

@@ -69,6 +69,8 @@ const elements = {
   savedNiftyDailyMaxLossAmountValue: document.getElementById("savedNiftyDailyMaxLossAmountValue"),
   savedPyramidingValue: document.getElementById("savedPyramidingValue"),
   savedIntelligentPyramidingValue: document.getElementById("savedIntelligentPyramidingValue"),
+  savedStockPercentPyramidingValue: document.getElementById("savedStockPercentPyramidingValue"),
+  savedStockPercentPyramidingStepValue: document.getElementById("savedStockPercentPyramidingStepValue"),
   savedNiftyPointPyramidingValue: document.getElementById("savedNiftyPointPyramidingValue"),
   savedNiftyPointPyramidingPointsValue: document.getElementById("savedNiftyPointPyramidingPointsValue"),
   savedPathValue: document.getElementById("savedPathValue"),
@@ -406,6 +408,8 @@ function buildCredentialPayload(form) {
     nifty_daily_max_loss: (form.elements.nifty_daily_max_loss?.value || "100").trim(),
     pyramiding_enabled: form.elements.pyramiding_enabled?.checked ? "true" : "false",
     intelligent_pyramiding_enabled: form.elements.intelligent_pyramiding_enabled?.checked ? "true" : "false",
+    stock_percent_pyramiding_enabled: form.elements.stock_percent_pyramiding_enabled?.checked ? "true" : "false",
+    stock_percent_pyramiding_step: (form.elements.stock_percent_pyramiding_step?.value || "1").trim(),
     nifty_point_pyramiding_enabled: form.elements.nifty_point_pyramiding_enabled?.checked ? "true" : "false",
     nifty_point_pyramiding_points: (form.elements.nifty_point_pyramiding_points?.value || "50").trim(),
     nifty_trade_bias: (form.elements.nifty_trade_bias?.value || "both").trim(),
@@ -445,6 +449,8 @@ function serializeCredentialPayload(payload) {
     nifty_daily_max_loss: payload.nifty_daily_max_loss,
     pyramiding_enabled: payload.pyramiding_enabled,
     intelligent_pyramiding_enabled: payload.intelligent_pyramiding_enabled,
+    stock_percent_pyramiding_enabled: payload.stock_percent_pyramiding_enabled,
+    stock_percent_pyramiding_step: payload.stock_percent_pyramiding_step,
     nifty_point_pyramiding_enabled: payload.nifty_point_pyramiding_enabled,
     nifty_point_pyramiding_points: payload.nifty_point_pyramiding_points,
     nifty_trade_bias: payload.nifty_trade_bias,
@@ -1014,6 +1020,8 @@ function renderState(state) {
   elements.savedNiftyDailyMaxLossAmountValue.textContent = money(state.credentials.nifty_daily_max_loss);
   elements.savedPyramidingValue.textContent = state.credentials.pyramiding_enabled ? "Enabled" : "Disabled";
   elements.savedIntelligentPyramidingValue.textContent = state.credentials.intelligent_pyramiding_enabled ? "Enabled" : "Disabled";
+  elements.savedStockPercentPyramidingValue.textContent = state.credentials.stock_percent_pyramiding_enabled ? "Enabled" : "Disabled";
+  elements.savedStockPercentPyramidingStepValue.textContent = `${money(state.credentials.stock_percent_pyramiding_step)}%`;
   elements.savedNiftyPointPyramidingValue.textContent = state.credentials.nifty_point_pyramiding_enabled ? "Enabled" : "Disabled";
   elements.savedNiftyPointPyramidingPointsValue.textContent = money(state.credentials.nifty_point_pyramiding_points);
   elements.savedPathValue.textContent = state.credentials.storage_path || "-";
@@ -1202,6 +1210,8 @@ function renderState(state) {
     syncCredentialField(credentialSaveForm, "nifty_daily_max_loss", String(state.credentials.nifty_daily_max_loss ?? 100));
     syncCredentialField(credentialSaveForm, "pyramiding_enabled", state.credentials.pyramiding_enabled === true);
     syncCredentialField(credentialSaveForm, "intelligent_pyramiding_enabled", state.credentials.intelligent_pyramiding_enabled === true);
+    syncCredentialField(credentialSaveForm, "stock_percent_pyramiding_enabled", state.credentials.stock_percent_pyramiding_enabled === true);
+    syncCredentialField(credentialSaveForm, "stock_percent_pyramiding_step", String(state.credentials.stock_percent_pyramiding_step ?? 1));
     syncCredentialField(credentialSaveForm, "nifty_point_pyramiding_enabled", state.credentials.nifty_point_pyramiding_enabled === true);
     syncCredentialField(credentialSaveForm, "nifty_point_pyramiding_points", String(state.credentials.nifty_point_pyramiding_points ?? 50));
     syncCredentialField(credentialSaveForm, "nifty_trade_bias", state.credentials.nifty_trade_bias || "both");
