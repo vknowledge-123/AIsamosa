@@ -417,6 +417,9 @@ async def save_credentials(
     operating_mode: str = Form(default=""),
     nifty_order_lots: int = Form(default=1),
     stock_trade_capital: float = Form(default=25000.0),
+    stock_execution_mode: str = Form(default="cash"),
+    stock_future_lots: int = Form(default=1),
+    stock_option_lots: int = Form(default=1),
     nifty_expiry_preference: str = Form(default="current-weekly"),
     stock_partial_profit_enabled: str = Form(default="true"),
     stock_trailing_stop_enabled: str = Form(default="true"),
@@ -439,6 +442,8 @@ async def save_credentials(
     nifty_point_pyramiding_points: float = Form(default=50.0),
     nifty_trade_bias: str = Form(default="both"),
     nifty_option_trade_mode: str = Form(default="selling"),
+    global_mtm_square_off_enabled: str = Form(default="false"),
+    global_mtm_square_off_threshold: float = Form(default=0.0),
 ):
     partial_profit_enabled = stock_partial_profit_enabled.strip().lower() in {"1", "true", "yes", "on"}
     trailing_stop_enabled = stock_trailing_stop_enabled.strip().lower() in {"1", "true", "yes", "on"}
@@ -452,6 +457,7 @@ async def save_credentials(
     intelligent_pyramid_enabled = intelligent_pyramiding_enabled.strip().lower() in {"1", "true", "yes", "on"}
     stock_percent_pyramid_enabled = stock_percent_pyramiding_enabled.strip().lower() in {"1", "true", "yes", "on"}
     nifty_point_pyramid_enabled = nifty_point_pyramiding_enabled.strip().lower() in {"1", "true", "yes", "on"}
+    global_mtm_enabled = global_mtm_square_off_enabled.strip().lower() in {"1", "true", "yes", "on"}
     state = await run_in_threadpool(
         engine.save_credentials,
         client_id=client_id,
@@ -464,6 +470,9 @@ async def save_credentials(
         operating_mode=operating_mode,
         nifty_order_lots=nifty_order_lots,
         stock_trade_capital=stock_trade_capital,
+        stock_execution_mode=stock_execution_mode,
+        stock_future_lots=stock_future_lots,
+        stock_option_lots=stock_option_lots,
         nifty_expiry_preference=nifty_expiry_preference,
         stock_partial_profit_enabled=partial_profit_enabled,
         stock_trailing_stop_enabled=trailing_stop_enabled,
@@ -486,5 +495,7 @@ async def save_credentials(
         nifty_point_pyramiding_points=nifty_point_pyramiding_points,
         nifty_trade_bias=nifty_trade_bias,
         nifty_option_trade_mode=nifty_option_trade_mode,
+        global_mtm_square_off_enabled=global_mtm_enabled,
+        global_mtm_square_off_threshold=global_mtm_square_off_threshold,
     )
     return {"message": "Dhan, AI, sizing, expiry, and trading-mode settings saved locally for reuse.", "state": state}

@@ -236,6 +236,16 @@
           <input type="number" name="nifty_order_lots" min="1" step="1" value="1" />
           <label>Stock Trade Capital</label>
           <input type="number" name="stock_trade_capital" min="1" step="100" value="25000" />
+          <label>Stock Live Execution</label>
+          <select name="stock_execution_mode">
+            <option value="cash">Cash Stock</option>
+            <option value="future">Stock Future</option>
+            <option value="option">Stock Option</option>
+          </select>
+          <label>Stock Future Lots</label>
+          <input type="number" name="stock_future_lots" min="1" step="1" value="1" />
+          <label>Stock Option Lots</label>
+          <input type="number" name="stock_option_lots" min="1" step="1" value="1" />
           <label class="checkbox-row">
             <input type="checkbox" name="stock_partial_profit_enabled" checked />
             <span>Enable Stock Partial Profit Booking</span>
@@ -278,6 +288,12 @@
           </label>
           <label>Nifty Daily Max Loss</label>
           <input type="number" name="nifty_daily_max_loss" min="0" step="1" value="100" />
+          <label class="checkbox-row">
+            <input type="checkbox" name="global_mtm_square_off_enabled" />
+            <span>Enable Global MTM Square-Off</span>
+          </label>
+          <label>Global MTM Threshold</label>
+          <input type="number" name="global_mtm_square_off_threshold" step="1" value="0" />
           <label class="checkbox-row">
             <input type="checkbox" name="pyramiding_enabled" />
             <span>Enable Heuristic Pyramiding</span>
@@ -360,6 +376,18 @@
             <p id="savedStockCapitalValue">25000</p>
           </div>
           <div class="list-item">
+            <strong>Stock Live Execution</strong>
+            <p id="savedStockExecutionModeValue">cash</p>
+          </div>
+          <div class="list-item">
+            <strong>Stock Future Lots</strong>
+            <p id="savedStockFutureLotsValue">1</p>
+          </div>
+          <div class="list-item">
+            <strong>Stock Option Lots</strong>
+            <p id="savedStockOptionLotsValue">1</p>
+          </div>
+          <div class="list-item">
             <strong>Nifty Expiry Preference</strong>
             <p id="savedExpiryPreferenceValue">current-weekly</p>
           </div>
@@ -422,6 +450,14 @@
           <div class="list-item">
             <strong>Nifty Daily Max Loss</strong>
             <p id="savedNiftyDailyMaxLossAmountValue">100</p>
+          </div>
+          <div class="list-item">
+            <strong>Global MTM Square-Off</strong>
+            <p id="savedGlobalMtmSquareOffValue">Disabled</p>
+          </div>
+          <div class="list-item">
+            <strong>Global MTM Threshold</strong>
+            <p id="savedGlobalMtmThresholdValue">0</p>
           </div>
           <div class="list-item">
             <strong>Heuristic Pyramiding</strong>

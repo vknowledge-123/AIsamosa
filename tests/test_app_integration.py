@@ -22,7 +22,7 @@ from app.services.dhan_options import DhanOptionQuoteError, OptionContract, Opti
 from app.services.heuristic_engine import HeuristicDecisionEngine, Observation, SetupCandidate, SweepEvent
 from app.services.instruments import build_stock_instrument
 from app.services.simulation import SimulationEngine
-from app.services.stock_universe import StockUniverseEntry, StockUniverseService
+from app.services.stock_universe import StockFutureContract, StockUniverseEntry, StockUniverseService
 
 
 class AppIntegrationTests(unittest.TestCase):
@@ -243,6 +243,9 @@ class AppIntegrationTests(unittest.TestCase):
                 "operating_mode": "heuristic",
                 "nifty_order_lots": "2",
                 "stock_trade_capital": "50000",
+                "stock_execution_mode": "future",
+                "stock_future_lots": "3",
+                "stock_option_lots": "4",
                 "nifty_expiry_preference": "next-weekly",
                 "stock_partial_profit_enabled": "false",
                 "stock_trailing_stop_enabled": "false",
@@ -253,6 +256,8 @@ class AppIntegrationTests(unittest.TestCase):
                 "nifty_max_sl_points": "45",
                 "nifty_daily_max_loss_enabled": "true",
                 "nifty_daily_max_loss": "125",
+                "global_mtm_square_off_enabled": "true",
+                "global_mtm_square_off_threshold": "-250",
                 "pyramiding_enabled": "true",
                 "intelligent_pyramiding_enabled": "true",
                 "stock_percent_pyramiding_enabled": "true",
@@ -276,6 +281,9 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertEqual(summary["operating_mode"], "heuristic")
         self.assertEqual(summary["nifty_order_lots"], 2)
         self.assertEqual(summary["stock_trade_capital"], 50000.0)
+        self.assertEqual(summary["stock_execution_mode"], "future")
+        self.assertEqual(summary["stock_future_lots"], 3)
+        self.assertEqual(summary["stock_option_lots"], 4)
         self.assertEqual(summary["nifty_expiry_preference"], "next-weekly")
         self.assertFalse(summary["stock_partial_profit_enabled"])
         self.assertFalse(summary["stock_trailing_stop_enabled"])
@@ -286,6 +294,8 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertEqual(summary["nifty_max_sl_points"], 45.0)
         self.assertTrue(summary["nifty_daily_max_loss_enabled"])
         self.assertEqual(summary["nifty_daily_max_loss"], 125.0)
+        self.assertTrue(summary["global_mtm_square_off_enabled"])
+        self.assertEqual(summary["global_mtm_square_off_threshold"], -250.0)
         self.assertTrue(summary["pyramiding_enabled"])
         self.assertTrue(summary["intelligent_pyramiding_enabled"])
         self.assertTrue(summary["stock_percent_pyramiding_enabled"])
@@ -865,6 +875,263 @@ class AppIntegrationTests(unittest.TestCase):
 
         self.assertIsNone(self.test_engine.active_trade)
         self.assertFalse(self.test_engine.trade_history)
+
+    def test_stock_future_mode_routes_live_cash_signal_to_future_contract(self) -> None:
+        self.test_engine.set_instrument_mode("stock")
+        spec = build_stock_instrument("SBIN", "3045", label="STATE BANK OF INDIA")
+        self.test_engine.stock_watchlist = {"SBIN": spec}
+        self.test_engine.selected_stock_symbol = "SBIN"
+        self.test_engine.instrument_spec = spec
+        self.test_engine.operating_mode = OperatingMode.heuristic
+        self.test_engine.live_trading_enabled = True
+        self.test_engine.live_feed_adapter = Mock()
+        self.temp_store.save(
+            client_id="cid-123",
+            access_token="tok-456",
+            stock_execution_mode="future",
+            stock_future_lots=2,
+        )
+        future_contract = StockFutureContract(
+            symbol="SBIN",
+            label="SBIN FUT",
+            trading_symbol="SBIN-JUN-FUT",
+            security_id="999001",
+            expiry=date(2026, 6, 25),
+            lot_size=750,
+        )
+        self.test_engine.execution_service.place_market_order = Mock(
+            return_value=BrokerOrderResult(
+                ok=True,
+                order_id="order-1",
+                order_status="TRANSIT",
+                message="accepted",
+                raw={},
+            )
+        )
+        decision = TradeDecision(
+            action=TradeAction.enter_call,
+            confidence=0.84,
+            reason="Cash stock reclaim confirmed.",
+            option_type="CE",
+            invalidation_level=790.0,
+            target_spot_price=835.0,
+            first_target_price=815.0,
+            setup_type="stock_early_retest_long",
+            setup_score=84.0,
+        )
+
+        with patch.object(self.test_engine.stock_universe, "resolve_current_future", return_value=future_contract):
+            self.test_engine.apply_trade_logic(
+                self._make_candle(0, 800.0, 806.0, 798.0, 804.0),
+                decision,
+                source="live",
+            )
+
+        order_kwargs = self.test_engine.execution_service.place_market_order.call_args.kwargs
+        self.assertEqual(order_kwargs["security_id"], "999001")
+        self.assertEqual(order_kwargs["exchange_segment"], "NSE_FNO")
+        self.assertEqual(order_kwargs["transaction_type"], "BUY")
+        self.assertEqual(order_kwargs["quantity"], 1500)
+        self.assertIsNotNone(self.test_engine.active_trade)
+        self.assertEqual(self.test_engine.active_trade.symbol, "SBIN-JUN-FUT")
+        self.assertEqual(self.test_engine.active_trade.trade_security_id, "999001")
+        self.assertEqual(self.test_engine.active_trade.quote_exchange_segment, "NSE_FNO")
+        self.assertEqual(self.test_engine.active_trade.quantity, 1500)
+
+    def test_stock_option_mode_routes_live_cash_signal_to_atm_option_contract(self) -> None:
+        self.test_engine.set_instrument_mode("stock")
+        spec = build_stock_instrument("SBIN", "3045", label="STATE BANK OF INDIA")
+        self.test_engine.stock_watchlist = {"SBIN": spec}
+        self.test_engine.selected_stock_symbol = "SBIN"
+        self.test_engine.instrument_spec = spec
+        self.test_engine.operating_mode = OperatingMode.heuristic
+        self.test_engine.live_trading_enabled = True
+        self.test_engine.live_feed_adapter = Mock()
+        self.temp_store.save(
+            client_id="cid-123",
+            access_token="tok-456",
+            stock_execution_mode="option",
+            stock_option_lots=2,
+        )
+        quote = OptionQuote(
+            security_id="888525",
+            option_type="CE",
+            strike=525,
+            last_price=12.5,
+            quote_time=datetime.fromisoformat("2026-05-20T09:31:00"),
+            source="dhan-rest-quote",
+            bid_price=12.4,
+            ask_price=12.6,
+            volume=1000,
+            oi=5000,
+        )
+        contract = OptionContract(
+            security_id="888525",
+            option_type="CE",
+            strike=525,
+            expiry=date(2026, 5, 28),
+            symbol="SBIN 28MAY2026 525CE",
+            lot_size=750,
+            quote=quote,
+        )
+        self.test_engine.execution_service.place_market_order = Mock(
+            return_value=BrokerOrderResult(
+                ok=True,
+                order_id="order-opt-1",
+                order_status="TRANSIT",
+                message="accepted",
+                raw={},
+            )
+        )
+        decision = TradeDecision(
+            action=TradeAction.enter_call,
+            confidence=0.84,
+            reason="Cash stock reclaim confirmed.",
+            option_type="CE",
+            invalidation_level=515.0,
+            target_spot_price=545.0,
+            first_target_price=535.0,
+            setup_type="stock_early_retest_long",
+            setup_score=84.0,
+        )
+
+        with patch.object(self.test_engine.stock_universe, "is_derivative_symbol", return_value=True):
+            with patch.object(self.test_engine.option_quote_service, "resolve_atm_option_contract", return_value=contract) as contract_mock:
+                with patch.object(self.test_engine.option_quote_service, "fetch_quote", return_value=quote):
+                    with patch("app.services.simulation.resolve_quote_subscription", return_value=("NSE_FNO", "888525", "Quote")):
+                        self.test_engine.apply_trade_logic(
+                            self._make_candle(0, 522.0, 526.0, 520.0, 523.0),
+                            decision,
+                            source="live",
+                        )
+
+        contract_kwargs = contract_mock.call_args.kwargs
+        self.assertEqual(contract_kwargs["spot"], 523.0)
+        self.assertEqual(contract_kwargs["option_type"], "CE")
+        order_kwargs = self.test_engine.execution_service.place_market_order.call_args.kwargs
+        self.assertEqual(order_kwargs["security_id"], "888525")
+        self.assertEqual(order_kwargs["exchange_segment"], "NSE_FNO")
+        self.assertEqual(order_kwargs["transaction_type"], "BUY")
+        self.assertEqual(order_kwargs["quantity"], 1500)
+        self.assertIsNotNone(self.test_engine.active_trade)
+        self.assertEqual(self.test_engine.active_trade.symbol, "SBIN 28MAY2026 525CE")
+        self.assertEqual(self.test_engine.active_trade.option_security_id, "888525")
+        self.assertEqual(self.test_engine.active_trade.quote_exchange_segment, "NSE_FNO")
+        self.assertEqual(self.test_engine.active_trade.price_mode, "option")
+        self.assertEqual(self.test_engine.active_trade.direction, "LONG_CALL")
+        self.assertEqual(self.test_engine.active_trade.quantity, 1500)
+
+    def test_stock_future_mode_ignores_pyramiding_adds(self) -> None:
+        self.test_engine.set_instrument_mode("stock")
+        spec = build_stock_instrument("SBIN", "3045", label="STATE BANK OF INDIA")
+        self.test_engine.stock_watchlist = {"SBIN": spec}
+        self.test_engine.selected_stock_symbol = "SBIN"
+        self.test_engine.instrument_spec = spec
+        self.temp_store.save(stock_execution_mode="future", pyramiding_enabled=True)
+        trade = SimulatedTrade(
+            trade_id="future-stock-1",
+            status="OPEN",
+            direction="LONG_STOCK",
+            instrument_mode=InstrumentMode.stock,
+            instrument_label="SBIN",
+            price_mode="cash",
+            trade_security_id="999001",
+            quote_exchange_segment="NSE_FNO",
+            option_type="CE",
+            strike=0,
+            symbol="SBIN-JUN-FUT",
+            quantity=750,
+            base_quantity=750,
+            open_quantity=750,
+            entry_time=datetime.fromisoformat("2026-05-20T09:30:00"),
+            entry_price=800.0,
+            entry_spot_price=800.0,
+            entry_option_price=800.0,
+            current_price=820.0,
+            current_option_price=820.0,
+            stop_price=790.0,
+            stop_option_price=790.0,
+            target_price=860.0,
+            target_option_price=860.0,
+            invalidation_level=790.0,
+        )
+        self.test_engine.active_trade = trade
+        self.test_engine.trade_history = [trade]
+        decision = TradeDecision(
+            action=TradeAction.add_position,
+            reason="Continuation add.",
+            add_quantity=750,
+            invalidation_level=810.0,
+        )
+
+        self.test_engine.apply_trade_logic(self._make_candle(10, 820.0, 825.0, 818.0, 824.0), decision, source="live")
+
+        self.assertEqual(self.test_engine.active_trade.quantity, 750)
+        self.assertEqual(self.test_engine.active_trade.open_quantity, 750)
+        self.assertEqual(self.test_engine.active_trade.pyramid_count, 0)
+        self.assertFalse(self.test_engine.active_trade.pyramid_legs)
+
+    def test_global_mtm_threshold_exits_trade_and_disarms_live_trading(self) -> None:
+        self.temp_store.save(
+            client_id="cid-123",
+            access_token="tok-456",
+            global_mtm_square_off_enabled=True,
+            global_mtm_square_off_threshold=100.0,
+        )
+        self.test_engine.live_trading_enabled = True
+        self.test_engine.execution_state.live_trading_enabled = True
+        self.test_engine.stock_watchlist = {}
+        self.test_engine.stock_sessions = {}
+        self.test_engine.execution_service.place_market_order = Mock(
+            return_value=BrokerOrderResult(
+                ok=True,
+                order_id="exit-1",
+                order_status="TRANSIT",
+                message="accepted",
+                raw={},
+            )
+        )
+        trade = SimulatedTrade(
+            trade_id="stock-profit-1",
+            status="OPEN",
+            direction="LONG_STOCK",
+            instrument_mode=InstrumentMode.stock,
+            instrument_label="SBIN",
+            price_mode="cash",
+            trade_security_id="3045",
+            quote_exchange_segment="NSE_EQ",
+            option_type="CE",
+            strike=0,
+            symbol="SBIN EQ",
+            quantity=10,
+            open_quantity=10,
+            entry_time=datetime.fromisoformat("2026-05-20T09:30:00"),
+            entry_price=800.0,
+            entry_spot_price=800.0,
+            entry_option_price=800.0,
+            current_price=815.0,
+            current_option_price=815.0,
+            stop_price=790.0,
+            stop_option_price=790.0,
+            target_price=850.0,
+            target_option_price=850.0,
+            invalidation_level=790.0,
+            pnl=150.0,
+        )
+        self.test_engine.active_trade = trade
+        self.test_engine.trade_history = [trade]
+
+        self.test_engine._check_global_mtm_square_off(datetime.fromisoformat("2026-05-20T10:00:00"))
+
+        order_kwargs = self.test_engine.execution_service.place_market_order.call_args.kwargs
+        self.assertEqual(order_kwargs["security_id"], "3045")
+        self.assertEqual(order_kwargs["exchange_segment"], "NSE_EQ")
+        self.assertEqual(order_kwargs["transaction_type"], "SELL")
+        self.assertEqual(order_kwargs["quantity"], 10)
+        self.assertFalse(self.test_engine.live_trading_enabled)
+        self.assertFalse(self.test_engine.execution_state.live_trading_enabled)
+        self.assertIsNone(self.test_engine.active_trade)
+        self.assertTrue(self.test_engine.trade_history[-1].exit_notes.startswith("Global MTM profit threshold hit"))
 
     def test_live_connect_uses_saved_credentials_when_form_is_blank(self) -> None:
         self.client.post(

@@ -391,6 +391,9 @@ class CredentialSummary(BaseModel):
     operating_mode: OperatingMode = OperatingMode.full_ai
     nifty_order_lots: int = 1
     stock_trade_capital: float = 25000.0
+    stock_execution_mode: str = "cash"
+    stock_future_lots: int = 1
+    stock_option_lots: int = 1
     nifty_expiry_preference: str = "current-weekly"
     stock_partial_profit_enabled: bool = True
     stock_trailing_stop_enabled: bool = True
@@ -413,6 +416,8 @@ class CredentialSummary(BaseModel):
     nifty_point_pyramiding_points: float = 50.0
     nifty_trade_bias: str = "both"
     nifty_option_trade_mode: str = "selling"
+    global_mtm_square_off_enabled: bool = False
+    global_mtm_square_off_threshold: float = 0.0
     dhan_credential_message: str | None = None
     storage_path: str
     last_updated: datetime | None = None

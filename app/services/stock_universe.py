@@ -5,7 +5,7 @@ import io
 import json
 import threading
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import httpx
@@ -101,7 +101,7 @@ DERIVATIVE_SYMBOLS = frozenset(
         "COALINDIA", "COCHINSHIP", "COFORGE", "COLPAL", "CAMS", "CONCOR",
         "CROMPTON", "CUMMINSIND", "DLF", "DABUR", "DALBHARAT", "DELHIVERY",
         "DIVISLAB", "DIXON", "DRREDDY", "ETERNAL", "EICHERMOT", "EXIDEIND",
-        "FORCEMOT", "NYKAA", "FORTIS", "GAIL", "GMRAIRPORT", "GLENMARK",
+        "FORCEMOT", "NYKAA", "FORTIS", "GAIL", "GVT&D", "GMRAIRPORT", "GLENMARK",
         "GODFRYPHLP", "GODREJCP", "GODREJPROP", "GRASIM", "HCLTECH", "HDFCAMC",
         "HDFCBANK", "HDFCLIFE", "HAVELLS", "HEROMOTOCO", "HINDALCO", "HAL",
         "HINDPETRO", "HINDUNILVR", "HINDZINC", "POWERINDIA", "HYUNDAI",
@@ -116,7 +116,7 @@ DERIVATIVE_SYMBOLS = frozenset(
         "NAM-INDIA", "NUVAMA", "OBEROIRLTY", "ONGC", "OIL", "PAYTM", "OFSS",
         "POLICYBZR", "PGEL", "PIIND", "PNBHOUSING", "PAGEIND", "PATANJALI",
         "PERSISTENT", "PETRONET", "PIDILITIND", "POLYCAB", "PFC", "POWERGRID",
-        "PREMIERENE", "PRESTIGE", "PNB", "RBLBANK", "RECLTD", "RVNL", "RELIANCE",
+        "PREMIERENE", "PRESTIGE", "PNB", "RBLBANK", "RECLTD", "RADICO", "RVNL", "RELIANCE",
         "SBICARD", "SBILIFE", "SHREECEM", "SRF", "SAMMAANCAP", "MOTHERSON",
         "SHRIRAMFIN", "SIEMENS", "SOLARINDS", "SONACOMS", "SBIN", "SAIL",
         "SUNPHARMA", "SUPREMEIND", "SUZLON", "SWIGGY", "TATACONSUM", "TVSMOTOR",
@@ -138,6 +138,18 @@ class StockUniverseEntry:
     instrument_type: str = "EQUITY"
 
 
+@dataclass(frozen=True)
+class StockFutureContract:
+    symbol: str
+    label: str
+    trading_symbol: str
+    security_id: str
+    expiry: date | None
+    lot_size: int
+    exchange_segment: str = "NSE_FNO"
+    instrument_type: str = "FUTSTK"
+
+
 class StockUniverseService:
     master_url = "https://images.dhan.co/api-data/api-scrip-master.csv"
     cache_ttl = timedelta(hours=12)
@@ -146,6 +158,7 @@ class StockUniverseService:
         self.allowed_symbols = tuple(dict.fromkeys(symbol.strip().upper() for symbol in STOCK_UNIVERSE if symbol.strip()))
         self._lock = threading.RLock()
         self._resolved_entries: dict[str, StockUniverseEntry] = {}
+        self._resolved_futures: dict[str, StockFutureContract] = {}
         self._remote_master_loaded = False
         self._cache_path = Path(__file__).resolve().parents[1] / "data" / "stock_universe_cache.json"
         self._warmup_started = False
@@ -183,6 +196,22 @@ class StockUniverseService:
             cached = self._resolved_entries.get(normalized)
             if cached is None:
                 raise ValueError(f"Could not resolve a Dhan NSE cash security id for {normalized}.")
+            return cached
+
+    def resolve_current_future(self, symbol: str, *, reference_date: date | None = None) -> StockFutureContract:
+        normalized = (symbol or "").strip().upper()
+        if normalized not in DERIVATIVE_SYMBOLS:
+            raise ValueError(f"{normalized or 'Stock'} is not in the configured F&O stock list.")
+        reference = reference_date or date.today()
+        with self._lock:
+            cached = self._resolved_futures.get(normalized)
+            if cached is not None and (cached.expiry is None or cached.expiry >= reference):
+                return cached
+            if not self._remote_master_loaded:
+                self._load_master_locked()
+            cached = self._resolved_futures.get(normalized)
+            if cached is None:
+                raise ValueError(f"Could not resolve a Dhan stock future contract for {normalized}.")
             return cached
 
     def _preview_entry(self, symbol: str) -> StockUniverseEntry:
@@ -232,20 +261,36 @@ class StockUniverseService:
         if not isinstance(entries, list):
             return
         resolved: dict[str, StockUniverseEntry] = {}
+        resolved_futures: dict[str, StockFutureContract] = {}
         for item in entries:
             if not isinstance(item, dict):
                 continue
             symbol = str(item.get("symbol") or "").strip().upper()
             security_id = str(item.get("security_id") or "").strip()
-            if symbol not in self.allowed_symbols or not security_id:
+            if symbol not in self.allowed_symbols:
                 continue
-            resolved[symbol] = StockUniverseEntry(
-                symbol=symbol,
-                label=str(item.get("label") or symbol).strip() or symbol,
-                security_id=security_id,
-            )
+            if security_id:
+                resolved[symbol] = StockUniverseEntry(
+                    symbol=symbol,
+                    label=str(item.get("label") or symbol).strip() or symbol,
+                    security_id=security_id,
+                )
+            future_payload = item.get("future")
+            if isinstance(future_payload, dict):
+                future_security_id = str(future_payload.get("security_id") or "").strip()
+                if future_security_id:
+                    resolved_futures[symbol] = StockFutureContract(
+                        symbol=symbol,
+                        label=str(future_payload.get("label") or symbol).strip() or symbol,
+                        trading_symbol=str(future_payload.get("trading_symbol") or symbol).strip() or symbol,
+                        security_id=future_security_id,
+                        expiry=self._parse_expiry_date(future_payload.get("expiry")),
+                        lot_size=max(self._coerce_int(future_payload.get("lot_size"), 1), 1),
+                    )
         if resolved:
             self._resolved_entries.update(resolved)
+        if resolved_futures:
+            self._resolved_futures.update(resolved_futures)
 
     def _write_cache_locked(self, resolved: dict[str, StockUniverseEntry]) -> None:
         payload = {
@@ -255,6 +300,17 @@ class StockUniverseService:
                     "symbol": entry.symbol,
                     "label": entry.label,
                     "security_id": entry.security_id,
+                    "future": (
+                        {
+                            "label": future.label,
+                            "trading_symbol": future.trading_symbol,
+                            "security_id": future.security_id,
+                            "expiry": future.expiry.isoformat() if future.expiry else None,
+                            "lot_size": future.lot_size,
+                        }
+                        if (future := self._resolved_futures.get(entry.symbol)) is not None
+                        else None
+                    ),
                 }
                 for entry in resolved.values()
             ],
@@ -272,22 +328,114 @@ class StockUniverseService:
 
         rows = csv.DictReader(io.StringIO(response.text))
         resolved: dict[str, StockUniverseEntry] = {}
+        future_candidates: dict[str, list[StockFutureContract]] = {}
         for row in rows:
             symbol = str(row.get("SEM_TRADING_SYMBOL", "")).strip().upper()
-            if symbol not in self.allowed_symbols:
-                continue
             exchange = str(row.get("SEM_EXM_EXCH_ID", "")).strip().upper()
             segment = str(row.get("SEM_SEGMENT", "")).strip().upper()
             series = str(row.get("SEM_SERIES", "")).strip().upper()
             security_id = str(row.get("SEM_SMST_SECURITY_ID", "")).strip()
-            if exchange != "NSE" or segment != "E" or series != "EQ" or not security_id:
+            if symbol in self.allowed_symbols and exchange == "NSE" and segment == "E" and series == "EQ" and security_id:
+                label = str(row.get("SM_SYMBOL_NAME", "")).strip() or symbol
+                resolved[symbol] = StockUniverseEntry(
+                    symbol=symbol,
+                    label=label,
+                    security_id=security_id,
+                )
                 continue
-            label = str(row.get("SM_SYMBOL_NAME", "")).strip() or symbol
-            resolved[symbol] = StockUniverseEntry(
-                symbol=symbol,
-                label=label,
-                security_id=security_id,
-            )
+
+            future_contract = self._future_contract_from_master_row(row)
+            if future_contract is not None:
+                future_candidates.setdefault(future_contract.symbol, []).append(future_contract)
+
+        today = date.today()
+        for symbol, contracts in future_candidates.items():
+            valid = [contract for contract in contracts if contract.expiry is None or contract.expiry >= today]
+            chosen_pool = valid or contracts
+            chosen = sorted(chosen_pool, key=lambda item: item.expiry or date.max)[0]
+            self._resolved_futures[symbol] = chosen
         self._resolved_entries.update(resolved)
         self._remote_master_loaded = True
         self._write_cache_locked(resolved)
+
+    def _future_contract_from_master_row(self, row: dict) -> StockFutureContract | None:
+        security_id = str(row.get("SEM_SMST_SECURITY_ID", "")).strip()
+        if not security_id:
+            return None
+        exchange = str(row.get("SEM_EXM_EXCH_ID", "")).strip().upper()
+        segment = str(row.get("SEM_SEGMENT", "")).strip().upper()
+        instrument_name = str(row.get("SEM_INSTRUMENT_NAME", "") or row.get("SEM_INSTRUMENT_TYPE", "")).strip().upper()
+        series = str(row.get("SEM_SERIES", "")).strip().upper()
+        if exchange != "NSE":
+            return None
+        row_text = " ".join(str(value or "").upper() for value in row.values())
+        if "FUT" not in row_text:
+            return None
+        if "OPTSTK" in row_text or "OPTIDX" in row_text or series in {"CE", "PE"}:
+            return None
+        if instrument_name and "FUT" not in instrument_name:
+            return None
+        if segment and segment not in {"D", "M", "FNO"} and "FNO" not in row_text:
+            return None
+
+        trading_symbol = str(row.get("SEM_TRADING_SYMBOL", "") or row.get("SEM_CUSTOM_SYMBOL", "")).strip().upper()
+        symbol = self._future_underlying_symbol(row, trading_symbol)
+        if symbol not in DERIVATIVE_SYMBOLS:
+            return None
+        expiry = self._parse_expiry_date(
+            row.get("SEM_EXPIRY_DATE")
+            or row.get("SEM_EXPIRY")
+            or row.get("EXPIRY_DATE")
+            or row.get("EXPIRY")
+        )
+        lot_size = max(
+            self._coerce_int(
+                row.get("SEM_LOT_UNITS")
+                or row.get("SEM_LOT_SIZE")
+                or row.get("LOT_SIZE")
+                or row.get("LOT_UNITS")
+                or row.get("SEM_BOARD_LOT_QUANTITY"),
+                1,
+            ),
+            1,
+        )
+        label = str(row.get("SM_SYMBOL_NAME", "") or row.get("SEM_CUSTOM_SYMBOL", "") or trading_symbol or symbol).strip()
+        return StockFutureContract(
+            symbol=symbol,
+            label=label or symbol,
+            trading_symbol=trading_symbol or label or symbol,
+            security_id=security_id,
+            expiry=expiry,
+            lot_size=lot_size,
+        )
+
+    def _future_underlying_symbol(self, row: dict, trading_symbol: str) -> str:
+        for key in ("SEM_UNDERLYING_SYMBOL", "SEM_SYMBOL", "SEM_TRADING_SYMBOL"):
+            candidate = str(row.get(key, "")).strip().upper()
+            if candidate in DERIVATIVE_SYMBOLS:
+                return candidate
+        haystack = " ".join(str(value or "").upper() for value in row.values())
+        for symbol in sorted(DERIVATIVE_SYMBOLS, key=len, reverse=True):
+            if trading_symbol.startswith(symbol) or f" {symbol} " in f" {haystack} ":
+                return symbol
+        return trading_symbol.split("-")[0].split()[0]
+
+    def _parse_expiry_date(self, raw_value: object) -> date | None:
+        value = str(raw_value or "").strip()
+        if not value:
+            return None
+        for fmt in ("%Y-%m-%d", "%d-%m-%Y", "%d/%m/%Y", "%Y/%m/%d", "%d %b %Y", "%d%b%Y"):
+            try:
+                return datetime.strptime(value.title(), fmt).date()
+            except ValueError:
+                continue
+        try:
+            return datetime.fromisoformat(value[:10]).date()
+        except ValueError:
+            return None
+
+    def _coerce_int(self, raw_value: object, default: int) -> int:
+        try:
+            return int(float(str(raw_value).strip()))
+        except (TypeError, ValueError):
+            return default

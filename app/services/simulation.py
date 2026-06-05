@@ -162,6 +162,7 @@ class SimulationEngine:
         self._runtime_dhan_client_id = ""
         self._runtime_dhan_access_token = ""
         self.live_trading_enabled = False
+        self._global_mtm_square_off_triggered = False
         self.pending_setup: PendingSetup | None = None
         self._default_heuristic_engine = self.heuristic_engine
         self._integrated_pnl_peak: float | None = None
@@ -305,6 +306,24 @@ class SimulationEngine:
     def _stock_trade_capital(self) -> float:
         return self.credential_store.get_stock_trade_capital(self.settings)
 
+    def _stock_execution_mode(self) -> str:
+        return self.credential_store.get_stock_execution_mode(self.settings)
+
+    def _stock_future_lots(self) -> int:
+        return self.credential_store.get_stock_future_lots(self.settings)
+
+    def _stock_option_lots(self) -> int:
+        return self.credential_store.get_stock_option_lots(self.settings)
+
+    def _stock_future_mode_enabled(self) -> bool:
+        return self.instrument_mode == InstrumentMode.stock and self._stock_execution_mode() == "future"
+
+    def _stock_option_mode_enabled(self) -> bool:
+        return self.instrument_mode == InstrumentMode.stock and self._stock_execution_mode() == "option"
+
+    def _stock_derivative_execution_mode_enabled(self) -> bool:
+        return self.instrument_mode == InstrumentMode.stock and self._stock_execution_mode() in {"future", "option"}
+
     def _stock_min_5m_turnover(self) -> float:
         return max(float(getattr(self.settings, "stock_min_5m_turnover", 30000000.0)), 0.0)
 
@@ -350,6 +369,12 @@ class SimulationEngine:
 
     def _nifty_trade_bias(self) -> str:
         return self.credential_store.get_nifty_trade_bias(self.settings)
+
+    def _global_mtm_square_off_enabled(self) -> bool:
+        return self.credential_store.get_global_mtm_square_off_enabled(self.settings)
+
+    def _global_mtm_square_off_threshold(self) -> float:
+        return self.credential_store.get_global_mtm_square_off_threshold(self.settings)
 
     def _use_banknifty_companion(self) -> bool:
         return self.instrument_mode == InstrumentMode.nifty and self.instrument_spec.symbol == "NIFTY"
@@ -702,9 +727,9 @@ class SimulationEngine:
             nifty_target_points=self._nifty_target_points(),
             nifty_daily_max_loss_enabled=self._nifty_daily_max_loss_enabled(),
             nifty_daily_max_loss=self._nifty_daily_max_loss(),
-            pyramiding_enabled=self.credential_store.get_pyramiding_enabled(self.settings),
-            intelligent_pyramiding_enabled=self.credential_store.get_intelligent_pyramiding_enabled(self.settings),
-            stock_percent_pyramiding_enabled=self._stock_percent_pyramiding_enabled(),
+            pyramiding_enabled=False if self._stock_derivative_execution_mode_enabled() else self.credential_store.get_pyramiding_enabled(self.settings),
+            intelligent_pyramiding_enabled=False if self._stock_derivative_execution_mode_enabled() else self.credential_store.get_intelligent_pyramiding_enabled(self.settings),
+            stock_percent_pyramiding_enabled=False if self._stock_derivative_execution_mode_enabled() else self._stock_percent_pyramiding_enabled(),
             stock_percent_pyramiding_step=self._stock_percent_pyramiding_step(),
             nifty_point_pyramiding_enabled=self._nifty_point_pyramiding_enabled(),
             nifty_point_pyramiding_points=self._nifty_point_pyramiding_points(),
@@ -2056,6 +2081,7 @@ class SimulationEngine:
                 if selected_symbol and selected_symbol in self.stock_sessions:
                     self._load_stock_session_locked(selected_symbol)
             self.live_trading_enabled = True
+            self._global_mtm_square_off_triggered = False
             self.execution_state.live_trading_enabled = True
             self.execution_state.last_order_message = "Live heuristic execution is armed."
             self._mark_state_dirty_locked()
@@ -2078,11 +2104,14 @@ class SimulationEngine:
             return self.get_state()
 
     def square_off_all_trades(self) -> DashboardState:
+        return self._square_off_all_trades_with_reason("Manual square off button pressed.")
+
+    def _square_off_all_trades_with_reason(self, reason: str) -> DashboardState:
         client_id, access_token = self._available_dhan_credentials()
         with self.lock:
             self.live_trading_enabled = False
             self.execution_state.live_trading_enabled = False
-            self.execution_state.last_order_message = "Square off requested. Live heuristic execution is disarmed."
+            self.execution_state.last_order_message = f"{reason} Live heuristic execution is disarmed."
             self._mark_state_dirty_locked()
         squared_off = 0
         if client_id and access_token:
@@ -2091,21 +2120,21 @@ class SimulationEngine:
                 selected = self.selected_stock_symbol
                 for symbol in watched_symbols:
                     def operation():
-                        return self._square_off_active_trade_locked(client_id, access_token, reason="Manual square off button pressed.")
+                        return self._square_off_active_trade_locked(client_id, access_token, reason=reason)
                     if self._run_in_stock_session(symbol, operation):
                         squared_off += 1
                 if selected:
                     with self.lock:
                         self._load_stock_session_locked(selected)
             else:
-                if self._square_off_active_trade_locked(client_id, access_token, reason="Manual square off button pressed."):
+                if self._square_off_active_trade_locked(client_id, access_token, reason=reason):
                     squared_off += 1
         self._stop_order_updates()
         with self.lock:
             self.rulebook_service.learning_log.insert(
                 0,
                 (
-                    f"Square off requested. Closed {squared_off} tracked trade(s) and stopped live heuristic execution."
+                    f"{reason} Closed {squared_off} tracked trade(s) and stopped live heuristic execution."
                 ),
             )
             self._mark_state_dirty_locked()
@@ -3459,6 +3488,9 @@ class SimulationEngine:
         operating_mode: str | None = None,
         nifty_order_lots: int | None = None,
         stock_trade_capital: float | None = None,
+        stock_execution_mode: str | None = None,
+        stock_future_lots: int | None = None,
+        stock_option_lots: int | None = None,
         nifty_expiry_preference: str | None = None,
         stock_partial_profit_enabled: bool | None = None,
         stock_trailing_stop_enabled: bool | None = None,
@@ -3481,6 +3513,8 @@ class SimulationEngine:
         nifty_point_pyramiding_points: float | None = None,
         nifty_trade_bias: str | None = None,
         nifty_option_trade_mode: str | None = None,
+        global_mtm_square_off_enabled: bool | None = None,
+        global_mtm_square_off_threshold: float | None = None,
     ) -> DashboardState:
         with self.lock:
             self.credential_store.save(
@@ -3494,6 +3528,9 @@ class SimulationEngine:
                 operating_mode=operating_mode,
                 nifty_order_lots=nifty_order_lots,
                 stock_trade_capital=stock_trade_capital,
+                stock_execution_mode=stock_execution_mode,
+                stock_future_lots=stock_future_lots,
+                stock_option_lots=stock_option_lots,
                 nifty_expiry_preference=nifty_expiry_preference,
                 stock_partial_profit_enabled=stock_partial_profit_enabled,
                 stock_trailing_stop_enabled=stock_trailing_stop_enabled,
@@ -3516,6 +3553,8 @@ class SimulationEngine:
                 nifty_point_pyramiding_points=nifty_point_pyramiding_points,
                 nifty_trade_bias=nifty_trade_bias,
                 nifty_option_trade_mode=nifty_option_trade_mode,
+                global_mtm_square_off_enabled=global_mtm_square_off_enabled,
+                global_mtm_square_off_threshold=global_mtm_square_off_threshold,
             )
             self._credential_summary_cache = self.credential_store.summary(self.settings)
             self._configure_ai_service()
@@ -3694,9 +3733,9 @@ class SimulationEngine:
             nifty_target_points=self._nifty_target_points(),
             nifty_daily_max_loss_enabled=self._nifty_daily_max_loss_enabled(),
             nifty_daily_max_loss=self._nifty_daily_max_loss(),
-            pyramiding_enabled=self.credential_store.get_pyramiding_enabled(self.settings),
-            intelligent_pyramiding_enabled=self.credential_store.get_intelligent_pyramiding_enabled(self.settings),
-            stock_percent_pyramiding_enabled=self._stock_percent_pyramiding_enabled(),
+            pyramiding_enabled=False if self._stock_derivative_execution_mode_enabled() else self.credential_store.get_pyramiding_enabled(self.settings),
+            intelligent_pyramiding_enabled=False if self._stock_derivative_execution_mode_enabled() else self.credential_store.get_intelligent_pyramiding_enabled(self.settings),
+            stock_percent_pyramiding_enabled=False if self._stock_derivative_execution_mode_enabled() else self._stock_percent_pyramiding_enabled(),
             stock_percent_pyramiding_step=self._stock_percent_pyramiding_step(),
             nifty_point_pyramiding_enabled=self._nifty_point_pyramiding_enabled(),
             nifty_point_pyramiding_points=self._nifty_point_pyramiding_points(),
@@ -3992,6 +4031,7 @@ class SimulationEngine:
                     if self.active_trade is not None:
                         self.close_active_trade(exit_candle, note)
             return
+        self._check_global_mtm_square_off()
         with self.lock:
             if self._replay_simulation_active_locked():
                 return
@@ -4045,6 +4085,7 @@ class SimulationEngine:
             control_ltp, control_time = live_trade_control_check
             if self._apply_live_ltp_trade_controls(control_ltp, control_time):
                 return
+            self._check_global_mtm_square_off(control_time)
         if evaluation_index is not None:
             self._queue_live_evaluation(evaluation_symbol, evaluation_index)
 
@@ -4099,10 +4140,17 @@ class SimulationEngine:
             if session is None:
                 return
             evaluation_index = self._update_live_candle_for_session_locked(session, tick_time, ltp, volume)
+            if session.active_trade is not None and session.active_trade.price_mode == "cash":
+                session.active_trade.current_price = round(ltp, 2)
+                session.active_trade.current_option_price = session.active_trade.current_price
+                session.active_trade.current_quote_source = "dhan-websocket"
+                session.active_trade.current_quote_time = tick_time
+                session.active_trade.pnl = self.calculate_trade_pnl(session.active_trade, session.active_trade.current_price)
             self._mark_state_dirty_locked()
             hard_stop_crossed = self._live_ltp_crossed_invalidation(session.active_trade, ltp)
         if hard_stop_crossed and self._exit_stock_session_on_ltp_invalidation(symbol, ltp, tick_time):
             return
+        self._check_global_mtm_square_off(tick_time)
         if evaluation_index is None:
             return
         self._queue_live_evaluation(symbol, evaluation_index)
@@ -4263,6 +4311,8 @@ class SimulationEngine:
                 self._record_signal_events_locked(snapshot.signal_events)
                 self.apply_trade_logic(snapshot.current_candle, decision, source=source)
                 self._mark_state_dirty_locked()
+            if source == "live":
+                self._check_global_mtm_square_off(snapshot.current_candle.timestamp)
 
     def _clear_live_packet_queue(self) -> None:
         with self.lock:
@@ -5295,6 +5345,12 @@ class SimulationEngine:
                 return False
             if not self._live_ltp_controls_allowed_locked(trade, tick_time):
                 return False
+            if trade.price_mode == "cash":
+                trade.current_price = round(ltp, 2)
+                trade.current_option_price = trade.current_price
+                trade.current_quote_source = "dhan-websocket"
+                trade.current_quote_time = tick_time
+                trade.pnl = self.calculate_trade_pnl(trade, trade.current_price)
             bullish_trade = self._is_bullish_spot_trade_direction(trade.direction)
             nifty_trade = self._is_nifty_active_trade(trade)
             exit_note: str | None = None
@@ -5526,6 +5582,35 @@ class SimulationEngine:
             return self._nifty_daily_loss_cap_note_locked(quote.quote_time.date(), include_active=True)
         return None
 
+    def _global_mtm_square_off_note_locked(self, reference_time: datetime | None = None) -> str | None:
+        if (
+            not self.live_trading_enabled
+            or self._global_mtm_square_off_triggered
+            or not self._global_mtm_square_off_enabled()
+        ):
+            return None
+        threshold = round(float(self._global_mtm_square_off_threshold()), 2)
+        if threshold == 0:
+            return None
+        pnl_state = self._build_integrated_pnl_state_locked(reference_time=reference_time)
+        total_pnl = round(float(pnl_state.total_pnl), 2)
+        hit = total_pnl >= threshold if threshold > 0 else total_pnl <= threshold
+        if not hit:
+            return None
+        direction = "profit" if threshold > 0 else "loss"
+        return (
+            f"Global MTM {direction} threshold hit: total P&L {total_pnl:.2f} "
+            f"reached configured threshold {threshold:.2f}."
+        )
+
+    def _check_global_mtm_square_off(self, reference_time: datetime | None = None) -> None:
+        with self.lock:
+            note = self._global_mtm_square_off_note_locked(reference_time=reference_time)
+            if note is None:
+                return
+            self._global_mtm_square_off_triggered = True
+        self._square_off_all_trades_with_reason(note)
+
     def heuristic_decision(self, context: StrategyContext) -> TradeDecision:
         current_trade_price = None
         if context.active_trade is not None:
@@ -5548,6 +5633,66 @@ class SimulationEngine:
         if is_option_trade:
             return max(self.settings.simulation_lot_size * self._nifty_order_lots(), self.settings.simulation_lot_size)
         return max(int(self._stock_trade_capital() // max(current_spot, 0.01)), 1)
+
+    def _resolve_stock_future_execution(self, current_candle: Candle):
+        contract = self.stock_universe.resolve_current_future(
+            self.instrument_spec.symbol,
+            reference_date=current_candle.timestamp.date(),
+        )
+        lots = self._stock_future_lots()
+        quantity = max(int(contract.lot_size) * lots, 1)
+        return contract, quantity
+
+    def _resolve_stock_option_execution(self, current_candle: Candle, option_type: str) -> tuple[OptionContract, OptionQuote, int]:
+        symbol = self.instrument_spec.symbol
+        if not self.stock_universe.is_derivative_symbol(symbol):
+            raise ValueError(f"{symbol} is not in the configured F&O stock list.")
+        client_id, access_token = self.credential_store.get_dhan_credentials(self.settings)
+        if not client_id or not access_token:
+            raise ValueError("Dhan credentials are required to resolve stock option contracts.")
+        try:
+            underlying_security_id = int(self.instrument_spec.security_id)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"Cash security id is required to resolve {symbol} stock options.") from exc
+        contract = self.option_quote_service.resolve_atm_option_contract(
+            client_id=client_id,
+            access_token=access_token,
+            underlying_security_id=underlying_security_id,
+            underlying_segment=self.instrument_spec.exchange_segment,
+            spot=current_candle.close,
+            option_type=option_type,
+            reference_time=current_candle.timestamp,
+            underlying_label=symbol,
+            expiry_preference=self._nifty_expiry_preference(),
+        )
+        try:
+            quote = self.option_quote_service.fetch_quote(
+                client_id=client_id,
+                access_token=access_token,
+                security_id=contract.security_id,
+                exchange_segment="NSE_FNO",
+                option_type=contract.option_type,
+                strike=contract.strike,
+            )
+        except DhanOptionQuoteError as exc:
+            if contract.quote is None or contract.quote.last_price <= 0:
+                raise ValueError(f"Could not fetch live quote for {contract.symbol}: {exc}") from exc
+            quote = contract.quote
+        if quote.last_price <= 0:
+            raise ValueError(f"Stock option quote is not tradable for {contract.symbol}.")
+        contract.quote = quote
+        lot_size = contract.lot_size
+        if not lot_size or lot_size <= 0:
+            try:
+                future_contract = self.stock_universe.resolve_current_future(
+                    symbol,
+                    reference_date=current_candle.timestamp.date(),
+                )
+                lot_size = future_contract.lot_size
+            except ValueError as exc:
+                raise ValueError(f"Could not resolve lot size for {symbol} stock option.") from exc
+        quantity = max(int(lot_size) * self._stock_option_lots(), 1)
+        return contract, quote, quantity
 
     def _use_spot_pricing_for_source(self, source: str) -> bool:
         return source == "replay" and self.instrument_spec.supports_options
@@ -5613,33 +5758,56 @@ class SimulationEngine:
         if normalized_invalidation != decision.invalidation_level:
             decision = decision.model_copy(update={"invalidation_level": normalized_invalidation})
         option_type = signal_option_type
-        is_option_trade = self.instrument_spec.supports_options and not self._use_spot_pricing_for_source(source)
+        use_stock_option_execution = (
+            source == "live"
+            and self.instrument_mode == InstrumentMode.stock
+            and not self.instrument_spec.supports_options
+            and self._stock_execution_mode() == "option"
+        )
+        is_option_trade = (
+            self.instrument_spec.supports_options and not self._use_spot_pricing_for_source(source)
+        ) or use_stock_option_execution
         use_option_selling = is_option_trade and self._use_nifty_live_option_selling(source)
         use_nifty_live_buying = is_option_trade and self._use_nifty_live_option_buying(source)
+        use_stock_future_execution = (
+            source == "live"
+            and self.instrument_mode == InstrumentMode.stock
+            and not self.instrument_spec.supports_options
+            and self._stock_execution_mode() == "future"
+        )
         if use_option_selling:
             option_type = self._nifty_sell_option_type_for_signal(signal_option_type)
             strike = self.select_nifty_live_sell_strike(current_candle.close, option_type)
         elif use_nifty_live_buying:
             strike = self.select_nifty_live_buy_strike(current_candle.close, option_type)
+        elif use_stock_option_execution:
+            strike = 0
         else:
             strike = decision.strike or (self.select_itm_strike(current_candle.close, option_type) if is_option_trade else 0)
         contract = None
         entry_quote = None
         quantity = self._resolve_trade_quantity(current_candle.close, is_option_trade)
         if is_option_trade:
-            contract = self._load_option_contract_from_dhan(
-                strike=strike,
-                option_type=option_type,
-                reference_time=current_candle.timestamp,
-            )
-            entry_quote = contract.quote if contract and contract.quote else None
-            entry_price = entry_quote.last_price if entry_quote else self.price_option(current_candle.close, strike, option_type)
-            trade_symbol = contract.symbol if contract else self.format_option_symbol(current_candle.timestamp, strike, option_type)
-            direction = (
-                self._nifty_short_direction_for_option(option_type)
-                if use_option_selling
-                else ("LONG_CALL" if option_type == "CE" else "LONG_PUT")
-            )
+            if use_stock_option_execution:
+                contract, entry_quote, quantity = self._resolve_stock_option_execution(current_candle, option_type)
+                strike = contract.strike
+                entry_price = entry_quote.last_price
+                trade_symbol = contract.symbol
+                direction = "LONG_CALL" if option_type == "CE" else "LONG_PUT"
+            else:
+                contract = self._load_option_contract_from_dhan(
+                    strike=strike,
+                    option_type=option_type,
+                    reference_time=current_candle.timestamp,
+                )
+                entry_quote = contract.quote if contract and contract.quote else None
+                entry_price = entry_quote.last_price if entry_quote else self.price_option(current_candle.close, strike, option_type)
+                trade_symbol = contract.symbol if contract else self.format_option_symbol(current_candle.timestamp, strike, option_type)
+                direction = (
+                    self._nifty_short_direction_for_option(option_type)
+                    if use_option_selling
+                    else ("LONG_CALL" if option_type == "CE" else "LONG_PUT")
+                )
             trade_security_id = contract.security_id if contract else None
             quote_exchange_segment = "NSE_FNO"
             stop_price, target_price = self.derive_option_trade_plan(
@@ -5652,12 +5820,19 @@ class SimulationEngine:
             )
         else:
             entry_price = round(current_candle.close, 2)
-            trade_symbol = (
-                f"{self.instrument_spec.symbol} SPOT" if self.instrument_spec.supports_options else f"{self.instrument_spec.symbol} EQ"
-            )
             direction = "LONG_STOCK" if option_type == "CE" else "SHORT_STOCK"
-            trade_security_id = self.instrument_spec.security_id
-            quote_exchange_segment = self.instrument_spec.exchange_segment
+            if use_stock_future_execution:
+                contract, quantity = self._resolve_stock_future_execution(current_candle)
+                trade_symbol = contract.trading_symbol
+                trade_security_id = contract.security_id
+                quote_exchange_segment = contract.exchange_segment
+                entry_price = round(current_candle.close, 2)
+            else:
+                trade_symbol = (
+                    f"{self.instrument_spec.symbol} SPOT" if self.instrument_spec.supports_options else f"{self.instrument_spec.symbol} EQ"
+                )
+                trade_security_id = self.instrument_spec.security_id
+                quote_exchange_segment = self.instrument_spec.exchange_segment
             stop_price = round(decision.invalidation_level or decision.stop_option_price or entry_price, 2)
             target_price = round(decision.target_spot_price or decision.target_option_price or entry_price, 2)
         entry_time = entry_quote.quote_time if entry_quote else current_candle.timestamp
@@ -6069,7 +6244,18 @@ class SimulationEngine:
         if decision.action in {TradeAction.enter_call, TradeAction.enter_put}:
             if self.active_trade:
                 return
-            trade = self._build_entry_trade(current_candle, decision, source=source)
+            try:
+                trade = self._build_entry_trade(current_candle, decision, source=source)
+            except ValueError as exc:
+                message = str(exc)
+                self._record_execution_feedback_locked(
+                    symbol=self.instrument_spec.symbol,
+                    message=f"Live entry skipped: {message}",
+                    error=message,
+                )
+                self.rulebook_service.learning_log.insert(0, f"Live entry skipped: {message}")
+                self._mark_state_dirty_locked()
+                return
             if self._should_send_live_orders(source):
                 self._enter_live_trade(current_candle, decision, trade)
             else:
@@ -6080,6 +6266,10 @@ class SimulationEngine:
             return
 
         if decision.action == TradeAction.add_position:
+            if self._stock_derivative_execution_mode_enabled():
+                self.rulebook_service.learning_log.insert(0, "Pyramiding add ignored because Stock F&O execution mode is enabled.")
+                self._mark_state_dirty_locked()
+                return
             if self._should_send_live_orders(source):
                 self._add_live_trade(current_candle, decision)
             else:

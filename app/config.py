@@ -17,6 +17,9 @@ class Settings(BaseSettings):
     simulation_lot_size: int = 65
     nifty_order_lots: int = 1
     stock_trade_capital: float = 25000.0
+    stock_execution_mode: str = "cash"
+    stock_future_lots: int = 1
+    stock_option_lots: int = 1
     nifty_expiry_preference: str = "current-weekly"
     nifty_trailing_stop_enabled: bool = True
     nifty_heuristic_early_exit_enabled: bool = True
@@ -42,6 +45,8 @@ class Settings(BaseSettings):
     session_candle_limit: int = 90
     stock_sync_max_workers: int = 4
     stock_min_5m_turnover: float = 30000000.0
+    global_mtm_square_off_enabled: bool = False
+    global_mtm_square_off_threshold: float = 0.0
 
     model_config = SettingsConfigDict(
         env_file=".env",

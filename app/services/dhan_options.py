@@ -33,6 +33,7 @@ class OptionContract:
     strike: int
     expiry: date
     symbol: str
+    lot_size: int | None = None
     quote: OptionQuote | None = None
 
 
@@ -105,6 +106,67 @@ class DhanOptionQuoteService:
             strike=strike,
             expiry=expiry,
             symbol=f"{underlying_label} {expiry.strftime('%d%b%Y').upper()} {strike}{normalized_option_type}",
+            lot_size=self._as_int(leg_payload.get("lot_size") or leg_payload.get("lotSize")),
+            quote=quote,
+        )
+
+    def resolve_atm_option_contract(
+        self,
+        *,
+        client_id: str,
+        access_token: str,
+        underlying_security_id: int,
+        underlying_segment: str,
+        spot: float,
+        option_type: str,
+        reference_time: datetime,
+        underlying_label: str,
+        expiry_preference: str = "current-weekly",
+    ) -> OptionContract:
+        normalized_option_type = option_type.strip().upper()
+        if normalized_option_type not in {"CE", "PE"}:
+            raise DhanOptionQuoteError(f"Unsupported option type: {option_type}")
+        expiry = self.get_nearest_expiry(
+            client_id=client_id,
+            access_token=access_token,
+            underlying_security_id=underlying_security_id,
+            underlying_segment=underlying_segment,
+            reference_date=reference_time.date(),
+            preference=expiry_preference,
+        )
+        chain = self.get_option_chain(
+            client_id=client_id,
+            access_token=access_token,
+            underlying_security_id=underlying_security_id,
+            underlying_segment=underlying_segment,
+            expiry=expiry,
+        )
+        strike, leg_payload = self._find_nearest_available_leg(chain, spot, normalized_option_type)
+        security_id = leg_payload.get("security_id")
+        if security_id in (None, ""):
+            raise DhanOptionQuoteError(f"Dhan option chain did not return security_id for ATM {normalized_option_type}.")
+        quote = None
+        quote_price = self._as_float(leg_payload.get("last_price"))
+        if quote_price is not None:
+            quote = OptionQuote(
+                security_id=str(security_id),
+                option_type=normalized_option_type,
+                strike=strike,
+                last_price=quote_price,
+                quote_time=self._now_ist(),
+                source="dhan-option-chain",
+                bid_price=self._as_float(leg_payload.get("top_bid_price")),
+                ask_price=self._as_float(leg_payload.get("top_ask_price")),
+                volume=self._as_int(leg_payload.get("volume")),
+                oi=self._as_int(leg_payload.get("oi")),
+            )
+        return OptionContract(
+            security_id=str(security_id),
+            option_type=normalized_option_type,
+            strike=strike,
+            expiry=expiry,
+            symbol=f"{underlying_label} {expiry.strftime('%d%b%Y').upper()} {strike}{normalized_option_type}",
+            lot_size=self._as_int(leg_payload.get("lot_size") or leg_payload.get("lotSize")),
             quote=quote,
         )
 
@@ -245,6 +307,26 @@ class DhanOptionQuoteService:
         if nearest_key is None:
             raise DhanOptionQuoteError(f"No option chain strike found near {strike}.")
         return chain[nearest_key]
+
+    def _find_nearest_available_leg(self, chain: dict, spot: float, option_type: str) -> tuple[int, dict]:
+        leg_key = "ce" if option_type == "CE" else "pe"
+        nearest: tuple[float, int, dict] | None = None
+        for key, payload in chain.items():
+            if not isinstance(payload, dict):
+                continue
+            try:
+                strike = int(round(float(key)))
+            except (TypeError, ValueError):
+                continue
+            leg_payload = payload.get(leg_key)
+            if not isinstance(leg_payload, dict) or leg_payload.get("security_id") in (None, ""):
+                continue
+            distance = abs(float(strike) - float(spot))
+            if nearest is None or distance < nearest[0] or (distance == nearest[0] and strike < nearest[1]):
+                nearest = (distance, strike, leg_payload)
+        if nearest is None:
+            raise DhanOptionQuoteError(f"No available ATM {option_type} contract found near spot {spot}.")
+        return nearest[1], nearest[2]
 
     def _now_ist(self) -> datetime:
         return datetime.now(self.market_timezone)

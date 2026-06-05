@@ -36,6 +36,9 @@ class CredentialStore:
         operating_mode: str | None = None,
         nifty_order_lots: int | None = None,
         stock_trade_capital: float | None = None,
+        stock_execution_mode: str | None = None,
+        stock_future_lots: int | None = None,
+        stock_option_lots: int | None = None,
         nifty_expiry_preference: str | None = None,
         stock_partial_profit_enabled: bool | None = None,
         stock_trailing_stop_enabled: bool | None = None,
@@ -58,6 +61,8 @@ class CredentialStore:
         nifty_point_pyramiding_points: float | None = None,
         nifty_trade_bias: str | None = None,
         nifty_option_trade_mode: str | None = None,
+        global_mtm_square_off_enabled: bool | None = None,
+        global_mtm_square_off_threshold: float | None = None,
     ) -> None:
         payload = self.load()
         updated = False
@@ -115,6 +120,21 @@ class CredentialStore:
             normalized = round(max(float(stock_trade_capital), 1.0), 2)
             if payload.get("stock_trade_capital") != normalized:
                 payload["stock_trade_capital"] = normalized
+                updated = True
+        if stock_execution_mode and stock_execution_mode.strip():
+            normalized = self._normalize_stock_execution_mode(stock_execution_mode)
+            if payload.get("stock_execution_mode") != normalized:
+                payload["stock_execution_mode"] = normalized
+                updated = True
+        if stock_future_lots is not None:
+            normalized = max(int(stock_future_lots), 1)
+            if payload.get("stock_future_lots") != normalized:
+                payload["stock_future_lots"] = normalized
+                updated = True
+        if stock_option_lots is not None:
+            normalized = max(int(stock_option_lots), 1)
+            if payload.get("stock_option_lots") != normalized:
+                payload["stock_option_lots"] = normalized
                 updated = True
         if nifty_expiry_preference and nifty_expiry_preference.strip():
             normalized = nifty_expiry_preference.strip().lower()
@@ -225,6 +245,16 @@ class CredentialStore:
             normalized = self._normalize_nifty_option_trade_mode(nifty_option_trade_mode)
             if payload.get("nifty_option_trade_mode") != normalized:
                 payload["nifty_option_trade_mode"] = normalized
+                updated = True
+        if global_mtm_square_off_enabled is not None:
+            normalized = bool(global_mtm_square_off_enabled)
+            if payload.get("global_mtm_square_off_enabled") != normalized:
+                payload["global_mtm_square_off_enabled"] = normalized
+                updated = True
+        if global_mtm_square_off_threshold is not None:
+            normalized = round(float(global_mtm_square_off_threshold), 2)
+            if payload.get("global_mtm_square_off_threshold") != normalized:
+                payload["global_mtm_square_off_threshold"] = normalized
                 updated = True
 
         if not updated:
@@ -343,6 +373,26 @@ class CredentialStore:
             return max(float(raw), 1.0)
         except (TypeError, ValueError):
             return max(float(settings.stock_trade_capital), 1.0)
+
+    def get_stock_execution_mode(self, settings: Settings) -> str:
+        payload = self.load()
+        return self._normalize_stock_execution_mode(payload.get("stock_execution_mode") or settings.stock_execution_mode)
+
+    def get_stock_future_lots(self, settings: Settings) -> int:
+        payload = self.load()
+        raw = payload.get("stock_future_lots", settings.stock_future_lots)
+        try:
+            return max(int(raw), 1)
+        except (TypeError, ValueError):
+            return max(int(settings.stock_future_lots), 1)
+
+    def get_stock_option_lots(self, settings: Settings) -> int:
+        payload = self.load()
+        raw = payload.get("stock_option_lots", settings.stock_option_lots)
+        try:
+            return max(int(raw), 1)
+        except (TypeError, ValueError):
+            return max(int(settings.stock_option_lots), 1)
 
     def get_nifty_expiry_preference(self, settings: Settings) -> str:
         payload = self.load()
@@ -464,6 +514,20 @@ class CredentialStore:
         payload = self.load()
         return self._normalize_nifty_trade_bias(payload.get("nifty_trade_bias") or settings.nifty_trade_bias)
 
+    def get_global_mtm_square_off_enabled(self, settings: Settings) -> bool:
+        payload = self.load()
+        return self._coerce_bool(
+            payload.get("global_mtm_square_off_enabled"),
+            bool(settings.global_mtm_square_off_enabled),
+        )
+
+    def get_global_mtm_square_off_threshold(self, settings: Settings) -> float:
+        payload = self.load()
+        return self._coerce_float(
+            payload.get("global_mtm_square_off_threshold"),
+            float(settings.global_mtm_square_off_threshold),
+        )
+
     def get_ui_preferences(self) -> tuple[InstrumentMode, str | None, list[str]]:
         payload = self.load()
         raw_mode = str(payload.get("instrument_mode") or InstrumentMode.nifty.value).strip().lower()
@@ -504,6 +568,9 @@ class CredentialStore:
             operating_mode=self.get_operating_mode(settings),
             nifty_order_lots=self.get_nifty_order_lots(settings),
             stock_trade_capital=self.get_stock_trade_capital(settings),
+            stock_execution_mode=self.get_stock_execution_mode(settings),
+            stock_future_lots=self.get_stock_future_lots(settings),
+            stock_option_lots=self.get_stock_option_lots(settings),
             nifty_expiry_preference=self.get_nifty_expiry_preference(settings),
             stock_partial_profit_enabled=self.get_stock_partial_profit_enabled(settings),
             stock_trailing_stop_enabled=self.get_stock_trailing_stop_enabled(settings),
@@ -526,6 +593,8 @@ class CredentialStore:
             nifty_point_pyramiding_points=self.get_nifty_point_pyramiding_points(settings),
             nifty_trade_bias=self.get_nifty_trade_bias(settings),
             nifty_option_trade_mode=self.get_nifty_option_trade_mode(settings),
+            global_mtm_square_off_enabled=self.get_global_mtm_square_off_enabled(settings),
+            global_mtm_square_off_threshold=self.get_global_mtm_square_off_threshold(settings),
             dhan_credential_message=self.resolve_dhan_credentials(
                 payload.get("client_id") or settings.dhan_client_id,
                 payload.get("access_token") or settings.dhan_access_token,
@@ -557,6 +626,15 @@ class CredentialStore:
         if normalized in {"buy", "buying", "option-buying"}:
             return "buying"
         return "selling"
+
+    @staticmethod
+    def _normalize_stock_execution_mode(value: object) -> str:
+        normalized = str(value or "cash").strip().lower()
+        if normalized in {"option", "options", "stock-option", "stock_option"}:
+            return "option"
+        if normalized in {"future", "futures", "stock-future", "stock_future"}:
+            return "future"
+        return "cash"
 
     @staticmethod
     def _normalize_nifty_trade_bias(value: object) -> str:
