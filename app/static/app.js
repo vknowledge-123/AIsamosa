@@ -27,6 +27,7 @@ const elements = {
   liveTicksValue: document.getElementById("liveTicksValue"),
   liveErrorValue: document.getElementById("liveErrorValue"),
   executionEnabledValue: document.getElementById("executionEnabledValue"),
+  executionBrokerValue: document.getElementById("executionBrokerValue"),
   executionStatusValue: document.getElementById("executionStatusValue"),
   executionErrorValue: document.getElementById("executionErrorValue"),
   syncStatusValue: document.getElementById("syncStatusValue"),
@@ -991,19 +992,22 @@ function renderState(state) {
   const connectLiveBtn = document.getElementById("connectLiveBtn");
   const disconnectLiveBtn = document.getElementById("disconnectLiveBtn");
   const liveFeedBusy = ["connecting", "connected", "reconnecting"].includes(state.live_feed.status);
+  const liveBroker = state.credentials.broker_provider || "dhan";
+  const liveFeedProviderLabel = liveBroker === "zerodha" ? "Zerodha Live" : "Dhan Live";
   connectLiveBtn.disabled = liveFeedBusy;
   disconnectLiveBtn.disabled = state.live_feed.status === "disconnected";
   if (state.live_feed.status === "connected") {
-    connectLiveBtn.textContent = `Live Connected ${state.instrument.label}`;
+    connectLiveBtn.textContent = `${liveFeedProviderLabel} Connected ${state.instrument.label}`;
   } else if (state.live_feed.status === "reconnecting") {
-    connectLiveBtn.textContent = `Reconnecting ${state.instrument.label}`;
+    connectLiveBtn.textContent = `Reconnecting ${liveFeedProviderLabel} ${state.instrument.label}`;
   } else if (state.live_feed.status === "connecting") {
-    connectLiveBtn.textContent = `Connecting ${state.instrument.label}`;
+    connectLiveBtn.textContent = `Connecting ${liveFeedProviderLabel} ${state.instrument.label}`;
   } else {
-    connectLiveBtn.textContent = `Connect Live ${state.instrument.label}`;
+    connectLiveBtn.textContent = `Connect ${liveFeedProviderLabel} ${state.instrument.label}`;
   }
   document.getElementById("simulateTodayBtn").textContent = `Start ${state.instrument.label} Today Simulation`;
   document.getElementById("startTradingBtn").textContent = state.execution?.live_trading_enabled ? "Trading Armed" : "Start Trading";
+  elements.executionBrokerValue.textContent = state.credentials.broker_provider || "dhan";
   elements.syncStatusValue.textContent = `${state.data_sync.status} (${state.data_sync.source})`;
   elements.operationJobValue.textContent = `${state.operation_job?.job_type || "idle"} (${state.operation_job?.status || "idle"})`;
   elements.operationJobMessage.textContent = state.operation_job?.message || "No background sync or replay job is running.";

@@ -56,6 +56,7 @@ from app.services.market_data import (
 )
 from app.services.rulebook import RulebookService
 from app.services.stock_universe import StockFutureContract, StockUniverseService
+from app.services.zerodha_adapter import ZerodhaMarketFeedAdapter
 from app.services.zerodha_execution import ZerodhaExecutionError, ZerodhaExecutionService
 
 
@@ -1799,16 +1800,24 @@ class SimulationEngine:
             with self.lock:
                 self._mark_state_dirty_locked()
 
-    def _build_watchlist_subscription_plan(self) -> tuple[DhanMarketFeedAdapter, dict[str, tuple], dict[str, tuple]] | None:
+    def _build_watchlist_subscription_plan(self):
         with self.lock:
             if self.live_feed_adapter is None or self.instrument_mode != InstrumentMode.stock:
                 return None
             adapter = self.live_feed_adapter
-            desired = {
-                spec.security_id: resolve_quote_subscription(spec.security_id, spec.exchange_segment)
-                for spec in self.stock_watchlist.values()
-                if spec.security_id
-            }
+            broker = self._selected_broker_provider()
+            if broker == "zerodha":
+                desired = {
+                    spec.security_id: self._zerodha_quote_subscription_for_spec(spec)
+                    for spec in self.stock_watchlist.values()
+                    if spec.security_id
+                }
+            else:
+                desired = {
+                    spec.security_id: resolve_quote_subscription(spec.security_id, spec.exchange_segment)
+                    for spec in self.stock_watchlist.values()
+                    if spec.security_id
+                }
             current = dict(self._stock_quote_subscriptions)
         return adapter, current, desired
 
@@ -2010,10 +2019,17 @@ class SimulationEngine:
         return self.get_state()
 
     def connect_live_feed(self, client_id: str | None = None, access_token: str | None = None) -> DashboardState:
+        broker = self._selected_broker_provider()
         client, token = self._available_dhan_credentials(client_id, access_token)
-        if not client or not token:
-            raise ValueError("Dhan client ID and access token are required to start the live feed")
-        self._remember_dhan_credentials(client, token)
+        zerodha_api_key, _, zerodha_token = self._available_zerodha_credentials()
+        if broker == "zerodha":
+            if not zerodha_api_key or not zerodha_token:
+                raise ValueError("Zerodha API key and access token are required to start the Kite websocket.")
+        else:
+            if not client or not token:
+                raise ValueError("Dhan client ID and access token are required to start the live feed")
+        if client and token:
+            self._remember_dhan_credentials(client, token)
         stock_symbols_to_prepare: list[str] = []
 
         stale_adapter = None
@@ -2038,17 +2054,19 @@ class SimulationEngine:
         if stale_adapter is not None:
             stale_adapter.stop()
 
-        if self.instrument_mode != InstrumentMode.stock:
+        if self.instrument_mode != InstrumentMode.stock and client and token:
             self.sync_dhan_context(client_id=client, access_token=token)
         else:
             with self.lock:
                 stock_symbols_to_prepare = list(self.stock_watchlist.keys())
         with self.lock:
+            feed_source = "zerodha-websocket" if broker == "zerodha" else "dhan-websocket"
+            feed_message = "Connecting to Zerodha Kite websocket." if broker == "zerodha" else "Connecting to Dhan market feed."
             self.live_feed = self._build_live_feed_state(
                 connected=False,
                 status="connecting",
-                source="dhan-websocket",
-                status_message="Connecting to Dhan market feed.",
+                source=feed_source,
+                status_message=feed_message,
             )
             self._live_cumulative_volume_by_security_id.clear()
             if self.instrument_mode == InstrumentMode.stock:
@@ -2058,26 +2076,51 @@ class SimulationEngine:
                     if spec.security_id
                 ]
                 instruments = [
-                    resolve_quote_subscription(spec.security_id, spec.exchange_segment)
+                    (
+                        self._zerodha_quote_subscription_for_spec(spec)
+                        if broker == "zerodha"
+                        else resolve_quote_subscription(spec.security_id, spec.exchange_segment)
+                    )
                     for spec in resolved_specs
                 ]
                 companion_spec = self._active_companion_instrument_spec()
                 if companion_spec is not None and companion_spec.security_id:
                     instruments.append(
-                        resolve_quote_subscription(companion_spec.security_id, companion_spec.exchange_segment)
+                        self._zerodha_quote_subscription_for_spec(companion_spec)
+                        if broker == "zerodha"
+                        else resolve_quote_subscription(companion_spec.security_id, companion_spec.exchange_segment)
                     )
                 if not instruments:
-                    raise ValueError("No stock in the watchlist has a resolved Dhan security id yet. Search once or wait a moment, then retry.")
+                    raise ValueError("No stock in the watchlist has a resolved security id yet. Search once or wait a moment, then retry.")
             else:
-                instruments = [resolve_quote_subscription(self.instrument_spec.security_id, self.instrument_spec.exchange_segment)]
+                instruments = [
+                    (
+                        self._zerodha_quote_subscription_for_spec(self.instrument_spec)
+                        if broker == "zerodha"
+                        else resolve_quote_subscription(self.instrument_spec.security_id, self.instrument_spec.exchange_segment)
+                    )
+                ]
                 if self._use_banknifty_companion():
                     instruments.append(
-                        resolve_quote_subscription(
-                            self.companion_instrument_spec.security_id,
-                            self.companion_instrument_spec.exchange_segment,
+                        (
+                            self._zerodha_quote_subscription_for_spec(self.companion_instrument_spec)
+                            if broker == "zerodha"
+                            else resolve_quote_subscription(
+                                self.companion_instrument_spec.security_id,
+                                self.companion_instrument_spec.exchange_segment,
+                            )
                         )
                     )
-            self.live_feed_adapter = DhanMarketFeedAdapter(client, token, instruments)
+            self.live_feed_adapter = (
+                ZerodhaMarketFeedAdapter(
+                    zerodha_api_key,
+                    zerodha_token,
+                    instruments,
+                    order_update_callback=self.handle_order_update_packet,
+                )
+                if broker == "zerodha"
+                else DhanMarketFeedAdapter(client, token, instruments)
+            )
             self._stock_quote_subscriptions = {}
             if self.instrument_mode == InstrumentMode.stock:
                 for spec, subscription in zip(resolved_specs, instruments):
@@ -2087,7 +2130,7 @@ class SimulationEngine:
             self.rulebook_service.learning_log.insert(
                 0,
                 (
-                    "Started Dhan live feed for "
+                    f"Started {'Zerodha Kite' if broker == 'zerodha' else 'Dhan'} live feed for "
                     f"{self.instrument_spec.label} (security {self.instrument_spec.security_id}) with live-paper analysis enabled."
                 ),
             )
@@ -2110,7 +2153,7 @@ class SimulationEngine:
             raise ValueError("Saved or runtime Dhan credentials are required before starting live trading.")
         with self.lock:
             if self.live_feed_adapter is None:
-                raise ValueError("Connect the Dhan live feed before starting live trading.")
+                raise ValueError("Connect the selected live feed before starting live trading.")
             cleared_symbols: list[str] = []
             if self.instrument_mode == InstrumentMode.stock:
                 selected_symbol = self.selected_stock_symbol
@@ -2138,8 +2181,8 @@ class SimulationEngine:
             self.rulebook_service.learning_log.insert(
                 0,
                 (
-                    "Started live heuristic execution. New real orders will only be placed from realtime Dhan "
-                    "websocket evaluations, not from sync or replay actions."
+                    "Started live heuristic execution. New real orders will only be placed from realtime "
+                    "Dhan or Zerodha websocket evaluations, not from sync or replay actions."
                 ),
             )
             self._mark_state_dirty_locked()
@@ -3968,7 +4011,7 @@ class SimulationEngine:
         with self.lock:
             self.live_feed.status = status
             self.live_feed.connected = status == "connected"
-            self.live_feed.source = "dhan-websocket"
+            self.live_feed.source = self.live_feed.source or "dhan-websocket"
             self.live_feed.instrument_label = self.instrument_spec.label
             self.live_feed.security_id = self.instrument_spec.security_id
             self.live_feed.status_message = message
@@ -4049,6 +4092,7 @@ class SimulationEngine:
             raw_volume = self._as_float(packet.get("volume")) or 0.0
             volume_delta = self._live_volume_delta_locked(security_id, tick_time, raw_volume)
             packet_type = str(packet.get("type", "Unknown"))
+            feed_source = str(packet.get("source") or self.live_feed.source or "dhan-websocket")
             if self.active_trade and self.active_trade.option_security_id and security_id == self.active_trade.option_security_id:
                 cap_note = self._update_active_trade_quote_locked(
                     OptionQuote(
@@ -4057,7 +4101,7 @@ class SimulationEngine:
                         strike=self.active_trade.strike,
                         last_price=ltp,
                         quote_time=tick_time,
-                        source="dhan-websocket",
+                        source=feed_source,
                         volume=self._as_int(packet.get("volume")),
                         oi=self._as_int(packet.get("OI")),
                     )
@@ -4094,6 +4138,7 @@ class SimulationEngine:
             raw_volume = self._as_float(packet.get("volume")) or 0.0
             volume_delta = self._live_volume_delta_locked(security_id, tick_time, raw_volume)
             packet_type = str(packet.get("type", "Unknown"))
+            feed_source = str(packet.get("source") or self.live_feed.source or "dhan-websocket")
             if self.instrument_mode == InstrumentMode.stock:
                 matched_symbol = self._stock_symbol_by_security_id.get(security_id)
                 companion_spec = self._active_companion_instrument_spec()
@@ -4122,7 +4167,7 @@ class SimulationEngine:
                 live_trade_control_check = (ltp, tick_time)
             self.live_feed.connected = True
             self.live_feed.status = "connected"
-            self.live_feed.source = "dhan-websocket"
+            self.live_feed.source = feed_source
             self.live_feed.instrument_label = self.instrument_spec.label
             self.live_feed.security_id = str(packet.get("security_id", self.instrument_spec.security_id))
             self.live_feed.last_packet_type = packet_type
@@ -4194,7 +4239,7 @@ class SimulationEngine:
             if session.active_trade is not None and session.active_trade.price_mode == "cash":
                 session.active_trade.current_price = round(ltp, 2)
                 session.active_trade.current_option_price = session.active_trade.current_price
-                session.active_trade.current_quote_source = "dhan-websocket"
+                session.active_trade.current_quote_source = self.live_feed.source or "dhan-websocket"
                 session.active_trade.current_quote_time = tick_time
                 session.active_trade.pnl = self.calculate_trade_pnl(session.active_trade, session.active_trade.current_price)
             self._mark_state_dirty_locked()
@@ -4400,6 +4445,18 @@ class SimulationEngine:
         return self._replay_simulation_depth > 0
 
     def _packet_timestamp(self, packet: dict) -> datetime:
+        timestamp = packet.get("timestamp") or packet.get("exchange_timestamp") or packet.get("last_trade_time")
+        if isinstance(timestamp, datetime):
+            return timestamp.replace(tzinfo=None)
+        if isinstance(timestamp, str):
+            for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%H:%M:%S"):
+                try:
+                    parsed = datetime.strptime(timestamp[:19], fmt)
+                    if fmt == "%H:%M:%S":
+                        return datetime.combine(datetime.now().date(), parsed.time())
+                    return parsed
+                except ValueError:
+                    continue
         ltt = packet.get("LTT")
         if isinstance(ltt, str):
             try:
@@ -5399,7 +5456,7 @@ class SimulationEngine:
             if trade.price_mode == "cash":
                 trade.current_price = round(ltp, 2)
                 trade.current_option_price = trade.current_price
-                trade.current_quote_source = "dhan-websocket"
+                trade.current_quote_source = self.live_feed.source or "dhan-websocket"
                 trade.current_quote_time = tick_time
                 trade.pnl = self.calculate_trade_pnl(trade, trade.current_price)
             bullish_trade = self._is_bullish_spot_trade_direction(trade.direction)
@@ -5574,6 +5631,11 @@ class SimulationEngine:
                 self.active_trade.option_security_id,
                 self.active_trade.quote_exchange_segment,
             )
+        elif self.active_trade and self.active_trade.price_mode == "option" and self.active_trade.broker_provider == "zerodha":
+            try:
+                next_subscription = self._zerodha_quote_subscription_for_trade_locked(self.active_trade)
+            except Exception as exc:
+                self.execution_state.order_updates_message = f"Zerodha option feed subscription skipped: {exc}"
 
         if self._active_option_subscription and self._active_option_subscription != next_subscription:
             self.live_feed_adapter.unsubscribe_symbols([self._active_option_subscription])
@@ -5689,6 +5751,40 @@ class SimulationEngine:
         if is_option_trade:
             return max(self.settings.simulation_lot_size * self._nifty_order_lots(), self.settings.simulation_lot_size)
         return max(int(self._stock_trade_capital() // max(current_spot, 0.01)), 1)
+
+    def _zerodha_quote_subscription_for_spec(self, spec: InstrumentSpec) -> tuple[int, str, str]:
+        api_key, _, access_token = self._available_zerodha_credentials()
+        if not api_key or not access_token:
+            raise ValueError("Zerodha API key and access token are required to connect Kite websocket.")
+        instrument = self.zerodha_execution_service.resolve_feed_instrument(
+            api_key=api_key,
+            access_token=access_token,
+            symbol=spec.symbol,
+            exchange_segment=spec.exchange_segment,
+            tradingsymbol=spec.symbol,
+        )
+        if instrument.instrument_token is None:
+            raise ValueError(f"Could not resolve Zerodha feed token for {spec.symbol}.")
+        return int(instrument.instrument_token), spec.security_id, "quote"
+
+    def _zerodha_quote_subscription_for_trade_locked(self, trade: SimulatedTrade) -> tuple[int, str, str] | None:
+        if trade.broker_provider != "zerodha" or not trade.broker_exchange or not trade.broker_tradingsymbol:
+            return None
+        api_key, _, access_token = self._available_zerodha_credentials()
+        if not api_key or not access_token:
+            return None
+        instrument = self.zerodha_execution_service.resolve_feed_instrument_by_tradingsymbol(
+            api_key=api_key,
+            access_token=access_token,
+            exchange=trade.broker_exchange,
+            tradingsymbol=trade.broker_tradingsymbol,
+        )
+        if instrument.instrument_token is None:
+            return None
+        security_id = trade.option_security_id or str(instrument.instrument_token)
+        trade.option_security_id = security_id
+        trade.trade_security_id = trade.trade_security_id or security_id
+        return int(instrument.instrument_token), security_id, "quote"
 
     def _resolve_stock_future_execution(self, current_candle: Candle):
         if self._selected_broker_provider() == "zerodha":

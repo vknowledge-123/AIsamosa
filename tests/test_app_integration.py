@@ -23,6 +23,7 @@ from app.services.heuristic_engine import HeuristicDecisionEngine, Observation, 
 from app.services.instruments import build_stock_instrument
 from app.services.simulation import SimulationEngine
 from app.services.stock_universe import StockFutureContract, StockUniverseEntry, StockUniverseService
+from app.services.zerodha_adapter import ZerodhaMarketFeedAdapter
 from app.services.zerodha_execution import ZerodhaInstrument
 
 
@@ -828,6 +829,72 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         state = response.json()["state"]
         self.assertTrue(state["execution"]["live_trading_enabled"])
+
+    def test_connect_live_feed_uses_zerodha_websocket_when_broker_is_zerodha(self) -> None:
+        created: dict[str, object] = {}
+
+        class FakeZerodhaFeed:
+            def __init__(self, api_key, access_token, instruments, order_update_callback=None):
+                created["api_key"] = api_key
+                created["access_token"] = access_token
+                created["instruments"] = instruments
+                created["order_update_callback"] = order_update_callback
+                self.instruments = instruments
+
+            def start(self, packet_callback, status_callback):
+                created["packet_callback"] = packet_callback
+                status_callback("connected", "fake connected", 0, None)
+
+            def stop(self):
+                pass
+
+            def is_running(self):
+                return True
+
+            def subscribe_symbols(self, instruments):
+                self.instruments.extend(instruments)
+
+            def unsubscribe_symbols(self, instruments):
+                pass
+
+        self.temp_store.save(
+            broker_provider="zerodha",
+            zerodha_api_key="kite-key",
+            zerodha_access_token="kite-token",
+        )
+
+        with patch("app.services.simulation.ZerodhaMarketFeedAdapter", FakeZerodhaFeed):
+            state = self.test_engine.connect_live_feed()
+
+        self.assertEqual(created["api_key"], "kite-key")
+        self.assertEqual(created["access_token"], "kite-token")
+        self.assertTrue(callable(created["order_update_callback"]))
+        self.assertIn((256265, "13", "quote"), created["instruments"])
+        self.assertEqual(state.live_feed.source, "zerodha-websocket")
+        self.assertEqual(state.live_feed.status, "connected")
+
+    def test_zerodha_feed_adapter_normalizes_ticks_and_order_updates(self) -> None:
+        packets: list[dict] = []
+        order_updates: list[dict] = []
+        adapter = ZerodhaMarketFeedAdapter(
+            "kite-key",
+            "kite-token",
+            [(256265, "13", "quote")],
+            order_update_callback=order_updates.append,
+        )
+        adapter.start = Mock()
+        adapter._packet_callback = packets.append
+
+        adapter._handle_ticks(None, [{"instrument_token": 256265, "last_price": 24123.45, "volume_traded": 1234}])
+        adapter._handle_order_update(None, {"order_id": "kite-1", "status": "COMPLETE", "average_price": 101.5})
+
+        self.assertEqual(packets[0]["source"], "zerodha-websocket")
+        self.assertEqual(packets[0]["security_id"], "13")
+        self.assertEqual(packets[0]["LTP"], 24123.45)
+        self.assertEqual(packets[0]["volume"], 1234)
+        self.assertEqual(order_updates[0]["Data"]["orderId"], "kite-1")
+        self.assertEqual(order_updates[0]["Data"]["status"], "COMPLETE")
+        self.assertEqual(order_updates[0]["Data"]["averageTradedPrice"], 101.5)
 
     def test_start_live_trading_clears_simulated_open_stock_trade(self) -> None:
         self.test_engine.set_instrument_mode("stock")

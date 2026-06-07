@@ -84,10 +84,10 @@
           <div class="list-item empty-state">The stock watchlist will appear here in stock mode.</div>
         </div>
         <form id="liveConnectForm" class="stack-form">
-          <label>Dhan Client ID</label>
-          <input type="text" name="client_id" placeholder="Uses .env if left blank" />
-          <label>Dhan Access Token</label>
-          <input type="text" name="access_token" placeholder="Uses .env if left blank" />
+          <label>Dhan Market Data Client ID</label>
+          <input type="text" name="client_id" placeholder="Used for Dhan candles and live feed" />
+          <label>Dhan Market Data Access Token</label>
+          <input type="text" name="access_token" placeholder="Used for Dhan candles and live feed" />
           <div class="button-row">
             <button type="submit" id="connectLiveBtn">Connect Live Feed</button>
             <button type="button" id="syncHistoryBtn" class="secondary-btn">Sync Dhan 1m Context</button>
@@ -151,6 +151,7 @@
           <div class="list-item">
             <strong>Live Trading</strong>
             <p id="executionEnabledValue">disabled</p>
+            <p>Order Broker: <span id="executionBrokerValue">dhan</span></p>
             <p id="executionStatusValue">Order updates disconnected.</p>
             <p id="executionErrorValue">No live order error.</p>
           </div>
@@ -210,9 +211,9 @@
           <h2>Saved Credentials</h2>
         </div>
         <form id="credentialSaveForm" class="stack-form">
-          <label>Dhan Client ID</label>
-          <input type="text" name="client_id" placeholder="Save once for future sessions" />
-          <label>Dhan Access Token</label>
+          <label>Dhan Market Data Client ID</label>
+          <input type="text" name="client_id" placeholder="Used for Dhan candles/feed and Dhan orders" />
+          <label>Dhan Market Data / Order Access Token</label>
           <input type="password" name="access_token" placeholder="Stored locally on this machine" />
           <label>Live Broker</label>
           <select name="broker_provider">

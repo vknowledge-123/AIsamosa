@@ -24,6 +24,13 @@ class ZerodhaInstrument:
 
 
 class ZerodhaExecutionService:
+    index_feed_tokens = {
+        "NIFTY": ("NIFTY 50", 256265),
+        "NIFTY 50": ("NIFTY 50", 256265),
+        "BANKNIFTY": ("NIFTY BANK", 260105),
+        "BANK NIFTY": ("NIFTY BANK", 260105),
+    }
+
     def __init__(self) -> None:
         self._lock = threading.RLock()
         self._instrument_cache: dict[str, tuple[datetime, list[dict]]] = {}
@@ -183,6 +190,66 @@ class ZerodhaExecutionService:
                 item.strike,
             ),
         )[0]
+
+    def resolve_feed_instrument(
+        self,
+        *,
+        api_key: str,
+        access_token: str,
+        symbol: str,
+        exchange_segment: str,
+        tradingsymbol: str | None = None,
+    ) -> ZerodhaInstrument:
+        normalized_symbol = self._normalize_underlying(tradingsymbol or symbol)
+        normalized_segment = str(exchange_segment or "").strip().upper()
+        if normalized_segment in {"IDX", "IDX_I", "INDEX", "NSE_INDEX"}:
+            index = self.index_feed_tokens.get(normalized_symbol)
+            if index is None:
+                raise ZerodhaExecutionError(f"Could not resolve Zerodha index token for {symbol}.")
+            index_symbol, token = index
+            return ZerodhaInstrument(
+                tradingsymbol=index_symbol,
+                exchange="NSE",
+                instrument_token=token,
+                name=normalized_symbol,
+                expiry=None,
+                strike=0.0,
+                lot_size=1,
+                instrument_type="INDEX",
+            )
+
+        exchange = "NFO" if normalized_segment in {"NSE_FNO", "NFO"} else "NSE"
+        target = str(tradingsymbol or symbol or "").strip().upper()
+        rows = self._instruments(api_key=api_key, access_token=access_token, exchange=exchange)
+        candidates: list[ZerodhaInstrument] = []
+        for row in rows:
+            candidate = self._instrument_from_row(row)
+            if candidate.exchange != exchange:
+                continue
+            if candidate.tradingsymbol.upper() == target or self._normalize_underlying(candidate.name) == normalized_symbol:
+                candidates.append(candidate)
+        if not candidates:
+            raise ZerodhaExecutionError(f"Could not resolve Zerodha feed token for {exchange}:{target or symbol}.")
+        today = date.today()
+        valid = [item for item in candidates if item.expiry is None or item.expiry >= today]
+        chosen_pool = valid or candidates
+        return sorted(chosen_pool, key=lambda item: (item.expiry or date.max, item.tradingsymbol))[0]
+
+    def resolve_feed_instrument_by_tradingsymbol(
+        self,
+        *,
+        api_key: str,
+        access_token: str,
+        exchange: str,
+        tradingsymbol: str,
+    ) -> ZerodhaInstrument:
+        rows = self._instruments(api_key=api_key, access_token=access_token, exchange=exchange)
+        target = str(tradingsymbol or "").strip().upper()
+        for row in rows:
+            candidate = self._instrument_from_row(row)
+            if candidate.exchange == exchange.strip().upper() and candidate.tradingsymbol.upper() == target:
+                return candidate
+        raise ZerodhaExecutionError(f"Could not resolve Zerodha feed token for {exchange}:{tradingsymbol}.")
 
     def fetch_ltp(self, *, api_key: str, access_token: str, exchange: str, tradingsymbol: str) -> float:
         kite = self._client(api_key=api_key, access_token=access_token)
