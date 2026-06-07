@@ -214,6 +214,25 @@
           <input type="text" name="client_id" placeholder="Save once for future sessions" />
           <label>Dhan Access Token</label>
           <input type="password" name="access_token" placeholder="Stored locally on this machine" />
+          <label>Live Broker</label>
+          <select name="broker_provider">
+            <option value="dhan">Dhan</option>
+            <option value="zerodha">Zerodha Kite</option>
+          </select>
+          <label>Zerodha API Key</label>
+          <input type="text" name="zerodha_api_key" placeholder="Kite Connect API key" />
+          <label>Zerodha API Secret</label>
+          <input type="password" name="zerodha_api_secret" placeholder="Stored locally on this machine" />
+          <label>Zerodha Access Token</label>
+          <input type="password" name="zerodha_access_token" placeholder="Generated from request token" />
+          <div class="button-row">
+            <button type="button" id="zerodhaLoginUrlBtn">Open Zerodha Login</button>
+          </div>
+          <label>Zerodha Request Token</label>
+          <input type="text" id="zerodhaRequestTokenInput" placeholder="Paste request_token from callback URL" />
+          <div class="button-row">
+            <button type="button" id="zerodhaGenerateTokenBtn">Generate Zerodha Access Token</button>
+          </div>
           <label>OpenAI API Key</label>
           <input type="password" name="openai_api_key" placeholder="sk-..." />
           <label>OpenAI Model</label>
@@ -342,6 +361,22 @@
           <div class="list-item">
             <strong>Dhan Access Token</strong>
             <p id="savedDhanTokenValue">Not saved</p>
+          </div>
+          <div class="list-item">
+            <strong>Live Broker</strong>
+            <p id="savedBrokerProviderValue">dhan</p>
+          </div>
+          <div class="list-item">
+            <strong>Zerodha API Key</strong>
+            <p id="savedZerodhaApiKeyValue">Not saved</p>
+          </div>
+          <div class="list-item">
+            <strong>Zerodha API Secret</strong>
+            <p id="savedZerodhaApiSecretValue">Not saved</p>
+          </div>
+          <div class="list-item">
+            <strong>Zerodha Access Token</strong>
+            <p id="savedZerodhaAccessTokenValue">Not saved</p>
           </div>
           <div class="list-item">
             <strong>OpenAI API Key</strong>

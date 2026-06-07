@@ -347,6 +347,9 @@ class SimulatedTrade(BaseModel):
     exit_notes: str | None = None
     notes: str = ""
     broker_product_type: str | None = None
+    broker_provider: str | None = None
+    broker_exchange: str | None = None
+    broker_tradingsymbol: str | None = None
     broker_order_id: str | None = None
     broker_exit_order_id: str | None = None
     broker_entry_correlation_id: str | None = None
@@ -383,6 +386,11 @@ class CredentialSummary(BaseModel):
     client_id: str | None = None
     resolved_client_id: str | None = None
     dhan_access_token_saved: bool = False
+    broker_provider: str = "dhan"
+    zerodha_api_key: str | None = None
+    zerodha_api_secret_saved: bool = False
+    zerodha_access_token_saved: bool = False
+    zerodha_login_url: str | None = None
     openai_api_key_saved: bool = False
     openai_model: str = "gpt-5.4-mini"
     deepseek_api_key_saved: bool = False

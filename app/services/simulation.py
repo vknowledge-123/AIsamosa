@@ -55,7 +55,8 @@ from app.services.market_data import (
     parse_candle_csv,
 )
 from app.services.rulebook import RulebookService
-from app.services.stock_universe import StockUniverseService
+from app.services.stock_universe import StockFutureContract, StockUniverseService
+from app.services.zerodha_execution import ZerodhaExecutionError, ZerodhaExecutionService
 
 
 @dataclass
@@ -97,6 +98,7 @@ class SimulationEngine:
         self.chart_service = DhanChartService()
         self.option_quote_service = DhanOptionQuoteService()
         self.execution_service = DhanExecutionService()
+        self.zerodha_execution_service = ZerodhaExecutionService()
         self.stock_universe = StockUniverseService()
         self.heuristic_engine = HeuristicDecisionEngine()
         self._configure_ai_service()
@@ -590,6 +592,40 @@ class SimulationEngine:
             if not self.rulebook_service.learning_log or self.rulebook_service.learning_log[0] != message:
                 self.rulebook_service.learning_log.insert(0, message)
         return client, token
+
+    def _selected_broker_provider(self) -> str:
+        return self.credential_store.get_broker_provider(self.settings)
+
+    def _available_zerodha_credentials(self) -> tuple[str, str, str]:
+        api_key, api_secret, access_token = self.credential_store.get_zerodha_credentials(self.settings)
+        return (api_key or "").strip(), (api_secret or "").strip(), (access_token or "").strip()
+
+    def zerodha_login_url(self) -> str:
+        api_key, _, _ = self._available_zerodha_credentials()
+        if not api_key:
+            raise ValueError("Save Zerodha API key before opening the Kite login URL.")
+        return self.zerodha_execution_service.login_url(api_key)
+
+    def generate_zerodha_session(self, request_token: str) -> DashboardState:
+        api_key, api_secret, _ = self._available_zerodha_credentials()
+        if not api_key or not api_secret:
+            raise ValueError("Save Zerodha API key and API secret before generating access token.")
+        if not request_token.strip():
+            raise ValueError("Zerodha request token is required.")
+        data = self.zerodha_execution_service.generate_session(
+            api_key=api_key,
+            api_secret=api_secret,
+            request_token=request_token,
+        )
+        access_token = str(data.get("access_token") or "").strip()
+        if not access_token:
+            raise ValueError("Zerodha did not return an access token.")
+        with self.lock:
+            self.credential_store.save_zerodha_access_token(access_token)
+            self._credential_summary_cache = self.credential_store.summary(self.settings)
+            self.rulebook_service.learning_log.insert(0, "Zerodha Kite access token saved for current session.")
+            self._mark_state_dirty_locked()
+        return self.get_state()
 
     def _normalize_replay_decision_duration_minutes(self, minutes: int | None) -> int:
         try:
@@ -2064,8 +2100,13 @@ class SimulationEngine:
     def start_live_trading(self) -> DashboardState:
         if self.operating_mode != OperatingMode.heuristic:
             raise ValueError("Switch Trading Decision Mode to Heuristic before starting real order automation.")
+        broker = self._selected_broker_provider()
         client_id, access_token = self._available_dhan_credentials()
-        if not client_id or not access_token:
+        if broker == "zerodha":
+            api_key, _, zerodha_token = self._available_zerodha_credentials()
+            if not api_key or not zerodha_token:
+                raise ValueError("Saved Zerodha API key and current access token are required before starting live trading.")
+        elif not client_id or not access_token:
             raise ValueError("Saved or runtime Dhan credentials are required before starting live trading.")
         with self.lock:
             if self.live_feed_adapter is None:
@@ -2085,7 +2126,8 @@ class SimulationEngine:
             self.execution_state.live_trading_enabled = True
             self.execution_state.last_order_message = "Live heuristic execution is armed."
             self._mark_state_dirty_locked()
-        self._start_order_updates(client_id, access_token)
+        if broker == "dhan":
+            self._start_order_updates(client_id, access_token)
         with self.lock:
             if cleared_symbols:
                 cleared_list = ", ".join(sorted(cleared_symbols))
@@ -2108,13 +2150,14 @@ class SimulationEngine:
 
     def _square_off_all_trades_with_reason(self, reason: str) -> DashboardState:
         client_id, access_token = self._available_dhan_credentials()
+        broker = self._selected_broker_provider()
         with self.lock:
             self.live_trading_enabled = False
             self.execution_state.live_trading_enabled = False
             self.execution_state.last_order_message = f"{reason} Live heuristic execution is disarmed."
             self._mark_state_dirty_locked()
         squared_off = 0
-        if client_id and access_token:
+        if broker == "zerodha" or (client_id and access_token):
             if self.instrument_mode == InstrumentMode.stock:
                 watched_symbols = list(self.stock_watchlist.keys())
                 selected = self.selected_stock_symbol
@@ -3480,6 +3523,10 @@ class SimulationEngine:
         *,
         client_id: str | None = None,
         access_token: str | None = None,
+        broker_provider: str | None = None,
+        zerodha_api_key: str | None = None,
+        zerodha_api_secret: str | None = None,
+        zerodha_access_token: str | None = None,
         openai_api_key: str | None = None,
         openai_model: str | None = None,
         deepseek_api_key: str | None = None,
@@ -3520,6 +3567,10 @@ class SimulationEngine:
             self.credential_store.save(
                 client_id=client_id,
                 access_token=access_token,
+                broker_provider=broker_provider,
+                zerodha_api_key=zerodha_api_key,
+                zerodha_api_secret=zerodha_api_secret,
+                zerodha_access_token=zerodha_access_token,
                 openai_api_key=openai_api_key,
                 openai_model=openai_model,
                 deepseek_api_key=deepseek_api_key,
@@ -5513,7 +5564,12 @@ class SimulationEngine:
         if self.live_feed_adapter is None:
             return
         next_subscription = None
-        if self.active_trade and self.active_trade.option_security_id and self.active_trade.quote_exchange_segment:
+        if (
+            self.active_trade
+            and self.active_trade.option_security_id
+            and self.active_trade.quote_exchange_segment
+            and self.active_trade.broker_provider != "zerodha"
+        ):
             next_subscription = resolve_quote_subscription(
                 self.active_trade.option_security_id,
                 self.active_trade.quote_exchange_segment,
@@ -5635,6 +5691,32 @@ class SimulationEngine:
         return max(int(self._stock_trade_capital() // max(current_spot, 0.01)), 1)
 
     def _resolve_stock_future_execution(self, current_candle: Candle):
+        if self._selected_broker_provider() == "zerodha":
+            symbol = self.instrument_spec.symbol
+            if not self.stock_universe.is_derivative_symbol(symbol):
+                raise ValueError(f"{symbol} is not in the configured F&O stock list.")
+            api_key, _, access_token = self._available_zerodha_credentials()
+            if not api_key or not access_token:
+                raise ValueError("Zerodha API key and access token are required to resolve stock futures.")
+            instrument = self.zerodha_execution_service.resolve_fno_tradingsymbol(
+                api_key=api_key,
+                access_token=access_token,
+                underlying=symbol,
+                instrument_type="FUT",
+                expiry=None,
+            )
+            contract = StockFutureContract(
+                symbol=symbol,
+                label=instrument.tradingsymbol,
+                trading_symbol=instrument.tradingsymbol,
+                security_id=str(instrument.instrument_token or ""),
+                expiry=instrument.expiry,
+                lot_size=instrument.lot_size,
+                exchange_segment=instrument.exchange or "NFO",
+            )
+            lots = self._stock_future_lots()
+            quantity = max(int(contract.lot_size) * lots, 1)
+            return contract, quantity
         contract = self.stock_universe.resolve_current_future(
             self.instrument_spec.symbol,
             reference_date=current_candle.timestamp.date(),
@@ -5647,6 +5729,45 @@ class SimulationEngine:
         symbol = self.instrument_spec.symbol
         if not self.stock_universe.is_derivative_symbol(symbol):
             raise ValueError(f"{symbol} is not in the configured F&O stock list.")
+        if self._selected_broker_provider() == "zerodha":
+            api_key, _, access_token = self._available_zerodha_credentials()
+            if not api_key or not access_token:
+                raise ValueError("Zerodha API key and access token are required to resolve stock option contracts.")
+            instrument = self.zerodha_execution_service.resolve_atm_option_tradingsymbol(
+                api_key=api_key,
+                access_token=access_token,
+                underlying=symbol,
+                spot=current_candle.close,
+                option_type=option_type,
+            )
+            try:
+                ltp = self.zerodha_execution_service.fetch_ltp(
+                    api_key=api_key,
+                    access_token=access_token,
+                    exchange=instrument.exchange,
+                    tradingsymbol=instrument.tradingsymbol,
+                )
+            except ZerodhaExecutionError as exc:
+                raise ValueError(f"Could not fetch Zerodha option LTP for {instrument.tradingsymbol}: {exc}") from exc
+            quote = OptionQuote(
+                security_id=str(instrument.instrument_token or ""),
+                option_type=option_type,
+                strike=int(round(instrument.strike)),
+                last_price=ltp,
+                quote_time=current_candle.timestamp,
+                source="zerodha-ltp",
+            )
+            contract = OptionContract(
+                security_id=str(instrument.instrument_token or ""),
+                option_type=option_type,
+                strike=int(round(instrument.strike)),
+                expiry=instrument.expiry or current_candle.timestamp.date(),
+                symbol=instrument.tradingsymbol,
+                lot_size=instrument.lot_size,
+                quote=quote,
+            )
+            quantity = max(int(instrument.lot_size) * self._stock_option_lots(), 1)
+            return contract, quote, quantity
         client_id, access_token = self.credential_store.get_dhan_credentials(self.settings)
         if not client_id or not access_token:
             raise ValueError("Dhan credentials are required to resolve stock option contracts.")
@@ -5720,6 +5841,50 @@ class SimulationEngine:
 
     def _nifty_short_direction_for_option(self, option_type: str) -> str:
         return "SHORT_CALL" if option_type == "CE" else "SHORT_PUT"
+
+    def _zerodha_broker_symbol_for_trade(
+        self,
+        *,
+        current_candle: Candle,
+        is_option_trade: bool,
+        use_stock_future_execution: bool,
+        option_type: str,
+        strike: int,
+        contract,
+    ) -> tuple[str | None, str | None]:
+        if self._selected_broker_provider() != "zerodha":
+            return None, None
+        api_key, _, access_token = self._available_zerodha_credentials()
+        if not api_key or not access_token:
+            raise ValueError("Zerodha API key and access token are required before live order placement.")
+        if not is_option_trade and not use_stock_future_execution:
+            return "NSE", self.instrument_spec.symbol
+        if use_stock_future_execution:
+            instrument = self.zerodha_execution_service.resolve_fno_tradingsymbol(
+                api_key=api_key,
+                access_token=access_token,
+                underlying=self.instrument_spec.symbol,
+                instrument_type="FUT",
+                expiry=getattr(contract, "expiry", None),
+            )
+            return instrument.exchange, instrument.tradingsymbol
+        if is_option_trade:
+            if contract is not None and getattr(contract, "symbol", "") and self._stock_option_mode_enabled():
+                return "NFO", contract.symbol
+            expiry = getattr(contract, "expiry", None)
+            if expiry is None:
+                expiry = self.option_expiry_for_preference(current_candle.timestamp.date(), self._nifty_expiry_preference())
+            instrument = self.zerodha_execution_service.resolve_fno_tradingsymbol(
+                api_key=api_key,
+                access_token=access_token,
+                underlying=self.instrument_spec.symbol,
+                instrument_type=option_type,
+                expiry=expiry,
+                strike=strike,
+                option_type=option_type,
+            )
+            return instrument.exchange, instrument.tradingsymbol
+        return None, None
 
     def _stock_pre_arm_paper_execution_disabled(self, source: str) -> bool:
         return (
@@ -5836,6 +6001,18 @@ class SimulationEngine:
             stop_price = round(decision.invalidation_level or decision.stop_option_price or entry_price, 2)
             target_price = round(decision.target_spot_price or decision.target_option_price or entry_price, 2)
         entry_time = entry_quote.quote_time if entry_quote else current_candle.timestamp
+        broker_provider = self._selected_broker_provider() if source == "live" else None
+        broker_exchange = None
+        broker_tradingsymbol = None
+        if broker_provider == "zerodha":
+            broker_exchange, broker_tradingsymbol = self._zerodha_broker_symbol_for_trade(
+                current_candle=current_candle,
+                is_option_trade=is_option_trade,
+                use_stock_future_execution=use_stock_future_execution,
+                option_type=option_type,
+                strike=strike,
+                contract=contract,
+            )
         return SimulatedTrade(
             trade_id=uuid.uuid4().hex[:10],
             status="OPEN",
@@ -5876,6 +6053,9 @@ class SimulationEngine:
             entry_notes=decision.reason,
             notes=decision.reason,
             broker_product_type="INTRADAY",
+            broker_provider=broker_provider,
+            broker_exchange=broker_exchange,
+            broker_tradingsymbol=broker_tradingsymbol,
         )
 
     def _finalize_open_trade(self, current_candle: Candle, trade: SimulatedTrade, reason: str) -> None:
@@ -5886,34 +6066,58 @@ class SimulationEngine:
         self._sync_active_trade_subscription_locked()
         self._mark_state_dirty_locked()
 
-    def _enter_live_trade(self, current_candle: Candle, decision: TradeDecision, trade: SimulatedTrade) -> None:
-        client_id, access_token = self._available_dhan_credentials()
-        if not client_id or not access_token:
-            message = "Live order skipped because Dhan credentials are unavailable."
-            self._record_execution_feedback_locked(symbol=trade.symbol, message=message, error=message)
-            self.rulebook_service.learning_log.insert(0, message)
-            return
-        security_id = trade.option_security_id if trade.price_mode == "option" else trade.trade_security_id
-        exchange_segment = trade.quote_exchange_segment or self.instrument_spec.exchange_segment
-        if not security_id or not exchange_segment:
-            message = "Live order skipped because the execution contract could not be resolved."
-            self._record_execution_feedback_locked(symbol=trade.symbol, message=message, error=message)
-            self.rulebook_service.learning_log.insert(0, message)
-            return
-        transaction_type = "BUY" if self._is_long_trade_direction(trade.direction) else "SELL"
-        correlation_id = f"entry-{trade.trade_id}"
-        try:
-            result = self.execution_service.place_market_order(
-                client_id=client_id,
+    def _place_market_order_for_trade(
+        self,
+        *,
+        trade: SimulatedTrade,
+        transaction_type: str,
+        quantity: int,
+        correlation_id: str,
+    ) -> BrokerOrderResult:
+        broker = trade.broker_provider or self._selected_broker_provider()
+        if broker == "zerodha":
+            api_key, _, access_token = self._available_zerodha_credentials()
+            if not api_key or not access_token:
+                raise ZerodhaExecutionError("Zerodha API key and access token are unavailable.")
+            return self.zerodha_execution_service.place_market_order(
+                api_key=api_key,
                 access_token=access_token,
-                security_id=security_id,
-                exchange_segment=exchange_segment,
+                exchange=trade.broker_exchange or "",
+                tradingsymbol=trade.broker_tradingsymbol or "",
                 transaction_type=transaction_type,
-                quantity=trade.quantity,
+                quantity=quantity,
                 product_type=trade.broker_product_type or "INTRADAY",
                 correlation_id=correlation_id,
             )
-        except DhanExecutionError as exc:
+        client_id, access_token = self._available_dhan_credentials()
+        if not client_id or not access_token:
+            raise DhanExecutionError("Dhan credentials are unavailable.")
+        security_id = trade.option_security_id if trade.price_mode == "option" else trade.trade_security_id
+        exchange_segment = trade.quote_exchange_segment or self.instrument_spec.exchange_segment
+        if not security_id or not exchange_segment:
+            raise DhanExecutionError("The execution contract could not be resolved.")
+        return self.execution_service.place_market_order(
+            client_id=client_id,
+            access_token=access_token,
+            security_id=security_id,
+            exchange_segment=exchange_segment,
+            transaction_type=transaction_type,
+            quantity=quantity,
+            product_type=trade.broker_product_type or "INTRADAY",
+            correlation_id=correlation_id,
+        )
+
+    def _enter_live_trade(self, current_candle: Candle, decision: TradeDecision, trade: SimulatedTrade) -> None:
+        transaction_type = "BUY" if self._is_long_trade_direction(trade.direction) else "SELL"
+        correlation_id = f"entry-{trade.trade_id}"
+        try:
+            result = self._place_market_order_for_trade(
+                trade=trade,
+                transaction_type=transaction_type,
+                quantity=trade.quantity,
+                correlation_id=correlation_id,
+            )
+        except (DhanExecutionError, ZerodhaExecutionError) as exc:
             error_message = str(exc)
             self._record_execution_feedback_locked(
                 symbol=trade.symbol,
@@ -5934,8 +6138,8 @@ class SimulationEngine:
         trade.broker_entry_correlation_id = correlation_id
         trade.broker_status = result.order_status or "PENDING"
         trade.broker_status_message = result.message
-        trade.entry_quote_source = "dhan-market-order"
-        trade.current_quote_source = "dhan-market-order"
+        trade.entry_quote_source = f"{trade.broker_provider or self._selected_broker_provider()}-market-order"
+        trade.current_quote_source = trade.entry_quote_source
         success_message = f"Live entry order sent for {trade.symbol} with qty {trade.quantity}."
         self._record_execution_feedback_locked(symbol=trade.symbol, message=success_message)
         self.rulebook_service.learning_log.insert(0, success_message)
@@ -5952,21 +6156,8 @@ class SimulationEngine:
         if not self.active_trade:
             return False
         trade = self.active_trade
-        client_id, access_token = self._available_dhan_credentials()
-        if not client_id or not access_token:
-            message = "Square off or exit skipped because Dhan credentials are unavailable."
-            self._record_execution_feedback_locked(symbol=trade.symbol, message=message, error=message)
-            self.rulebook_service.learning_log.insert(0, message)
-            return False
         open_quantity = trade.open_quantity if trade.open_quantity is not None else trade.quantity
         exit_quantity = open_quantity if quantity is None else max(1, min(quantity, open_quantity))
-        security_id = trade.option_security_id if trade.price_mode == "option" else trade.trade_security_id
-        exchange_segment = trade.quote_exchange_segment or self.instrument_spec.exchange_segment
-        if not security_id or not exchange_segment:
-            message = "Exit skipped because the execution contract could not be resolved."
-            self._record_execution_feedback_locked(symbol=trade.symbol, message=message, error=message)
-            self.rulebook_service.learning_log.insert(0, message)
-            return False
         transaction_type = "SELL" if self._is_long_trade_direction(trade.direction) else "BUY"
         correlation_id = (
             f"pyramid-exit-{trade.trade_id}-{trade.partial_exit_count + 1}"
@@ -5974,17 +6165,13 @@ class SimulationEngine:
             else f"exit-{trade.trade_id}-{trade.partial_exit_count + 1}"
         )
         try:
-            result = self.execution_service.place_market_order(
-                client_id=client_id,
-                access_token=access_token,
-                security_id=security_id,
-                exchange_segment=exchange_segment,
+            result = self._place_market_order_for_trade(
+                trade=trade,
                 transaction_type=transaction_type,
                 quantity=exit_quantity,
-                product_type=trade.broker_product_type or "INTRADAY",
                 correlation_id=correlation_id,
             )
-        except DhanExecutionError as exc:
+        except (DhanExecutionError, ZerodhaExecutionError) as exc:
             error_message = str(exc)
             self._record_execution_feedback_locked(
                 symbol=trade.symbol,
@@ -6153,35 +6340,18 @@ class SimulationEngine:
         if not self.active_trade:
             return False
         trade = self.active_trade
-        client_id, access_token = self._available_dhan_credentials()
-        if not client_id or not access_token:
-            message = "Live add skipped because Dhan credentials are unavailable."
-            self._record_execution_feedback_locked(symbol=trade.symbol, message=message, error=message)
-            self.rulebook_service.learning_log.insert(0, message)
-            return False
-        security_id = trade.option_security_id if trade.price_mode == "option" else trade.trade_security_id
-        exchange_segment = trade.quote_exchange_segment or self.instrument_spec.exchange_segment
-        if not security_id or not exchange_segment:
-            message = "Live add skipped because the execution contract could not be resolved."
-            self._record_execution_feedback_locked(symbol=trade.symbol, message=message, error=message)
-            self.rulebook_service.learning_log.insert(0, message)
-            return False
         base_quantity = max(int(trade.base_quantity or trade.quantity or 1), 1)
         add_quantity = base_quantity
         transaction_type = "BUY" if self._is_long_trade_direction(trade.direction) else "SELL"
         correlation_id = f"add-{trade.trade_id}-{trade.pyramid_count + 1}"
         try:
-            result = self.execution_service.place_market_order(
-                client_id=client_id,
-                access_token=access_token,
-                security_id=security_id,
-                exchange_segment=exchange_segment,
+            result = self._place_market_order_for_trade(
+                trade=trade,
                 transaction_type=transaction_type,
                 quantity=add_quantity,
-                product_type=trade.broker_product_type or "INTRADAY",
                 correlation_id=correlation_id,
             )
-        except DhanExecutionError as exc:
+        except (DhanExecutionError, ZerodhaExecutionError) as exc:
             error_message = str(exc)
             self._record_execution_feedback_locked(
                 symbol=trade.symbol,
@@ -6360,7 +6530,11 @@ class SimulationEngine:
         if not self.active_trade:
             return
         exit_quote = None
-        if self.active_trade.price_mode == "option" and self.active_trade.option_security_id:
+        if (
+            self.active_trade.price_mode == "option"
+            and self.active_trade.option_security_id
+            and self.active_trade.broker_provider != "zerodha"
+        ):
             client_id, access_token = self.credential_store.get_dhan_credentials(self.settings)
             if client_id and access_token:
                 try:

@@ -13,6 +13,10 @@ class Settings(BaseSettings):
     operating_mode: str = "full-ai"
     dhan_client_id: str | None = None
     dhan_access_token: str | None = None
+    broker_provider: str = "dhan"
+    zerodha_api_key: str | None = None
+    zerodha_api_secret: str | None = None
+    zerodha_access_token: str | None = None
     dhan_live_security_id: str = "13"
     simulation_lot_size: int = 65
     nifty_order_lots: int = 1

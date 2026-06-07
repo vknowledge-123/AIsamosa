@@ -23,6 +23,7 @@ from app.services.heuristic_engine import HeuristicDecisionEngine, Observation, 
 from app.services.instruments import build_stock_instrument
 from app.services.simulation import SimulationEngine
 from app.services.stock_universe import StockFutureContract, StockUniverseEntry, StockUniverseService
+from app.services.zerodha_execution import ZerodhaInstrument
 
 
 class AppIntegrationTests(unittest.TestCase):
@@ -266,6 +267,10 @@ class AppIntegrationTests(unittest.TestCase):
                 "nifty_point_pyramiding_points": "55",
                 "nifty_trade_bias": "long",
                 "nifty_option_trade_mode": "buying",
+                "broker_provider": "zerodha",
+                "zerodha_api_key": "kite-key",
+                "zerodha_api_secret": "kite-secret",
+                "zerodha_access_token": "kite-token",
             },
         )
 
@@ -304,7 +309,36 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertEqual(summary["nifty_point_pyramiding_points"], 55.0)
         self.assertEqual(summary["nifty_trade_bias"], "long")
         self.assertEqual(summary["nifty_option_trade_mode"], "buying")
+        self.assertEqual(summary["broker_provider"], "zerodha")
+        self.assertEqual(summary["zerodha_api_key"], "kite-key")
+        self.assertTrue(summary["zerodha_api_secret_saved"])
+        self.assertTrue(summary["zerodha_access_token_saved"])
+        self.assertIn("api_key=kite-key", summary["zerodha_login_url"])
         self.assertTrue(Path(summary["storage_path"]).exists())
+
+    def test_zerodha_session_route_generates_and_saves_access_token(self) -> None:
+        self.temp_store.save(
+            broker_provider="zerodha",
+            zerodha_api_key="kite-key",
+            zerodha_api_secret="kite-secret",
+        )
+        self.test_engine.zerodha_execution_service.generate_session = Mock(
+            return_value={"access_token": "kite-access-token", "user_id": "AB1234"}
+        )
+
+        response = self.client.post("/api/broker/zerodha/session", data={"request_token": "request-123"})
+
+        self.assertEqual(response.status_code, 200)
+        self.test_engine.zerodha_execution_service.generate_session.assert_called_once_with(
+            api_key="kite-key",
+            api_secret="kite-secret",
+            request_token="request-123",
+        )
+        summary = response.json()["state"]["credentials"]
+        self.assertEqual(summary["broker_provider"], "zerodha")
+        self.assertTrue(summary["zerodha_access_token_saved"])
+        _, _, access_token = self.temp_store.get_zerodha_credentials(get_settings())
+        self.assertEqual(access_token, "kite-access-token")
 
     def test_extract_bulk_stock_symbols_from_nse_style_table(self) -> None:
         raw_text = (
@@ -1020,6 +1054,135 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertEqual(self.test_engine.active_trade.price_mode, "option")
         self.assertEqual(self.test_engine.active_trade.direction, "LONG_CALL")
         self.assertEqual(self.test_engine.active_trade.quantity, 1500)
+
+    def test_zerodha_broker_routes_live_cash_stock_order_to_kite(self) -> None:
+        self.test_engine.set_instrument_mode("stock")
+        spec = build_stock_instrument("SBIN", "3045", label="STATE BANK OF INDIA")
+        self.test_engine.stock_watchlist = {"SBIN": spec}
+        self.test_engine.selected_stock_symbol = "SBIN"
+        self.test_engine.instrument_spec = spec
+        self.test_engine.operating_mode = OperatingMode.heuristic
+        self.test_engine.live_trading_enabled = True
+        self.test_engine.live_feed_adapter = Mock()
+        self.temp_store.save(
+            broker_provider="zerodha",
+            zerodha_api_key="kite-key",
+            zerodha_access_token="kite-token",
+            stock_execution_mode="cash",
+            stock_trade_capital=10000,
+        )
+        self.test_engine.zerodha_execution_service.place_market_order = Mock(
+            return_value=BrokerOrderResult(
+                ok=True,
+                order_id="kite-cash-1",
+                order_status="PENDING",
+                message="accepted",
+                raw={},
+            )
+        )
+        self.test_engine.execution_service.place_market_order = Mock()
+        decision = TradeDecision(
+            action=TradeAction.enter_call,
+            confidence=0.84,
+            reason="Cash stock reclaim confirmed.",
+            option_type="CE",
+            invalidation_level=790.0,
+            target_spot_price=835.0,
+            first_target_price=815.0,
+            setup_type="stock_early_retest_long",
+            setup_score=84.0,
+        )
+
+        self.test_engine.apply_trade_logic(
+            self._make_candle(0, 800.0, 806.0, 798.0, 804.0),
+            decision,
+            source="live",
+        )
+
+        self.test_engine.execution_service.place_market_order.assert_not_called()
+        order_kwargs = self.test_engine.zerodha_execution_service.place_market_order.call_args.kwargs
+        self.assertEqual(order_kwargs["exchange"], "NSE")
+        self.assertEqual(order_kwargs["tradingsymbol"], "SBIN")
+        self.assertEqual(order_kwargs["transaction_type"], "BUY")
+        self.assertEqual(order_kwargs["quantity"], 12)
+        self.assertIsNotNone(self.test_engine.active_trade)
+        self.assertEqual(self.test_engine.active_trade.broker_provider, "zerodha")
+        self.assertEqual(self.test_engine.active_trade.broker_exchange, "NSE")
+        self.assertEqual(self.test_engine.active_trade.broker_tradingsymbol, "SBIN")
+        self.assertEqual(self.test_engine.active_trade.entry_quote_source, "zerodha-market-order")
+
+    def test_zerodha_stock_option_mode_routes_signal_to_kite_atm_option(self) -> None:
+        self.test_engine.set_instrument_mode("stock")
+        spec = build_stock_instrument("SBIN", "3045", label="STATE BANK OF INDIA")
+        self.test_engine.stock_watchlist = {"SBIN": spec}
+        self.test_engine.selected_stock_symbol = "SBIN"
+        self.test_engine.instrument_spec = spec
+        self.test_engine.operating_mode = OperatingMode.heuristic
+        self.test_engine.live_trading_enabled = True
+        self.test_engine.live_feed_adapter = Mock()
+        self.temp_store.save(
+            broker_provider="zerodha",
+            zerodha_api_key="kite-key",
+            zerodha_access_token="kite-token",
+            stock_execution_mode="option",
+            stock_option_lots=2,
+        )
+        instrument = ZerodhaInstrument(
+            tradingsymbol="SBIN26MAY525CE",
+            exchange="NFO",
+            instrument_token=123456,
+            name="SBIN",
+            expiry=date(2026, 5, 28),
+            strike=525.0,
+            lot_size=750,
+            instrument_type="CE",
+        )
+        self.test_engine.zerodha_execution_service.resolve_atm_option_tradingsymbol = Mock(return_value=instrument)
+        self.test_engine.zerodha_execution_service.fetch_ltp = Mock(return_value=12.5)
+        self.test_engine.zerodha_execution_service.place_market_order = Mock(
+            return_value=BrokerOrderResult(
+                ok=True,
+                order_id="kite-opt-1",
+                order_status="PENDING",
+                message="accepted",
+                raw={},
+            )
+        )
+        self.test_engine.execution_service.place_market_order = Mock()
+        decision = TradeDecision(
+            action=TradeAction.enter_call,
+            confidence=0.84,
+            reason="Cash stock reclaim confirmed.",
+            option_type="CE",
+            invalidation_level=515.0,
+            target_spot_price=545.0,
+            first_target_price=535.0,
+            setup_type="stock_early_retest_long",
+            setup_score=84.0,
+        )
+
+        with patch.object(self.test_engine.stock_universe, "is_derivative_symbol", return_value=True):
+            self.test_engine.apply_trade_logic(
+                self._make_candle(0, 522.0, 526.0, 520.0, 523.0),
+                decision,
+                source="live",
+            )
+
+        self.test_engine.execution_service.place_market_order.assert_not_called()
+        resolve_kwargs = self.test_engine.zerodha_execution_service.resolve_atm_option_tradingsymbol.call_args.kwargs
+        self.assertEqual(resolve_kwargs["underlying"], "SBIN")
+        self.assertEqual(resolve_kwargs["spot"], 523.0)
+        self.assertEqual(resolve_kwargs["option_type"], "CE")
+        order_kwargs = self.test_engine.zerodha_execution_service.place_market_order.call_args.kwargs
+        self.assertEqual(order_kwargs["exchange"], "NFO")
+        self.assertEqual(order_kwargs["tradingsymbol"], "SBIN26MAY525CE")
+        self.assertEqual(order_kwargs["transaction_type"], "BUY")
+        self.assertEqual(order_kwargs["quantity"], 1500)
+        self.assertIsNotNone(self.test_engine.active_trade)
+        self.assertEqual(self.test_engine.active_trade.broker_provider, "zerodha")
+        self.assertEqual(self.test_engine.active_trade.broker_tradingsymbol, "SBIN26MAY525CE")
+        self.assertEqual(self.test_engine.active_trade.option_security_id, "123456")
+        self.assertEqual(self.test_engine.active_trade.price_mode, "option")
 
     def test_stock_future_mode_ignores_pyramiding_adds(self) -> None:
         self.test_engine.set_instrument_mode("stock")

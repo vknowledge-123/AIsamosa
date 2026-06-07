@@ -6,4 +6,5 @@ pydantic-settings>=2.3.0
 httpx>=0.28.1
 openai>=1.99.0
 dhanhq>=2.0.2,<2.3
+kiteconnect>=5.0.0
 pypdf>=5.1.0

@@ -43,6 +43,10 @@ const elements = {
   savedClientIdValue: document.getElementById("savedClientIdValue"),
   savedDhanCredentialMessage: document.getElementById("savedDhanCredentialMessage"),
   savedDhanTokenValue: document.getElementById("savedDhanTokenValue"),
+  savedBrokerProviderValue: document.getElementById("savedBrokerProviderValue"),
+  savedZerodhaApiKeyValue: document.getElementById("savedZerodhaApiKeyValue"),
+  savedZerodhaApiSecretValue: document.getElementById("savedZerodhaApiSecretValue"),
+  savedZerodhaAccessTokenValue: document.getElementById("savedZerodhaAccessTokenValue"),
   savedOpenAIApiKeyValue: document.getElementById("savedOpenAIApiKeyValue"),
   savedOpenAIModelValue: document.getElementById("savedOpenAIModelValue"),
   savedDeepSeekApiKeyValue: document.getElementById("savedDeepSeekApiKeyValue"),
@@ -389,6 +393,10 @@ function buildCredentialPayload(form) {
   const payload = {
     client_id: (form.elements.client_id?.value || "").trim(),
     access_token: (form.elements.access_token?.value || "").trim(),
+    broker_provider: (form.elements.broker_provider?.value || "dhan").trim(),
+    zerodha_api_key: (form.elements.zerodha_api_key?.value || "").trim(),
+    zerodha_api_secret: (form.elements.zerodha_api_secret?.value || "").trim(),
+    zerodha_access_token: (form.elements.zerodha_access_token?.value || "").trim(),
     openai_api_key: (form.elements.openai_api_key?.value || "").trim(),
     openai_model: (form.elements.openai_model?.value || "").trim(),
     deepseek_api_key: (form.elements.deepseek_api_key?.value || "").trim(),
@@ -434,6 +442,7 @@ function serializeCredentialPayload(payload) {
   }
   return JSON.stringify({
     access_token: payload.access_token,
+    broker_provider: payload.broker_provider,
     client_id: payload.client_id,
     deepseek_api_key: payload.deepseek_api_key,
     deepseek_model: payload.deepseek_model,
@@ -444,6 +453,9 @@ function serializeCredentialPayload(payload) {
     openai_model: payload.openai_model,
     operating_mode: payload.operating_mode,
     stock_trade_capital: payload.stock_trade_capital,
+    zerodha_api_key: payload.zerodha_api_key,
+    zerodha_api_secret: payload.zerodha_api_secret,
+    zerodha_access_token: payload.zerodha_access_token,
     stock_execution_mode: payload.stock_execution_mode,
     stock_future_lots: payload.stock_future_lots,
     stock_option_lots: payload.stock_option_lots,
@@ -1009,6 +1021,10 @@ function renderState(state) {
   elements.savedClientIdValue.textContent = resolvedClientId || "Not saved";
   elements.savedDhanCredentialMessage.textContent = state.credentials.dhan_credential_message || "No credential warnings.";
   elements.savedDhanTokenValue.textContent = state.credentials.dhan_access_token_saved ? "Saved locally" : "Not saved";
+  elements.savedBrokerProviderValue.textContent = state.credentials.broker_provider || "dhan";
+  elements.savedZerodhaApiKeyValue.textContent = state.credentials.zerodha_api_key || "Not saved";
+  elements.savedZerodhaApiSecretValue.textContent = state.credentials.zerodha_api_secret_saved ? "Saved locally" : "Not saved";
+  elements.savedZerodhaAccessTokenValue.textContent = state.credentials.zerodha_access_token_saved ? "Saved locally" : "Not saved";
   elements.savedOpenAIApiKeyValue.textContent = state.credentials.openai_api_key_saved ? "Saved locally" : "Not saved";
   elements.savedOpenAIModelValue.textContent = state.credentials.openai_model || "gpt-5.4-mini";
   elements.savedDeepSeekApiKeyValue.textContent = state.credentials.deepseek_api_key_saved ? "Saved locally" : "Not saved";
@@ -1207,6 +1223,8 @@ function renderState(state) {
   const credentialSaveForm = document.getElementById("credentialSaveForm");
   if (credentialSaveForm) {
     syncCredentialField(credentialSaveForm, "client_id", state.credentials.client_id || "");
+    syncCredentialField(credentialSaveForm, "broker_provider", state.credentials.broker_provider || "dhan");
+    syncCredentialField(credentialSaveForm, "zerodha_api_key", state.credentials.zerodha_api_key || "");
     syncCredentialField(credentialSaveForm, "openai_model", state.credentials.openai_model || "");
     syncCredentialField(credentialSaveForm, "deepseek_model", state.credentials.deepseek_model || "");
     syncCredentialField(credentialSaveForm, "full_ai_provider", state.credentials.full_ai_provider || "");
@@ -1485,6 +1503,29 @@ document.getElementById("credentialSaveForm").addEventListener("submit", (event)
     await saveCredentialSettings({ immediate: true, notify: true });
   });
 });
+
+document.getElementById("zerodhaLoginUrlBtn")?.addEventListener("click", () => runAction(async () => {
+  await saveCredentialSettings({ immediate: true, notify: false });
+  const data = await fetchJson("/api/broker/zerodha/login-url");
+  if (!data.login_url) {
+    throw new Error("Zerodha API key is required before opening the login URL.");
+  }
+  window.open(data.login_url, "_blank", "noopener");
+  setToast("Opened Zerodha login. After login, paste request_token from the callback URL.");
+}));
+
+document.getElementById("zerodhaGenerateTokenBtn")?.addEventListener("click", () => runAction(async () => {
+  await saveCredentialSettings({ immediate: true, notify: false });
+  const requestToken = (document.getElementById("zerodhaRequestTokenInput")?.value || "").trim();
+  if (!requestToken) {
+    throw new Error("Paste Zerodha request_token before generating the access token.");
+  }
+  const formData = new FormData();
+  formData.append("request_token", requestToken);
+  const data = await fetchJson("/api/broker/zerodha/session", { method: "POST", body: formData });
+  renderState(data.state);
+  setToast(data.message || "Zerodha access token generated and saved.");
+}));
 
 document.querySelectorAll("#credentialSaveForm input, #credentialSaveForm select").forEach((field) => {
   const eventName = field.tagName === "SELECT" ? "change" : "input";

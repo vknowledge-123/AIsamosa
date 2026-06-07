@@ -28,6 +28,10 @@ class CredentialStore:
         *,
         client_id: str | None = None,
         access_token: str | None = None,
+        broker_provider: str | None = None,
+        zerodha_api_key: str | None = None,
+        zerodha_api_secret: str | None = None,
+        zerodha_access_token: str | None = None,
         openai_api_key: str | None = None,
         openai_model: str | None = None,
         deepseek_api_key: str | None = None,
@@ -80,6 +84,26 @@ class CredentialStore:
             embedded_client_id = self._extract_dhan_client_id_from_token(normalized)
             if embedded_client_id and payload.get("client_id") != embedded_client_id:
                 payload["client_id"] = embedded_client_id
+                updated = True
+        if broker_provider and broker_provider.strip():
+            normalized = self._normalize_broker_provider(broker_provider)
+            if payload.get("broker_provider") != normalized:
+                payload["broker_provider"] = normalized
+                updated = True
+        if zerodha_api_key and zerodha_api_key.strip():
+            normalized = zerodha_api_key.strip()
+            if payload.get("zerodha_api_key") != normalized:
+                payload["zerodha_api_key"] = normalized
+                updated = True
+        if zerodha_api_secret and zerodha_api_secret.strip():
+            normalized = zerodha_api_secret.strip()
+            if payload.get("zerodha_api_secret") != normalized:
+                payload["zerodha_api_secret"] = normalized
+                updated = True
+        if zerodha_access_token and zerodha_access_token.strip():
+            normalized = zerodha_access_token.strip()
+            if payload.get("zerodha_access_token") != normalized:
+                payload["zerodha_access_token"] = normalized
                 updated = True
         if openai_api_key and openai_api_key.strip():
             normalized = openai_api_key.strip()
@@ -313,6 +337,24 @@ class CredentialStore:
         access_token = payload.get("access_token") or settings.dhan_access_token
         resolved_client_id, resolved_token, _ = self.resolve_dhan_credentials(client_id, access_token)
         return resolved_client_id, resolved_token
+
+    def get_broker_provider(self, settings: Settings) -> str:
+        payload = self.load()
+        return self._normalize_broker_provider(payload.get("broker_provider") or settings.broker_provider)
+
+    def get_zerodha_credentials(self, settings: Settings) -> tuple[str | None, str | None, str | None]:
+        payload = self.load()
+        api_key = payload.get("zerodha_api_key") or settings.zerodha_api_key
+        api_secret = payload.get("zerodha_api_secret") or settings.zerodha_api_secret
+        access_token = payload.get("zerodha_access_token") or settings.zerodha_access_token
+        return (
+            str(api_key).strip() if api_key else None,
+            str(api_secret).strip() if api_secret else None,
+            str(access_token).strip() if access_token else None,
+        )
+
+    def save_zerodha_access_token(self, access_token: str) -> None:
+        self.save(zerodha_access_token=access_token)
 
     def resolve_dhan_credentials(
         self,
@@ -560,6 +602,11 @@ class CredentialStore:
                 payload.get("access_token") or settings.dhan_access_token,
             )[0],
             dhan_access_token_saved=bool(payload.get("access_token") or settings.dhan_access_token),
+            broker_provider=self.get_broker_provider(settings),
+            zerodha_api_key=payload.get("zerodha_api_key") or settings.zerodha_api_key,
+            zerodha_api_secret_saved=bool(payload.get("zerodha_api_secret") or settings.zerodha_api_secret),
+            zerodha_access_token_saved=bool(payload.get("zerodha_access_token") or settings.zerodha_access_token),
+            zerodha_login_url=self._zerodha_login_url(payload.get("zerodha_api_key") or settings.zerodha_api_key),
             openai_api_key_saved=bool(payload.get("openai_api_key") or settings.openai_api_key),
             openai_model=payload.get("openai_model") or settings.openai_model,
             deepseek_api_key_saved=bool(payload.get("deepseek_api_key") or settings.deepseek_api_key),
@@ -619,6 +666,20 @@ class CredentialStore:
             return None
         client_id = str(data.get("dhanClientId") or "").strip()
         return client_id or None
+
+    @staticmethod
+    def _normalize_broker_provider(value: object) -> str:
+        normalized = str(value or "dhan").strip().lower()
+        if normalized in {"zerodha", "kite", "kiteconnect", "kite-connect"}:
+            return "zerodha"
+        return "dhan"
+
+    @staticmethod
+    def _zerodha_login_url(api_key: object) -> str | None:
+        key = str(api_key or "").strip()
+        if not key:
+            return None
+        return f"https://kite.zerodha.com/connect/login?v=3&api_key={key}"
 
     @staticmethod
     def _normalize_nifty_option_trade_mode(value: object) -> str:

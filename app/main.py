@@ -74,6 +74,23 @@ async def get_credentials():
     return await run_in_threadpool(engine.get_credential_summary)
 
 
+@app.get("/api/broker/zerodha/login-url")
+async def zerodha_login_url():
+    try:
+        return {"login_url": await run_in_threadpool(engine.zerodha_login_url)}
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/broker/zerodha/session")
+async def generate_zerodha_session(request_token: str = Form(default="")):
+    try:
+        state = await run_in_threadpool(engine.generate_zerodha_session, request_token)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"message": "Zerodha access token generated and saved.", "state": state}
+
+
 @app.get("/api/health/ai")
 async def get_ai_health():
     return await run_in_threadpool(engine.ai_service.health)
@@ -409,6 +426,10 @@ async def square_off_all_trades():
 async def save_credentials(
     client_id: str = Form(default=""),
     access_token: str = Form(default=""),
+    broker_provider: str = Form(default="dhan"),
+    zerodha_api_key: str = Form(default=""),
+    zerodha_api_secret: str = Form(default=""),
+    zerodha_access_token: str = Form(default=""),
     openai_api_key: str = Form(default=""),
     openai_model: str = Form(default=""),
     deepseek_api_key: str = Form(default=""),
@@ -462,6 +483,10 @@ async def save_credentials(
         engine.save_credentials,
         client_id=client_id,
         access_token=access_token,
+        broker_provider=broker_provider,
+        zerodha_api_key=zerodha_api_key,
+        zerodha_api_secret=zerodha_api_secret,
+        zerodha_access_token=zerodha_access_token,
         openai_api_key=openai_api_key,
         openai_model=openai_model,
         deepseek_api_key=deepseek_api_key,
