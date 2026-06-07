@@ -873,6 +873,62 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertEqual(state.live_feed.source, "zerodha-websocket")
         self.assertEqual(state.live_feed.status, "connected")
 
+    def test_zerodha_stock_feed_subscribes_even_when_dhan_security_id_is_blank(self) -> None:
+        created: dict[str, object] = {}
+
+        class FakeZerodhaFeed:
+            def __init__(self, api_key, access_token, instruments, order_update_callback=None):
+                created["instruments"] = instruments
+                self.instruments = instruments
+
+            def start(self, packet_callback, status_callback):
+                status_callback("connected", "fake connected", 0, None)
+
+            def stop(self):
+                pass
+
+            def is_running(self):
+                return True
+
+            def subscribe_symbols(self, instruments):
+                self.instruments.extend(instruments)
+
+            def unsubscribe_symbols(self, instruments):
+                pass
+
+        self.test_engine.set_instrument_mode("stock")
+        spec = build_stock_instrument("BSE", "", label="BSE")
+        self.test_engine.stock_watchlist = {"BSE": spec}
+        self.test_engine.selected_stock_symbol = "BSE"
+        self.test_engine.instrument_spec = spec
+        self.test_engine.stock_sessions = {"BSE": self.test_engine._build_stock_runtime_session(spec)}
+        self.temp_store.save(
+            broker_provider="zerodha",
+            zerodha_api_key="kite-key",
+            zerodha_access_token="kite-token",
+        )
+        self.test_engine.zerodha_execution_service.resolve_feed_instrument = Mock(
+            return_value=ZerodhaInstrument(
+                tradingsymbol="BSE",
+                exchange="NSE",
+                instrument_token=501234,
+                name="BSE",
+                expiry=None,
+                strike=0.0,
+                lot_size=1,
+                instrument_type="EQ",
+            )
+        )
+
+        with patch("app.services.simulation.ZerodhaMarketFeedAdapter", FakeZerodhaFeed):
+            state = self.test_engine.connect_live_feed()
+
+        self.assertIn((501234, "ZERODHA:BSE", "quote"), created["instruments"])
+        self.assertEqual(self.test_engine._stock_symbol_by_security_id["ZERODHA:BSE"], "BSE")
+        item = next(item for item in state.stock_watchlist if item.symbol == "BSE")
+        self.assertTrue(item.subscribed)
+        self.assertEqual(item.security_id, "")
+
     def test_zerodha_feed_adapter_normalizes_ticks_and_order_updates(self) -> None:
         packets: list[dict] = []
         order_updates: list[dict] = []

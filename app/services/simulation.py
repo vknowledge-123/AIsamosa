@@ -1475,12 +1475,14 @@ class SimulationEngine:
     def _build_stock_watchlist_state_locked(self) -> list[StockWatchItem]:
         items: list[StockWatchItem] = []
         selected_runtime_view = self._selected_runtime_session_view_locked()
+        broker = self._selected_broker_provider()
         for symbol, spec in self.stock_watchlist.items():
             meta = self.stock_watch_meta.get(symbol, {})
             feedback = self._stock_execution_feedback.get(symbol, {})
             session = selected_runtime_view if symbol == self.selected_stock_symbol and selected_runtime_view is not None else self.stock_sessions.get(symbol)
             active_trade_pnl = self._trade_pnl_for_session_locked(session) if session is not None else None
             turnover_snapshot = self._stock_turnover_snapshot_for_session_locked(session)
+            feed_security_id = self._live_feed_security_id_for_spec(spec, broker)
             trade_count = len(session.trade_history) if session is not None else 0
             closed_trade_count = (
                 sum(1 for trade in session.trade_history if trade.status == "CLOSED") if session is not None else 0
@@ -1493,7 +1495,7 @@ class SimulationEngine:
                     security_id=spec.security_id,
                     trade_bias=meta.get("trade_bias", "both"),
                     selected=symbol == self.selected_stock_symbol,
-                    subscribed=spec.security_id in self._stock_quote_subscriptions,
+                    subscribed=bool(feed_security_id and feed_security_id in self._stock_quote_subscriptions),
                     last_ltp=meta.get("last_ltp"),
                     last_tick_at=meta.get("last_tick_at"),
                     ticks_received=meta.get("ticks_received", 0),
@@ -1808,9 +1810,9 @@ class SimulationEngine:
             broker = self._selected_broker_provider()
             if broker == "zerodha":
                 desired = {
-                    spec.security_id: self._zerodha_quote_subscription_for_spec(spec)
+                    self._live_feed_security_id_for_spec(spec, broker): self._zerodha_quote_subscription_for_spec(spec)
                     for spec in self.stock_watchlist.values()
-                    if spec.security_id
+                    if self._live_feed_security_id_for_spec(spec, broker)
                 }
             else:
                 desired = {
@@ -2073,7 +2075,7 @@ class SimulationEngine:
                 resolved_specs = [
                     spec
                     for spec in self.stock_watchlist.values()
-                    if spec.security_id
+                    if broker == "zerodha" or spec.security_id
                 ]
                 instruments = [
                     (
@@ -2124,7 +2126,10 @@ class SimulationEngine:
             self._stock_quote_subscriptions = {}
             if self.instrument_mode == InstrumentMode.stock:
                 for spec, subscription in zip(resolved_specs, instruments):
-                    self._stock_quote_subscriptions[spec.security_id] = subscription
+                    feed_security_id = self._live_feed_security_id_for_spec(spec, broker)
+                    if feed_security_id:
+                        self._stock_quote_subscriptions[feed_security_id] = subscription
+                        self._stock_symbol_by_security_id[feed_security_id] = spec.symbol
             self.live_feed_adapter.start(self.handle_live_packet, self.handle_live_status)
             self._sync_active_trade_subscription_locked()
             self.rulebook_service.learning_log.insert(
@@ -5752,6 +5757,14 @@ class SimulationEngine:
             return max(self.settings.simulation_lot_size * self._nifty_order_lots(), self.settings.simulation_lot_size)
         return max(int(self._stock_trade_capital() // max(current_spot, 0.01)), 1)
 
+    def _live_feed_security_id_for_spec(self, spec: InstrumentSpec, broker: str | None = None) -> str:
+        security_id = str(spec.security_id or "").strip()
+        if security_id:
+            return security_id
+        if (broker or self._selected_broker_provider()) == "zerodha" and spec.symbol:
+            return f"ZERODHA:{spec.symbol.strip().upper()}"
+        return ""
+
     def _zerodha_quote_subscription_for_spec(self, spec: InstrumentSpec) -> tuple[int, str, str]:
         api_key, _, access_token = self._available_zerodha_credentials()
         if not api_key or not access_token:
@@ -5765,7 +5778,7 @@ class SimulationEngine:
         )
         if instrument.instrument_token is None:
             raise ValueError(f"Could not resolve Zerodha feed token for {spec.symbol}.")
-        return int(instrument.instrument_token), spec.security_id, "quote"
+        return int(instrument.instrument_token), self._live_feed_security_id_for_spec(spec, "zerodha"), "quote"
 
     def _zerodha_quote_subscription_for_trade_locked(self, trade: SimulatedTrade) -> tuple[int, str, str] | None:
         if trade.broker_provider != "zerodha" or not trade.broker_exchange or not trade.broker_tradingsymbol:
