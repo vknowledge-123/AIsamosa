@@ -341,6 +341,45 @@ class AppIntegrationTests(unittest.TestCase):
         _, _, access_token = self.temp_store.get_zerodha_credentials(get_settings())
         self.assertEqual(access_token, "kite-access-token")
 
+    def test_zerodha_root_callback_auto_generates_and_saves_access_token(self) -> None:
+        self.temp_store.save(
+            broker_provider="zerodha",
+            zerodha_api_key="kite-key",
+            zerodha_api_secret="kite-secret",
+        )
+        self.test_engine.zerodha_execution_service.generate_session = Mock(
+            return_value={"access_token": "kite-access-token", "user_id": "AB1234"}
+        )
+
+        response = self.client.get("/?request_token=request-123&action=login&status=success", follow_redirects=False)
+
+        self.assertEqual(response.status_code, 303)
+        self.assertEqual(response.headers["location"], "/?zerodha_login=success")
+        self.test_engine.zerodha_execution_service.generate_session.assert_called_once_with(
+            api_key="kite-key",
+            api_secret="kite-secret",
+            request_token="request-123",
+        )
+        _, _, access_token = self.temp_store.get_zerodha_credentials(get_settings())
+        self.assertEqual(access_token, "kite-access-token")
+
+    def test_zerodha_named_callback_auto_generates_and_saves_access_token(self) -> None:
+        self.temp_store.save(
+            broker_provider="zerodha",
+            zerodha_api_key="kite-key",
+            zerodha_api_secret="kite-secret",
+        )
+        self.test_engine.zerodha_execution_service.generate_session = Mock(
+            return_value={"access_token": "kite-access-token-2", "user_id": "AB1234"}
+        )
+
+        response = self.client.get("/zerodha/callback?request_token=request-456", follow_redirects=False)
+
+        self.assertEqual(response.status_code, 303)
+        self.assertEqual(response.headers["location"], "/?zerodha_login=success")
+        _, _, access_token = self.temp_store.get_zerodha_credentials(get_settings())
+        self.assertEqual(access_token, "kite-access-token-2")
+
     def test_extract_bulk_stock_symbols_from_nse_style_table(self) -> None:
         raw_text = (
             "Symbol\tOpen\tHigh\tLow\n"

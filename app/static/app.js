@@ -333,6 +333,24 @@ function setToast(message) {
   elements.toastTimer = window.setTimeout(() => elements.toast.classList.add("hidden"), 3000);
 }
 
+function showZerodhaCallbackToast() {
+  const params = new URLSearchParams(window.location.search);
+  const status = params.get("zerodha_login");
+  if (!status) {
+    return;
+  }
+  if (status === "success") {
+    setToast("Zerodha access token generated and saved automatically.");
+  } else {
+    setToast(params.get("message") || "Zerodha login failed. Use manual request-token fallback.");
+  }
+  params.delete("zerodha_login");
+  params.delete("message");
+  const query = params.toString();
+  const cleanUrl = `${window.location.pathname}${query ? `?${query}` : ""}${window.location.hash || ""}`;
+  window.history.replaceState({}, document.title, cleanUrl);
+}
+
 function setLastAction(kind, title, message) {
   uiStatus.lastActionKind = kind;
   uiStatus.lastActionTitle = title;
@@ -1514,8 +1532,8 @@ document.getElementById("zerodhaLoginUrlBtn")?.addEventListener("click", () => r
   if (!data.login_url) {
     throw new Error("Zerodha API key is required before opening the login URL.");
   }
-  window.open(data.login_url, "_blank", "noopener");
-  setToast("Opened Zerodha login. After login, paste request_token from the callback URL.");
+  window.location.href = data.login_url;
+  setToast("Opening Zerodha login. Token will save automatically after authentication.");
 }));
 
 document.getElementById("zerodhaGenerateTokenBtn")?.addEventListener("click", () => runAction(async () => {
@@ -1634,6 +1652,7 @@ document.addEventListener("click", (event) => {
 
 restoreBrowserSettings();
 syncLiveCredentialsFromSavedForm();
+showZerodhaCallbackToast();
 refreshState().catch((error) => setToast(error.message));
 refreshAiHealth().catch(() => {});
 setHistoricalReplayDefaults();

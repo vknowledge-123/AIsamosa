@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from urllib.parse import urlencode
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, Response, UploadFile, status
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.gzip import GZipMiddleware
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -33,12 +34,32 @@ engine = SimulationEngine(settings)
 
 
 @app.get("/", response_class=HTMLResponse)
-async def dashboard(request: Request) -> HTMLResponse:
+async def dashboard(request: Request, request_token: str | None = None, status: str | None = None) -> HTMLResponse:
+    if request_token:
+        try:
+            await run_in_threadpool(engine.generate_zerodha_session, request_token)
+        except Exception as exc:
+            query = urlencode({"zerodha_login": "error", "message": str(exc)})
+            return RedirectResponse(url=f"/?{query}", status_code=303)
+        return RedirectResponse(url="/?zerodha_login=success", status_code=303)
     return templates.TemplateResponse(
         request=request,
         name="index.html",
         context={"title": settings.app_title, "static_version": static_version},
     )
+
+
+@app.get("/zerodha/callback")
+async def zerodha_callback(request_token: str | None = None, status: str | None = None):
+    if not request_token:
+        query = urlencode({"zerodha_login": "error", "message": "Zerodha did not return request_token."})
+        return RedirectResponse(url=f"/?{query}", status_code=303)
+    try:
+        await run_in_threadpool(engine.generate_zerodha_session, request_token)
+    except Exception as exc:
+        query = urlencode({"zerodha_login": "error", "message": str(exc)})
+        return RedirectResponse(url=f"/?{query}", status_code=303)
+    return RedirectResponse(url="/?zerodha_login=success", status_code=303)
 
 
 @app.get("/api/state")
