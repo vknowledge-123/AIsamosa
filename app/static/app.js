@@ -997,8 +997,10 @@ function renderState(state) {
   elements.liveTicksValue.textContent = state.live_feed.ticks_received;
   elements.liveErrorValue.textContent = state.live_feed.status_message || state.live_feed.error || "None";
   elements.executionEnabledValue.textContent = state.execution?.live_trading_enabled ? "armed" : "disabled";
+  const orderUpdateStatus = state.execution?.order_updates_status || "disconnected";
+  const orderUpdateLabel = orderUpdateStatus === "kite-feed" ? "Kite feed" : orderUpdateStatus;
   elements.executionStatusValue.innerHTML = state.execution
-    ? `${state.execution.order_updates_status || "disconnected"} | Update ${formatIstDateTime(state.execution.last_order_update_at)}${state.execution.last_order_message ? `<br>${state.execution.last_order_message}` : ""}${state.execution.order_updates_message ? `<br>${state.execution.order_updates_message}` : ""}`
+    ? `Order Updates: ${orderUpdateLabel} | Last Update ${formatIstDateTime(state.execution.last_order_update_at)}${state.execution.last_order_message ? `<br>${state.execution.last_order_message}` : ""}${state.execution.order_updates_message ? `<br>${state.execution.order_updates_message}` : ""}`
     : "Order updates disconnected.";
   elements.executionErrorValue.textContent = state.execution?.last_order_error
     ? `Last order error${state.execution.last_order_symbol ? ` (${state.execution.last_order_symbol})` : ""}: ${state.execution.last_order_error} | ${formatIstDateTime(state.execution.last_order_error_at)}`
@@ -1009,9 +1011,14 @@ function renderState(state) {
   elements.decisionOptionLabel.textContent = state.instrument.supports_options ? "Option" : "Bias";
   const connectLiveBtn = document.getElementById("connectLiveBtn");
   const disconnectLiveBtn = document.getElementById("disconnectLiveBtn");
+  const syncHistoryBtn = document.getElementById("syncHistoryBtn");
   const liveFeedBusy = ["connecting", "connected", "reconnecting"].includes(state.live_feed.status);
   const liveBroker = state.credentials.broker_provider || "dhan";
   const liveFeedProviderLabel = liveBroker === "zerodha" ? "Zerodha Live" : "Dhan Live";
+  const historyProviderLabel = liveBroker === "zerodha" ? "Zerodha" : "Dhan";
+  if (syncHistoryBtn) {
+    syncHistoryBtn.textContent = `Sync ${historyProviderLabel} 1m Context`;
+  }
   connectLiveBtn.disabled = liveFeedBusy;
   disconnectLiveBtn.disabled = state.live_feed.status === "disconnected";
   if (state.live_feed.status === "connected") {
@@ -1029,7 +1036,7 @@ function renderState(state) {
   elements.syncStatusValue.textContent = `${state.data_sync.status} (${state.data_sync.source})`;
   elements.operationJobValue.textContent = `${state.operation_job?.job_type || "idle"} (${state.operation_job?.status || "idle"})`;
   elements.operationJobMessage.textContent = state.operation_job?.message || "No background sync or replay job is running.";
-  elements.syncMessageValue.textContent = state.data_sync.message || "No Dhan chart sync yet.";
+  elements.syncMessageValue.textContent = state.data_sync.message || "No chart sync yet.";
   elements.syncPreviousValue.textContent = state.data_sync.previous_day_candles || 0;
   elements.syncIntradayValue.textContent = state.data_sync.intraday_candles || 0;
   elements.syncTotalValue.textContent = state.data_sync.total_loaded || 0;

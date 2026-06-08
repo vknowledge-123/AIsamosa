@@ -702,6 +702,45 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertEqual(snapshot.turnover, round(194.55 * 2500, 2))
         self.assertLess(snapshot.turnover, 1000000.0)
 
+    def test_zerodha_stock_packet_builds_nonzero_live_turnover(self) -> None:
+        self.test_engine.set_instrument_mode("stock")
+        spec = build_stock_instrument("TCS", "11536", label="TCS")
+        self.test_engine.stock_watchlist = {"TCS": spec}
+        self.test_engine.selected_stock_symbol = "TCS"
+        self.test_engine.stock_sessions = {"TCS": self.test_engine._build_stock_runtime_session(spec)}
+        with self.test_engine.lock:
+            self.test_engine._load_stock_session_locked("TCS")
+            self.test_engine._stock_symbol_by_security_id["11536"] = "TCS"
+            self.test_engine.live_feed_adapter = Mock()
+        ticks = [
+            (datetime(2026, 6, 8, 15, 24, 10), 2149.0, 100000),
+            (datetime(2026, 6, 8, 15, 25, 10), 2149.2, 100500),
+            (datetime(2026, 6, 8, 15, 26, 10), 2150.0, 101000),
+            (datetime(2026, 6, 8, 15, 27, 10), 2150.4, 101400),
+            (datetime(2026, 6, 8, 15, 28, 10), 2151.0, 101900),
+            (datetime(2026, 6, 8, 15, 29, 10), 2151.4, 102300),
+            (datetime(2026, 6, 8, 15, 30, 5), 2151.4, 102500),
+        ]
+
+        for tick_time, ltp, cumulative_volume in ticks:
+            self.test_engine._handle_live_packet_now(
+                {
+                    "type": "Quote",
+                    "source": "zerodha-websocket",
+                    "security_id": "11536",
+                    "LTP": ltp,
+                    "volume": cumulative_volume,
+                    "timestamp": tick_time,
+                }
+            )
+
+        state = self.test_engine.get_state()
+        item = next(item for item in state.stock_watchlist if item.symbol == "TCS")
+        self.assertIsNotNone(item.last_5m_turnover)
+        self.assertGreater(item.last_5m_turnover or 0.0, 0.0)
+        self.assertEqual(item.last_5m_turnover_start, datetime(2026, 6, 8, 15, 25))
+        self.assertEqual(item.last_5m_turnover_end, datetime(2026, 6, 8, 15, 30))
+
     def test_stock_turnover_waits_for_completed_market_session_5m_window(self) -> None:
         self.test_engine.set_instrument_mode("stock")
         self.test_engine.candles = [
@@ -889,6 +928,85 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         state = response.json()["state"]
         self.assertTrue(state["execution"]["live_trading_enabled"])
+
+    def test_start_live_trading_marks_zerodha_order_updates_as_kite_feed(self) -> None:
+        self.test_engine.save_credentials(
+            operating_mode="heuristic",
+            broker_provider="zerodha",
+            zerodha_api_key="kite-key",
+            zerodha_access_token="kite-token",
+        )
+        self.test_engine.live_feed_adapter = Mock()
+
+        state = self.test_engine.start_live_trading()
+
+        self.assertTrue(state.execution.live_trading_enabled)
+        self.assertEqual(state.execution.order_updates_status, "kite-feed")
+        self.assertTrue(state.execution.order_updates_connected)
+
+    def test_zerodha_broker_sync_uses_kite_historical_service(self) -> None:
+        self.test_engine.save_credentials(
+            broker_provider="zerodha",
+            zerodha_api_key="kite-key",
+            zerodha_access_token="kite-token",
+        )
+        previous = [
+            Candle(timestamp=datetime(2026, 6, 5, 15, 29), open=99, high=101, low=98, close=100, volume=1000)
+        ]
+        intraday = [
+            Candle(timestamp=datetime(2026, 6, 8, 9, 15), open=100, high=102, low=99, close=101, volume=1200)
+        ]
+        bundle = DhanSessionBundle(
+            previous_day_candles=previous,
+            intraday_candles=intraday,
+            live_open_candle=None,
+            previous_day_source="zerodha-historical",
+            replay_session_day=date(2026, 6, 8),
+            intraday_source="zerodha-historical",
+            previous_context_day=date(2026, 6, 5),
+        )
+        self.test_engine.zerodha_chart_service.fetch_market_context = Mock(return_value=bundle)
+        self.test_engine.chart_service.fetch_market_context = Mock(side_effect=AssertionError("Dhan history should not be used"))
+
+        state = self.test_engine.sync_dhan_context()
+
+        self.assertEqual(self.test_engine.zerodha_chart_service.fetch_market_context.call_count, 2)
+        symbols = {call.kwargs["symbol"] for call in self.test_engine.zerodha_chart_service.fetch_market_context.call_args_list}
+        self.assertEqual(symbols, {"NIFTY", "BANKNIFTY"})
+        self.assertEqual(state.data_sync.source, "zerodha-rest")
+        self.assertIn("Zerodha", state.data_sync.message)
+
+    def test_dhan_broker_sync_keeps_using_dhan_historical_service(self) -> None:
+        self.test_engine.save_credentials(
+            broker_provider="dhan",
+            client_id="cid-123",
+            access_token="token-456",
+        )
+        previous = [
+            Candle(timestamp=datetime(2026, 6, 5, 15, 29), open=99, high=101, low=98, close=100, volume=1000)
+        ]
+        intraday = [
+            Candle(timestamp=datetime(2026, 6, 8, 9, 15), open=100, high=102, low=99, close=101, volume=1200)
+        ]
+        bundle = DhanSessionBundle(
+            previous_day_candles=previous,
+            intraday_candles=intraday,
+            live_open_candle=None,
+            previous_day_source="historical",
+            replay_session_day=date(2026, 6, 8),
+            intraday_source="historical",
+            previous_context_day=date(2026, 6, 5),
+        )
+        self.test_engine.chart_service.fetch_market_context = Mock(return_value=bundle)
+        self.test_engine.zerodha_chart_service.fetch_market_context = Mock(
+            side_effect=AssertionError("Zerodha history should not be used")
+        )
+
+        state = self.test_engine.sync_dhan_context()
+
+        self.assertEqual(self.test_engine.chart_service.fetch_market_context.call_count, 2)
+        self.assertEqual(state.data_sync.source, "dhan-rest")
+        self.assertIn("Dhan", state.data_sync.message)
 
     def test_connect_live_feed_uses_zerodha_websocket_when_broker_is_zerodha(self) -> None:
         created: dict[str, object] = {}

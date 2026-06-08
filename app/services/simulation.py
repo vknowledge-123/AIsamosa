@@ -58,6 +58,7 @@ from app.services.rulebook import RulebookService
 from app.services.stock_universe import StockFutureContract, StockUniverseService
 from app.services.zerodha_adapter import ZerodhaMarketFeedAdapter
 from app.services.zerodha_execution import ZerodhaExecutionError, ZerodhaExecutionService
+from app.services.zerodha_history import ZerodhaChartService
 
 
 @dataclass
@@ -100,6 +101,7 @@ class SimulationEngine:
         self.option_quote_service = DhanOptionQuoteService()
         self.execution_service = DhanExecutionService()
         self.zerodha_execution_service = ZerodhaExecutionService()
+        self.zerodha_chart_service = ZerodhaChartService(self.zerodha_execution_service)
         self.stock_universe = StockUniverseService()
         self.heuristic_engine = HeuristicDecisionEngine()
         self._configure_ai_service()
@@ -446,14 +448,14 @@ class SimulationEngine:
         *,
         client_id: str,
         access_token: str,
+        provider: str = "dhan",
     ) -> tuple[object, object]:
         def fetch(spec: InstrumentSpec):
-            return self.chart_service.fetch_market_context(
-                client_id=client_id,
-                access_token=access_token,
-                security_id=spec.security_id,
-                exchange_segment=spec.exchange_segment,
-                instrument_type=spec.instrument_type,
+            return self._fetch_market_context_for_spec(
+                provider,
+                client_id,
+                access_token,
+                spec,
                 prefer_last_closed_session_before_open=True,
             )
 
@@ -467,16 +469,16 @@ class SimulationEngine:
         *,
         client_id: str,
         access_token: str,
+        provider: str = "dhan",
     ):
         companion_spec = self._active_companion_instrument_spec()
         if companion_spec is None:
             return None
-        return self.chart_service.fetch_market_context(
-            client_id=client_id,
-            access_token=access_token,
-            security_id=companion_spec.security_id,
-            exchange_segment=companion_spec.exchange_segment,
-            instrument_type=companion_spec.instrument_type,
+        return self._fetch_market_context_for_spec(
+            provider,
+            client_id,
+            access_token,
+            companion_spec,
             prefer_last_closed_session_before_open=True,
         )
 
@@ -487,16 +489,16 @@ class SimulationEngine:
         access_token: str,
         replay_session_day: date,
         previous_day: date,
+        provider: str = "dhan",
     ) -> tuple[object, object]:
         def fetch(spec: InstrumentSpec):
-            return self.chart_service.fetch_market_context_for_days(
-                client_id=client_id,
-                access_token=access_token,
+            return self._fetch_market_context_for_spec_days(
+                provider,
+                client_id,
+                access_token,
+                spec,
                 session_day=replay_session_day,
                 previous_context_day=previous_day,
-                security_id=spec.security_id,
-                exchange_segment=spec.exchange_segment,
-                instrument_type=spec.instrument_type,
             )
 
         with ThreadPoolExecutor(max_workers=2) as executor:
@@ -511,23 +513,22 @@ class SimulationEngine:
         access_token: str,
         replay_session_day: date,
         spec: InstrumentSpec,
+        provider: str = "dhan",
     ) -> DhanSessionBundle:
-        replay_candles, replay_source = self.chart_service.fetch_session_day_candles(
+        replay_candles, replay_source = self._fetch_session_day_candles_for_spec(
+            provider,
             client_id,
             access_token,
-            spec.security_id,
+            spec,
             replay_session_day,
-            spec.exchange_segment,
-            spec.instrument_type,
         )
         previous_candidate = self.chart_service._previous_trading_day(replay_session_day)
-        previous_candles, previous_source, previous_context_day = self.chart_service.fetch_latest_available_session_day_candles(
+        previous_candles, previous_source, previous_context_day = self._fetch_latest_session_day_candles_for_spec(
+            provider,
             client_id,
             access_token,
-            spec.security_id,
+            spec,
             previous_candidate,
-            spec.exchange_segment,
-            spec.instrument_type,
         )
         return DhanSessionBundle(
             previous_day_candles=previous_candles,
@@ -545,6 +546,7 @@ class SimulationEngine:
         client_id: str,
         access_token: str,
         replay_session_day: date,
+        provider: str = "dhan",
     ) -> tuple[DhanSessionBundle, DhanSessionBundle]:
         def fetch(spec: InstrumentSpec) -> DhanSessionBundle:
             return self._fetch_historical_bundle_with_previous_fallback(
@@ -552,6 +554,7 @@ class SimulationEngine:
                 access_token=access_token,
                 replay_session_day=replay_session_day,
                 spec=spec,
+                provider=provider,
             )
 
         with ThreadPoolExecutor(max_workers=2) as executor:
@@ -566,18 +569,18 @@ class SimulationEngine:
         access_token: str,
         replay_session_day: date,
         previous_day: date,
+        provider: str = "dhan",
     ):
         companion_spec = self._active_companion_instrument_spec()
         if companion_spec is None:
             return None
-        return self.chart_service.fetch_market_context_for_days(
-            client_id=client_id,
-            access_token=access_token,
+        return self._fetch_market_context_for_spec_days(
+            provider,
+            client_id,
+            access_token,
+            companion_spec,
             session_day=replay_session_day,
             previous_context_day=previous_day,
-            security_id=companion_spec.security_id,
-            exchange_segment=companion_spec.exchange_segment,
-            instrument_type=companion_spec.instrument_type,
         )
 
     def _remember_dhan_credentials(self, client_id: str, access_token: str) -> None:
@@ -600,6 +603,138 @@ class SimulationEngine:
     def _available_zerodha_credentials(self) -> tuple[str, str, str]:
         api_key, api_secret, access_token = self.credential_store.get_zerodha_credentials(self.settings)
         return (api_key or "").strip(), (api_secret or "").strip(), (access_token or "").strip()
+
+    def _history_provider_credentials(
+        self,
+        client_id: str | None = None,
+        access_token: str | None = None,
+    ) -> tuple[str, str, str]:
+        broker = self._selected_broker_provider()
+        if broker == "zerodha":
+            api_key, _, zerodha_token = self._available_zerodha_credentials()
+            if not api_key or not zerodha_token:
+                raise ValueError("Zerodha API key and access token are required to fetch Zerodha historical candles.")
+            return "zerodha", api_key, zerodha_token
+        client, token = self._available_dhan_credentials(client_id, access_token)
+        if not client or not token:
+            raise ValueError("Dhan client ID and access token are required to fetch Dhan historical candles.")
+        self._remember_dhan_credentials(client, token)
+        return "dhan", client, token
+
+    def _history_source_label(self, provider: str) -> str:
+        return "zerodha-rest" if provider == "zerodha" else "dhan-rest"
+
+    def _history_broker_label(self, provider: str) -> str:
+        return "Zerodha" if provider == "zerodha" else "Dhan"
+
+    def _fetch_market_context_for_spec(
+        self,
+        provider: str,
+        key: str,
+        token: str,
+        spec: InstrumentSpec,
+        *,
+        prefer_last_closed_session_before_open: bool = False,
+    ) -> DhanSessionBundle:
+        if provider == "zerodha":
+            return self.zerodha_chart_service.fetch_market_context(
+                key,
+                token,
+                symbol=spec.symbol,
+                tradingsymbol=spec.symbol,
+                exchange_segment=spec.exchange_segment,
+                prefer_last_closed_session_before_open=prefer_last_closed_session_before_open,
+            )
+        return self.chart_service.fetch_market_context(
+            client_id=key,
+            access_token=token,
+            security_id=spec.security_id,
+            exchange_segment=spec.exchange_segment,
+            instrument_type=spec.instrument_type,
+            prefer_last_closed_session_before_open=prefer_last_closed_session_before_open,
+        )
+
+    def _fetch_market_context_for_spec_days(
+        self,
+        provider: str,
+        key: str,
+        token: str,
+        spec: InstrumentSpec,
+        *,
+        session_day: date,
+        previous_context_day: date,
+    ) -> DhanSessionBundle:
+        if provider == "zerodha":
+            return self.zerodha_chart_service.fetch_market_context_for_days(
+                key,
+                token,
+                session_day=session_day,
+                previous_context_day=previous_context_day,
+                symbol=spec.symbol,
+                tradingsymbol=spec.symbol,
+                exchange_segment=spec.exchange_segment,
+            )
+        return self.chart_service.fetch_market_context_for_days(
+            client_id=key,
+            access_token=token,
+            session_day=session_day,
+            previous_context_day=previous_context_day,
+            security_id=spec.security_id,
+            exchange_segment=spec.exchange_segment,
+            instrument_type=spec.instrument_type,
+        )
+
+    def _fetch_session_day_candles_for_spec(
+        self,
+        provider: str,
+        key: str,
+        token: str,
+        spec: InstrumentSpec,
+        session_day: date,
+    ) -> tuple[list[Candle], str]:
+        if provider == "zerodha":
+            return self.zerodha_chart_service.fetch_session_day_candles(
+                key,
+                token,
+                symbol=spec.symbol,
+                tradingsymbol=spec.symbol,
+                exchange_segment=spec.exchange_segment,
+                session_day=session_day,
+            )
+        return self.chart_service.fetch_session_day_candles(
+            key,
+            token,
+            spec.security_id,
+            session_day,
+            spec.exchange_segment,
+            spec.instrument_type,
+        )
+
+    def _fetch_latest_session_day_candles_for_spec(
+        self,
+        provider: str,
+        key: str,
+        token: str,
+        spec: InstrumentSpec,
+        session_day: date,
+    ) -> tuple[list[Candle], str, date]:
+        if provider == "zerodha":
+            return self.zerodha_chart_service.fetch_latest_available_session_day_candles(
+                key,
+                token,
+                symbol=spec.symbol,
+                tradingsymbol=spec.symbol,
+                exchange_segment=spec.exchange_segment,
+                session_day=session_day,
+            )
+        return self.chart_service.fetch_latest_available_session_day_candles(
+            key,
+            token,
+            spec.security_id,
+            session_day,
+            spec.exchange_segment,
+            spec.instrument_type,
+        )
 
     def zerodha_login_url(self) -> str:
         api_key, _, _ = self._available_zerodha_credentials()
@@ -1197,7 +1332,11 @@ class SimulationEngine:
         self._auto_prepare_watchlist_symbols_async([self.selected_stock_symbol] if self.selected_stock_symbol else [])
 
     def _auto_prepare_watchlist_symbols_async(self, symbols: list[str]) -> None:
-        client, token = self._available_dhan_credentials()
+        broker = self._selected_broker_provider()
+        try:
+            provider, client, token = self._history_provider_credentials()
+        except ValueError:
+            provider, client, token = broker, "", ""
         with self.lock:
             unique_symbols = [symbol for symbol in dict.fromkeys(symbols) if symbol]
             selected_symbol = self.selected_stock_symbol
@@ -1205,8 +1344,8 @@ class SimulationEngine:
                 selected_spec = self.stock_watchlist.get(selected_symbol)
                 status_text = (
                     "syncing"
-                    if selected_spec and selected_spec.security_id and client and token
-                    else ("queued" if selected_spec and selected_spec.security_id else "resolving")
+                    if selected_spec and (provider == "zerodha" or selected_spec.security_id) and client and token
+                    else ("queued" if selected_spec and (provider == "zerodha" or selected_spec.security_id) else "resolving")
                 )
                 self.stock_watch_meta.setdefault(selected_symbol, {})["history_status"] = status_text
                 if not client or not token:
@@ -1215,45 +1354,48 @@ class SimulationEngine:
                         status="idle",
                         source="stock-watchlist",
                         message=(
-                            f"{self.instrument_spec.label} is active now. Resolving its Dhan security in the background; "
-                            "save credentials or press sync/connect to backfill 1-minute context."
+                            f"{self.instrument_spec.label} is active now. Save {self._history_broker_label(provider)} "
+                            "credentials or press sync/connect to backfill 1-minute context."
                         ),
                     )
                 else:
                     self.data_sync = DataSyncState(
                         status="syncing",
                         source="stock-watchlist",
-                        message=f"Preparing {self.instrument_spec.label} in the background and syncing 1-minute context.",
+                        message=(
+                            f"Preparing {self.instrument_spec.label} in the background and syncing "
+                            f"{self._history_broker_label(provider)} 1-minute context."
+                        ),
                     )
                 self._mark_state_dirty_locked()
         if not unique_symbols:
             return
         worker = threading.Thread(
             target=self._run_watchlist_prepare_batch,
-            args=(unique_symbols, client or None, token or None),
+            args=(unique_symbols, client or None, token or None, provider),
             name=f"watchlist-prepare-{(selected_symbol or unique_symbols[0]).lower()}",
             daemon=True,
         )
         worker.start()
 
-    def _run_watchlist_prepare_batch(self, symbols: list[str], client_id: str | None, access_token: str | None) -> None:
+    def _run_watchlist_prepare_batch(self, symbols: list[str], client_id: str | None, access_token: str | None, provider: str = "dhan") -> None:
         unique_symbols = [symbol for symbol in dict.fromkeys(symbols) if symbol]
         if not unique_symbols:
             return
         with ThreadPoolExecutor(max_workers=self._max_stock_sync_workers(len(unique_symbols))) as executor:
             futures = [
-                executor.submit(self._run_selected_stock_prepare, symbol, client_id, access_token)
+                executor.submit(self._run_selected_stock_prepare, symbol, client_id, access_token, provider)
                 for symbol in unique_symbols
             ]
             for future in as_completed(futures):
                 future.result()
 
-    def _run_selected_stock_prepare(self, symbol: str, client_id: str | None, access_token: str | None) -> None:
+    def _run_selected_stock_prepare(self, symbol: str, client_id: str | None, access_token: str | None, provider: str = "dhan") -> None:
         try:
             self._resolve_watchlist_symbol_if_needed(symbol)
             self._schedule_watchlist_subscription_refresh()
             if client_id and access_token:
-                self._sync_stock_symbol_now(symbol, client_id=client_id, access_token=access_token)
+                self._sync_stock_symbol_now(symbol, client_id=client_id, access_token=access_token, provider=provider)
             else:
                 with self.lock:
                     spec = self.stock_watchlist.get(symbol)
@@ -1312,16 +1454,15 @@ class SimulationEngine:
             self._mark_state_dirty_locked()
             return updated_spec
 
-    def _sync_stock_symbol_now(self, symbol: str, *, client_id: str, access_token: str) -> None:
+    def _sync_stock_symbol_now(self, symbol: str, *, client_id: str, access_token: str, provider: str = "dhan") -> None:
         spec = self._resolve_watchlist_symbol_if_needed(symbol)
-        if not spec.security_id:
+        if provider != "zerodha" and not spec.security_id:
             raise ValueError(f"Could not resolve a Dhan NSE cash security id for {symbol}.")
-        bundle = self.chart_service.fetch_market_context(
-            client_id=client_id,
-            access_token=access_token,
-            security_id=spec.security_id,
-            exchange_segment=spec.exchange_segment,
-            instrument_type=spec.instrument_type,
+        bundle = self._fetch_market_context_for_spec(
+            provider,
+            client_id,
+            access_token,
+            spec,
             prefer_last_closed_session_before_open=True,
         )
         self._apply_bundle_to_stock_session(symbol, bundle, replay_from_session_start=False)
@@ -1339,7 +1480,7 @@ class SimulationEngine:
             self.rulebook_service.learning_log.insert(
                 0,
                 (
-                    f"Synced Dhan chart history for {spec.label}: "
+                    f"Synced {self._history_broker_label(provider)} chart history for {spec.label}: "
                     f"{len(bundle.previous_day_candles)} previous-day candles via {bundle.previous_day_source}, "
                     f"{len(bundle.intraday_candles)} intraday closed candles, "
                     f"open candle {'loaded' if bundle.live_open_candle else 'not present'}."
@@ -2059,7 +2200,7 @@ class SimulationEngine:
         if stale_adapter is not None:
             stale_adapter.stop()
 
-        if self.instrument_mode != InstrumentMode.stock and client and token:
+        if self.instrument_mode != InstrumentMode.stock:
             self.sync_dhan_context(client_id=client, access_token=token)
         else:
             with self.lock:
@@ -2176,6 +2317,10 @@ class SimulationEngine:
             self._global_mtm_square_off_triggered = False
             self.execution_state.live_trading_enabled = True
             self.execution_state.last_order_message = "Live heuristic execution is armed."
+            if broker == "zerodha":
+                self.execution_state.order_updates_connected = True
+                self.execution_state.order_updates_status = "kite-feed"
+                self.execution_state.order_updates_message = "Zerodha order updates are received through the Kite websocket."
             self._mark_state_dirty_locked()
         if broker == "dhan":
             self._start_order_updates(client_id, access_token)
@@ -2316,15 +2461,15 @@ class SimulationEngine:
         *,
         client_id: str,
         access_token: str,
+        provider: str = "dhan",
     ) -> dict[str, object]:
         def fetch(symbol: str):
             spec = self._resolve_watchlist_symbol_if_needed(symbol)
-            bundle = self.chart_service.fetch_market_context(
-                client_id=client_id,
-                access_token=access_token,
-                security_id=spec.security_id,
-                exchange_segment=spec.exchange_segment,
-                instrument_type=spec.instrument_type,
+            bundle = self._fetch_market_context_for_spec(
+                provider,
+                client_id,
+                access_token,
+                spec,
                 prefer_last_closed_session_before_open=True,
             )
             return symbol, spec, bundle
@@ -2345,17 +2490,17 @@ class SimulationEngine:
         access_token: str,
         replay_session_day: date,
         previous_day: date,
+        provider: str = "dhan",
     ) -> dict[str, object]:
         def fetch(symbol: str):
             spec = self._resolve_watchlist_symbol_if_needed(symbol)
-            bundle = self.chart_service.fetch_market_context_for_days(
-                client_id=client_id,
-                access_token=access_token,
+            bundle = self._fetch_market_context_for_spec_days(
+                provider,
+                client_id,
+                access_token,
+                spec,
                 session_day=replay_session_day,
                 previous_context_day=previous_day,
-                security_id=spec.security_id,
-                exchange_segment=spec.exchange_segment,
-                instrument_type=spec.instrument_type,
             )
             return symbol, spec, bundle
 
@@ -2374,6 +2519,7 @@ class SimulationEngine:
         client_id: str,
         access_token: str,
         replay_session_day: date,
+        provider: str = "dhan",
     ) -> tuple[dict[str, object], list[str]]:
         def fetch(symbol: str):
             spec = self._resolve_watchlist_symbol_if_needed(symbol)
@@ -2382,6 +2528,7 @@ class SimulationEngine:
                 access_token=access_token,
                 replay_session_day=replay_session_day,
                 spec=spec,
+                provider=provider,
             )
             return symbol, spec, bundle
 
@@ -2479,10 +2626,9 @@ class SimulationEngine:
                 apply(trade)
 
     def start_sync_dhan_context_async(self, client_id: str | None = None, access_token: str | None = None) -> DashboardState:
-        client, token = self._available_dhan_credentials(client_id, access_token)
-        if not client or not token:
-            raise ValueError("Dhan client ID and access token are required to fetch chart history")
-        self._remember_dhan_credentials(client, token)
+        provider, client, token = self._history_provider_credentials(client_id, access_token)
+        provider_label = self._history_broker_label(provider)
+        source_label = self._history_source_label(provider)
         started_at = datetime.now()
         job_id = uuid.uuid4().hex
         with self.lock:
@@ -2492,13 +2638,13 @@ class SimulationEngine:
                 job_id=job_id,
                 job_type="sync-history",
                 status="running",
-                message=f"Syncing Dhan 1-minute context for {self.instrument_spec.label} in the background.",
+                message=f"Syncing {provider_label} 1-minute context for {self.instrument_spec.label} in the background.",
                 started_at=started_at,
             )
             self.data_sync = DataSyncState(
                 status="syncing",
-                source="dhan-rest",
-                message=f"Background sync started for {self.instrument_spec.label}.",
+                source=source_label,
+                message=f"Background {provider_label} sync started for {self.instrument_spec.label}.",
                 last_synced_at=self.data_sync.last_synced_at,
                 replay_session_day=self.data_sync.replay_session_day,
                 previous_context_day=self.data_sync.previous_context_day,
@@ -2514,8 +2660,8 @@ class SimulationEngine:
                 "job_id": job_id,
                 "job_type": "sync-history",
                 "target": lambda: self.sync_dhan_context(client_id=client, access_token=token),
-                "success_message": f"Background Dhan sync completed for {self.instrument_spec.label}.",
-                "error_prefix": "Background Dhan sync failed",
+                "success_message": f"Background {provider_label} sync completed for {self.instrument_spec.label}.",
+                "error_prefix": f"Background {provider_label} sync failed",
             },
             name="sync-history-job",
             daemon=True,
@@ -2530,10 +2676,9 @@ class SimulationEngine:
         replay_decision_duration_minutes: int = 1,
         stock_replay_scope: str | None = "all",
     ) -> DashboardState:
-        client, token = self._available_dhan_credentials(client_id, access_token)
-        if not client or not token:
-            raise ValueError("Dhan client ID and access token are required to simulate today data")
-        self._remember_dhan_credentials(client, token)
+        provider, client, token = self._history_provider_credentials(client_id, access_token)
+        provider_label = self._history_broker_label(provider)
+        source_label = self._history_source_label(provider)
         started_at = datetime.now()
         job_id = uuid.uuid4().hex
         with self.lock:
@@ -2552,8 +2697,8 @@ class SimulationEngine:
             )
             self.data_sync = DataSyncState(
                 status="syncing",
-                source="dhan-rest",
-                message=f"Background today replay started for {scope_label}.",
+                source=source_label,
+                message=f"Background {provider_label} today replay started for {scope_label}.",
                 last_synced_at=self.data_sync.last_synced_at,
                 replay_session_day=self.data_sync.replay_session_day,
                 previous_context_day=self.data_sync.previous_context_day,
@@ -2574,8 +2719,8 @@ class SimulationEngine:
                     replay_decision_duration_minutes=replay_decision_duration_minutes,
                     stock_replay_scope=stock_replay_scope,
                 ),
-                "success_message": f"Background today replay completed for {scope_label}.",
-                "error_prefix": "Background today replay failed",
+                "success_message": f"Background {provider_label} today replay completed for {scope_label}.",
+                "error_prefix": f"Background {provider_label} today replay failed",
             },
             name="simulate-today-job",
             daemon=True,
@@ -2593,14 +2738,13 @@ class SimulationEngine:
         replay_decision_duration_minutes: int = 1,
         stock_replay_scope: str | None = "all",
     ) -> DashboardState:
-        client, token = self._available_dhan_credentials(client_id, access_token)
-        if not client or not token:
-            raise ValueError("Dhan client ID and access token are required to simulate historical data")
+        provider, client, token = self._history_provider_credentials(client_id, access_token)
+        provider_label = self._history_broker_label(provider)
+        source_label = self._history_source_label(provider)
         replay_session_day = self._parse_replay_date(replay_date, field_name="replay_date")
         previous_day = self._parse_replay_date(previous_context_date, field_name="previous_context_date")
         if previous_day >= replay_session_day:
             raise ValueError("Previous context day must be earlier than the replay session day.")
-        self._remember_dhan_credentials(client, token)
         started_at = datetime.now()
         job_id = uuid.uuid4().hex
         with self.lock:
@@ -2622,9 +2766,9 @@ class SimulationEngine:
             )
             self.data_sync = DataSyncState(
                 status="syncing",
-                source="dhan-rest",
+                source=source_label,
                 message=(
-                    f"Background historical replay started for {scope_label}: "
+                    f"Background {provider_label} historical replay started for {scope_label}: "
                     f"{replay_session_day.isoformat()} with previous context {previous_day.isoformat()}."
                 ),
                 last_synced_at=self.data_sync.last_synced_at,
@@ -2650,10 +2794,10 @@ class SimulationEngine:
                     stock_replay_scope=stock_replay_scope,
                 ),
                 "success_message": (
-                    f"Background historical replay completed for {scope_label}: "
+                    f"Background {provider_label} historical replay completed for {scope_label}: "
                     f"{replay_session_day.isoformat()}."
                 ),
-                "error_prefix": "Background historical replay failed",
+                "error_prefix": f"Background {provider_label} historical replay failed",
             },
             name="simulate-historical-job",
             daemon=True,
@@ -2671,16 +2815,15 @@ class SimulationEngine:
         replay_decision_duration_minutes: int = 1,
         stock_replay_scope: str | None = "all",
     ) -> DashboardState:
-        client, token = self._available_dhan_credentials(client_id, access_token)
-        if not client or not token:
-            raise ValueError("Dhan client ID and access token are required to simulate historical range data")
+        provider, client, token = self._history_provider_credentials(client_id, access_token)
+        provider_label = self._history_broker_label(provider)
+        source_label = self._history_source_label(provider)
         start_day = self._parse_replay_date(replay_start_date, field_name="replay_start_date")
         end_day = self._parse_replay_date(replay_end_date, field_name="replay_end_date")
         if end_day < start_day:
             raise ValueError("Replay end date must be on or after replay start date.")
         if (end_day - start_day).days > 90:
             raise ValueError("Bulk historical replay range cannot exceed 90 calendar days.")
-        self._remember_dhan_credentials(client, token)
         started_at = datetime.now()
         job_id = uuid.uuid4().hex
         with self.lock:
@@ -2705,9 +2848,9 @@ class SimulationEngine:
             )
             self.data_sync = DataSyncState(
                 status="syncing",
-                source="dhan-rest",
+                source=source_label,
                 message=(
-                    f"Background bulk {replay_label} replay started for {start_day.isoformat()} to {end_day.isoformat()}."
+                    f"Background {provider_label} bulk {replay_label} replay started for {start_day.isoformat()} to {end_day.isoformat()}."
                 ),
                 last_synced_at=self.data_sync.last_synced_at,
                 replay_session_day=start_day,
@@ -2732,9 +2875,9 @@ class SimulationEngine:
                     stock_replay_scope=stock_replay_scope,
                 ),
                 "success_message": (
-                    f"Background bulk {replay_label} replay completed for {start_day.isoformat()} to {end_day.isoformat()}."
+                    f"Background {provider_label} bulk {replay_label} replay completed for {start_day.isoformat()} to {end_day.isoformat()}."
                 ),
-                "error_prefix": f"Background bulk {replay_label} replay failed",
+                "error_prefix": f"Background {provider_label} bulk {replay_label} replay failed",
             },
             name="simulate-historical-range-job",
             daemon=True,
@@ -2743,10 +2886,8 @@ class SimulationEngine:
         return self.get_state()
 
     def sync_dhan_context(self, client_id: str | None = None, access_token: str | None = None) -> DashboardState:
-        client, token = self._available_dhan_credentials(client_id, access_token)
-        if not client or not token:
-            raise ValueError("Dhan client ID and access token are required to fetch chart history")
-        self._remember_dhan_credentials(client, token)
+        provider, client, token = self._history_provider_credentials(client_id, access_token)
+        provider_label = self._history_broker_label(provider)
 
         if self.instrument_mode == InstrumentMode.stock:
             watched_symbols = list(self.stock_watchlist.keys())
@@ -2755,10 +2896,12 @@ class SimulationEngine:
                 watched_symbols,
                 client_id=client,
                 access_token=token,
+                provider=provider,
             )
             companion_bundle = self._fetch_companion_market_context_bundle(
                 client_id=client,
                 access_token=token,
+                provider=provider,
             )
             for symbol in watched_symbols:
                 spec, bundle = bundles[symbol]
@@ -2775,7 +2918,7 @@ class SimulationEngine:
                     self.rulebook_service.learning_log.insert(
                         0,
                         (
-                            f"Synced Dhan chart history for {spec.label}: "
+                            f"Synced {provider_label} chart history for {spec.label}: "
                             f"{len(bundle.previous_day_candles)} previous-day candles via {bundle.previous_day_source}, "
                             f"{len(bundle.intraday_candles)} intraday closed candles, "
                             f"open candle {'loaded' if bundle.live_open_candle else 'not present'}."
@@ -2795,14 +2938,15 @@ class SimulationEngine:
             bundle, companion_bundle = self._fetch_nifty_and_banknifty_bundles(
                 client_id=client,
                 access_token=token,
+                provider=provider,
             )
             with self.lock:
                 evaluation_index = self._load_dhan_bundle(bundle)
                 self._load_companion_bundle_locked(companion_bundle)
                 self.rulebook_service.learning_log.insert(
-                    0,
-                    (
-                        f"Synced Dhan chart history for {self.instrument_spec.label} with Bank Nifty confirmation: "
+                        0,
+                        (
+                            f"Synced {provider_label} chart history for {self.instrument_spec.label} with Bank Nifty confirmation: "
                         f"{len(bundle.previous_day_candles)} Nifty previous-day candles, {len(bundle.intraday_candles)} Nifty intraday candles, "
                         f"{len(companion_bundle.previous_day_candles)} Bank Nifty previous-day candles, and "
                         f"{len(companion_bundle.intraday_candles)} Bank Nifty intraday candles."
@@ -2813,12 +2957,11 @@ class SimulationEngine:
                 self._evaluate_index(evaluation_index, source="sync")
             return self.get_state()
 
-        bundle = self.chart_service.fetch_market_context(
-            client_id=client,
-            access_token=token,
-            security_id=self.instrument_spec.security_id,
-            exchange_segment=self.instrument_spec.exchange_segment,
-            instrument_type=self.instrument_spec.instrument_type,
+        bundle = self._fetch_market_context_for_spec(
+            provider,
+            client,
+            token,
+            self.instrument_spec,
             prefer_last_closed_session_before_open=True,
         )
         with self.lock:
@@ -2826,7 +2969,7 @@ class SimulationEngine:
             self.rulebook_service.learning_log.insert(
                 0,
                 (
-                    f"Synced Dhan chart history for {self.instrument_spec.label}: "
+                    f"Synced {provider_label} chart history for {self.instrument_spec.label}: "
                     f"{len(bundle.previous_day_candles)} previous-day candles via {bundle.previous_day_source}, "
                     f"{len(bundle.intraday_candles)} intraday closed candles, "
                     f"open candle {'loaded' if bundle.live_open_candle else 'not present'}."
@@ -2854,10 +2997,7 @@ class SimulationEngine:
         replay_decision_duration_minutes: int = 1,
         stock_replay_scope: str | None = "all",
     ) -> DashboardState:
-        client, token = self._available_dhan_credentials(client_id, access_token)
-        if not client or not token:
-            raise ValueError("Dhan client ID and access token are required to simulate today data")
-        self._remember_dhan_credentials(client, token)
+        provider, client, token = self._history_provider_credentials(client_id, access_token)
         replay_decision_duration_minutes = self._normalize_replay_decision_duration_minutes(
             replay_decision_duration_minutes
         )
@@ -2869,10 +3009,12 @@ class SimulationEngine:
                 watched_symbols,
                 client_id=client,
                 access_token=token,
+                provider=provider,
             )
             companion_bundle = self._fetch_companion_market_context_bundle(
                 client_id=client,
                 access_token=token,
+                provider=provider,
             )
             replayed_symbols: list[str] = []
             for symbol in watched_symbols:
@@ -2919,6 +3061,7 @@ class SimulationEngine:
             bundle, companion_bundle = self._fetch_nifty_and_banknifty_bundles(
                 client_id=client,
                 access_token=token,
+                provider=provider,
             )
             self._begin_replay_simulation()
             try:
@@ -2950,12 +3093,11 @@ class SimulationEngine:
                 self._end_replay_simulation()
             return self.get_state()
 
-        bundle = self.chart_service.fetch_market_context(
-            client_id=client,
-            access_token=token,
-            security_id=self.instrument_spec.security_id,
-            exchange_segment=self.instrument_spec.exchange_segment,
-            instrument_type=self.instrument_spec.instrument_type,
+        bundle = self._fetch_market_context_for_spec(
+            provider,
+            client,
+            token,
+            self.instrument_spec,
             prefer_last_closed_session_before_open=True,
         )
         self._begin_replay_simulation()
@@ -2997,14 +3139,11 @@ class SimulationEngine:
         replay_decision_duration_minutes: int = 1,
         stock_replay_scope: str | None = "all",
     ) -> DashboardState:
-        client, token = self._available_dhan_credentials(client_id, access_token)
-        if not client or not token:
-            raise ValueError("Dhan client ID and access token are required to simulate historical data")
+        provider, client, token = self._history_provider_credentials(client_id, access_token)
         replay_session_day = self._parse_replay_date(replay_date, field_name="replay_date")
         previous_day = self._parse_replay_date(previous_context_date, field_name="previous_context_date")
         if previous_day >= replay_session_day:
             raise ValueError("Previous context day must be earlier than the replay session day.")
-        self._remember_dhan_credentials(client, token)
         replay_decision_duration_minutes = self._normalize_replay_decision_duration_minutes(
             replay_decision_duration_minutes
         )
@@ -3018,12 +3157,14 @@ class SimulationEngine:
                 access_token=token,
                 replay_session_day=replay_session_day,
                 previous_day=previous_day,
+                provider=provider,
             )
             companion_bundle = self._fetch_companion_historical_bundle(
                 client_id=client,
                 access_token=token,
                 replay_session_day=replay_session_day,
                 previous_day=previous_day,
+                provider=provider,
             )
             replayed_symbols: list[str] = []
             for symbol in watched_symbols:
@@ -3074,6 +3215,7 @@ class SimulationEngine:
                 access_token=token,
                 replay_session_day=replay_session_day,
                 previous_day=previous_day,
+                provider=provider,
             )
             self._begin_replay_simulation()
             try:
@@ -3105,14 +3247,13 @@ class SimulationEngine:
                 self._end_replay_simulation()
             return self.get_state()
 
-        bundle = self.chart_service.fetch_market_context_for_days(
-            client_id=client,
-            access_token=token,
+        bundle = self._fetch_market_context_for_spec_days(
+            provider,
+            client,
+            token,
+            self.instrument_spec,
             session_day=replay_session_day,
             previous_context_day=previous_day,
-            security_id=self.instrument_spec.security_id,
-            exchange_segment=self.instrument_spec.exchange_segment,
-            instrument_type=self.instrument_spec.instrument_type,
         )
         self._begin_replay_simulation()
         try:
@@ -3148,6 +3289,7 @@ class SimulationEngine:
         *,
         client_id: str,
         access_token: str,
+        provider: str,
         replay_days: list[date],
         replay_decision_duration_minutes: int,
         stock_replay_scope: str | None,
@@ -3172,6 +3314,7 @@ class SimulationEngine:
                         client_id=client_id,
                         access_token=access_token,
                         replay_session_day=replay_day,
+                        provider=provider,
                     )
                 except DhanChartEmptyDataError as exc:
                     skipped_days.append(f"{replay_day.isoformat()} no stock candles ({exc})")
@@ -3187,6 +3330,7 @@ class SimulationEngine:
                         access_token=access_token,
                         replay_session_day=replay_day,
                         spec=NIFTY_INSTRUMENT,
+                        provider=provider,
                     )
                 except DhanChartEmptyDataError as exc:
                     skipped_days.append(f"{replay_day.isoformat()} NIFTY companion no candles ({exc})")
@@ -3205,7 +3349,7 @@ class SimulationEngine:
                     with self.lock:
                         self.data_sync = DataSyncState(
                             status="syncing",
-                            source="dhan-rest",
+                            source=self._history_source_label(provider),
                             message=(
                                 f"Bulk stock replay running: {replay_day.isoformat()} {symbol} "
                                 f"with previous context {bundle.previous_context_day.isoformat() if bundle.previous_context_day else '-'}."
@@ -3295,7 +3439,7 @@ class SimulationEngine:
             intraday_count = len(last_bundle.intraday_candles) if last_bundle is not None else 0
             self.data_sync = DataSyncState(
                 status="ready",
-                source="dhan-rest",
+                source=self._history_source_label(provider),
                 message=(
                     f"Bulk stock replay completed for {len(replayed_days)} trading day(s), "
                     f"{replayed_stock_sessions} stock-session(s), {len(aggregate_trades)} trade(s): "
@@ -3334,9 +3478,7 @@ class SimulationEngine:
         replay_decision_duration_minutes: int = 1,
         stock_replay_scope: str | None = "all",
     ) -> DashboardState:
-        client, token = self._available_dhan_credentials(client_id, access_token)
-        if not client or not token:
-            raise ValueError("Dhan client ID and access token are required to simulate historical range data")
+        provider, client, token = self._history_provider_credentials(client_id, access_token)
         start_day = self._parse_replay_date(replay_start_date, field_name="replay_start_date")
         end_day = self._parse_replay_date(replay_end_date, field_name="replay_end_date")
         if end_day < start_day:
@@ -3344,7 +3486,6 @@ class SimulationEngine:
         if (end_day - start_day).days > 90:
             raise ValueError("Bulk historical replay range cannot exceed 90 calendar days.")
 
-        self._remember_dhan_credentials(client, token)
         replay_decision_duration_minutes = self._normalize_replay_decision_duration_minutes(
             replay_decision_duration_minutes
         )
@@ -3356,6 +3497,7 @@ class SimulationEngine:
             return self._simulate_stock_historical_range_session(
                 client_id=client,
                 access_token=token,
+                provider=provider,
                 replay_days=replay_days,
                 replay_decision_duration_minutes=replay_decision_duration_minutes,
                 stock_replay_scope=stock_replay_scope,
@@ -3378,6 +3520,7 @@ class SimulationEngine:
                             client_id=client,
                             access_token=token,
                             replay_session_day=replay_day,
+                            provider=provider,
                         )
                     else:
                         bundle = self._fetch_historical_bundle_with_previous_fallback(
@@ -3385,6 +3528,7 @@ class SimulationEngine:
                             access_token=token,
                             replay_session_day=replay_day,
                             spec=self.instrument_spec,
+                            provider=provider,
                         )
                         companion_bundle = None
                 except DhanChartEmptyDataError as exc:
@@ -3401,7 +3545,7 @@ class SimulationEngine:
                         self._load_companion_bundle_locked(companion_bundle, replay_from_session_start=True)
                     self.data_sync = DataSyncState(
                         status="syncing",
-                        source="dhan-rest",
+                        source=self._history_source_label(provider),
                         message=(
                             f"Bulk NIFTY replay running: {replay_day.isoformat()} "
                             f"with previous context {bundle.previous_context_day.isoformat() if bundle.previous_context_day else '-'}."
@@ -3464,7 +3608,7 @@ class SimulationEngine:
             intraday_count = len(last_bundle.intraday_candles) if last_bundle is not None else 0
             self.data_sync = DataSyncState(
                 status="ready",
-                source="dhan-rest",
+                source=self._history_source_label(provider),
                 message=(
                     f"Bulk NIFTY replay completed for {len(replayed_days)} trading day(s): "
                     f"{replayed_days[0].isoformat()} to {replayed_days[-1].isoformat()}."
@@ -3709,11 +3853,13 @@ class SimulationEngine:
             bundle.previous_context_day.strftime("%d %b %Y") if bundle.previous_context_day else "the previous session"
         )
         intraday_source_text = bundle.intraday_source or "intraday"
+        provider_label = "Zerodha" if "zerodha" in f"{intraday_source_text} {bundle.previous_day_source}".lower() else "Dhan"
+        source_label = "zerodha-rest" if provider_label == "Zerodha" else "dhan-rest"
         self.data_sync = DataSyncState(
             status="ready",
-            source="dhan-rest",
+            source=source_label,
             message=(
-                f"Loaded Dhan 1-minute context for {self.instrument_spec.label} using {intraday_source_text} data "
+                f"Loaded {provider_label} 1-minute context for {self.instrument_spec.label} using {intraday_source_text} data "
                 f"for {replay_day_text} and {bundle.previous_day_source} data for {previous_context_text}."
             ),
             last_synced_at=datetime.now(),
@@ -4098,7 +4244,6 @@ class SimulationEngine:
                 return
             tick_time = self._packet_timestamp(packet)
             raw_volume = self._as_float(packet.get("volume")) or 0.0
-            volume_delta = self._live_volume_delta_locked(security_id, tick_time, raw_volume)
             packet_type = str(packet.get("type", "Unknown"))
             feed_source = str(packet.get("source") or self.live_feed.source or "dhan-websocket")
             if self.active_trade and self.active_trade.option_security_id and security_id == self.active_trade.option_security_id:
@@ -4110,7 +4255,7 @@ class SimulationEngine:
                         last_price=ltp,
                         quote_time=tick_time,
                         source=feed_source,
-                        volume=self._as_int(packet.get("volume")),
+                        volume=self._as_int(raw_volume),
                         oi=self._as_int(packet.get("OI")),
                     )
                 )
