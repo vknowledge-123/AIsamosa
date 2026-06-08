@@ -5,9 +5,10 @@ import json
 import tempfile
 import time
 import unittest
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import Mock, patch
+from zoneinfo import ZoneInfo
 
 from fastapi.testclient import TestClient
 
@@ -701,6 +702,26 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertEqual(snapshot.turnover, round(194.55 * 2500, 2))
         self.assertLess(snapshot.turnover, 1000000.0)
 
+    def test_stock_turnover_waits_for_completed_market_session_5m_window(self) -> None:
+        self.test_engine.set_instrument_mode("stock")
+        self.test_engine.candles = [
+            Candle(
+                timestamp=datetime(2026, 6, 8, 9, 10),
+                open=449.0,
+                high=449.5,
+                low=448.8,
+                close=449.2,
+                volume=10000,
+            )
+        ]
+
+        snapshot = self.test_engine._stock_turnover_snapshot_from_candles(
+            self.test_engine.candles,
+            datetime(2026, 6, 8, 9, 15),
+        )
+
+        self.assertIsNone(snapshot)
+
     def test_stock_watchlist_and_integrated_pnl_ignore_stale_cash_trade_snapshot_values(self) -> None:
         selected_spec = build_stock_instrument("SBIN", "3045", label="SBIN")
         other_spec = build_stock_instrument("TCS", "11536", label="TCS")
@@ -990,6 +1011,41 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertEqual(order_updates[0]["Data"]["orderId"], "kite-1")
         self.assertEqual(order_updates[0]["Data"]["status"], "COMPLETE")
         self.assertEqual(order_updates[0]["Data"]["averageTradedPrice"], 101.5)
+
+    def test_zerodha_feed_adapter_accepts_kite_volume_field_variants(self) -> None:
+        packets: list[dict] = []
+        adapter = ZerodhaMarketFeedAdapter("kite-key", "kite-token", [(11536, "11536", "quote")])
+        adapter.start = Mock()
+        adapter._packet_callback = packets.append
+
+        adapter._handle_ticks(
+            None,
+            [{"instrument_token": 11536, "last_price": 2144.0, "volume_traded_today": 98765}],
+        )
+
+        self.assertEqual(packets[0]["volume"], 98765)
+
+    def test_zerodha_feed_adapter_converts_naive_utc_tick_time_to_ist(self) -> None:
+        packets: list[dict] = []
+        adapter = ZerodhaMarketFeedAdapter("kite-key", "kite-token", [(11536, "11536", "quote")])
+        adapter.start = Mock()
+        adapter._packet_callback = packets.append
+        utc_now_naive = datetime.now(timezone.utc).replace(tzinfo=None)
+        market_now = datetime.now(timezone.utc).astimezone(ZoneInfo("Asia/Kolkata")).replace(tzinfo=None)
+
+        adapter._handle_ticks(
+            None,
+            [
+                {
+                    "instrument_token": 11536,
+                    "last_price": 2149.2,
+                    "volume_traded_today": 98765,
+                    "exchange_timestamp": utc_now_naive,
+                }
+            ],
+        )
+
+        self.assertLess(abs((packets[0]["timestamp"] - market_now).total_seconds()), 300)
 
     def test_start_live_trading_clears_simulated_open_stock_trade(self) -> None:
         self.test_engine.set_instrument_mode("stock")

@@ -2,14 +2,17 @@ from __future__ import annotations
 
 import threading
 from collections.abc import Callable
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from app.services.zerodha_execution import ZerodhaExecutionError
 
 
 class ZerodhaMarketFeedAdapter:
     """Background wrapper around KiteTicker that emits app-normalized quote packets."""
+
+    market_timezone = ZoneInfo("Asia/Kolkata")
 
     def __init__(
         self,
@@ -171,8 +174,15 @@ class ZerodhaMarketFeedAdapter:
         last_price = tick.get("last_price")
         if last_price in (None, ""):
             return None
-        timestamp = tick.get("exchange_timestamp") or tick.get("last_trade_time") or datetime.now()
-        volume = tick.get("volume_traded") or tick.get("volume") or 0
+        timestamp = self._market_timestamp(tick.get("exchange_timestamp") or tick.get("last_trade_time"))
+        volume = (
+            tick.get("volume_traded")
+            or tick.get("volume_traded_today")
+            or tick.get("volume")
+            or tick.get("total_traded_quantity")
+            or tick.get("last_traded_quantity")
+            or 0
+        )
         return {
             "type": "Quote",
             "source": "zerodha-websocket",
@@ -183,6 +193,19 @@ class ZerodhaMarketFeedAdapter:
             "OI": tick.get("oi"),
             "timestamp": timestamp,
         }
+
+    def _market_timestamp(self, raw_timestamp: Any) -> datetime:
+        if isinstance(raw_timestamp, datetime):
+            if raw_timestamp.tzinfo is not None:
+                return raw_timestamp.astimezone(self.market_timezone).replace(tzinfo=None)
+            server_utc = raw_timestamp.replace(tzinfo=timezone.utc).astimezone(self.market_timezone).replace(tzinfo=None)
+            market_now = datetime.now(timezone.utc).astimezone(self.market_timezone).replace(tzinfo=None)
+            naive_delta = abs((market_now - raw_timestamp).total_seconds())
+            utc_delta = abs((market_now - server_utc).total_seconds())
+            if utc_delta + 300 < naive_delta:
+                return server_utc
+            return raw_timestamp
+        return datetime.now(self.market_timezone).replace(tzinfo=None)
 
     def _handle_order_update(self, _ws, data: dict[str, Any]) -> None:
         if self._order_update_callback is None:

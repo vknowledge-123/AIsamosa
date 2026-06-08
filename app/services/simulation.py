@@ -1538,6 +1538,9 @@ class SimulationEngine:
         reference_time: datetime,
     ) -> StockTurnoverSnapshot | None:
         window_start, window_end = self._last_completed_5m_window(reference_time)
+        market_open = reference_time.replace(hour=9, minute=15, second=0, microsecond=0)
+        if window_start < market_open:
+            return None
         window_candles = [
             candle
             for candle in candles
