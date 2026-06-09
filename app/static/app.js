@@ -137,6 +137,7 @@ const uiStatus = {
 const stockUiState = {
   lastQuery: "",
   searchResults: [],
+  pendingActions: new Set(),
 };
 
 const runtimeUiState = {
@@ -907,10 +908,11 @@ function renderStockWatchlist(state) {
     return;
   }
   renderList(elements.stockWatchlist, state.stock_watchlist || [], (item) => `
-    <div class="list-item">
+    <div class="list-item stock-card ${item.trading_disabled ? "stock-disabled" : ""}">
       <strong>${item.symbol}</strong>
       <span class="pill">${item.selected ? "active" : (item.subscribed ? "subscribed" : "queued")}</span>
       <span class="pill">${item.trade_bias === "long" ? "long-only" : (item.trade_bias === "short" ? "short-only" : "both-side")}</span>
+      ${item.trading_disabled ? `<span class="pill bearish">trading disabled</span>` : ""}
       <p>${item.label || item.symbol} | Security ${item.security_id}</p>
       <p>LTP ${money(item.last_ltp)} | Ticks ${item.ticks_received || 0} | Last Tick ${formatSignalTime(item.last_tick_at)}</p>
       <p>History ${item.history_status || "idle"} | ${item.previous_day_candles || 0} previous day | ${item.intraday_candles || 0} intraday</p>
@@ -921,8 +923,10 @@ function renderStockWatchlist(state) {
       <p>Trade ${item.has_active_trade ? `${item.active_trade_direction || "-"} | P&L ${money(item.active_trade_pnl)}` : "No active trade"}</p>
       <p>Broker ${item.live_order_error ? `Error: ${item.live_order_error}` : (item.live_order_message || "No live order activity")} | Update ${formatIstDateTime(item.live_order_updated_at)}</p>
       <div class="button-row">
-        <button type="button" class="${item.selected ? "" : "secondary-btn"} stock-select-btn" data-symbol="${item.symbol}">${item.selected ? "Active Stock" : "View Details"}</button>
-        <button type="button" class="secondary-btn stock-remove-btn" data-symbol="${item.symbol}">Remove</button>
+        <button type="button" class="${item.selected ? "" : "secondary-btn"} stock-select-btn stable-action-btn" data-symbol="${item.symbol}" ${stockUiState.pendingActions.has(`select:${item.symbol}`) ? "disabled" : ""}>${item.selected ? "Active Stock" : "View Details"}</button>
+        ${item.has_active_trade ? `<button type="button" class="danger-btn stock-square-off-btn stable-action-btn" data-symbol="${item.symbol}" ${stockUiState.pendingActions.has(`square:${item.symbol}`) ? "disabled" : ""}>${stockUiState.pendingActions.has(`square:${item.symbol}`) ? "Squaring..." : "Square Off"}</button>` : ""}
+        ${item.trading_disabled ? `<button type="button" class="stock-enable-btn stable-action-btn" data-symbol="${item.symbol}" ${stockUiState.pendingActions.has(`enable:${item.symbol}`) ? "disabled" : ""}>${stockUiState.pendingActions.has(`enable:${item.symbol}`) ? "Enabling..." : "Enable"}</button>` : ""}
+        <button type="button" class="secondary-btn stock-remove-btn stable-action-btn" data-symbol="${item.symbol}" ${stockUiState.pendingActions.has(`remove:${item.symbol}`) ? "disabled" : ""}>${stockUiState.pendingActions.has(`remove:${item.symbol}`) ? "Removing..." : "Remove"}</button>
       </div>
     </div>
   `);
@@ -1361,6 +1365,41 @@ async function removeStock(symbol) {
   await postForm("/api/stocks/watchlist/remove", formData);
 }
 
+async function squareOffStock(symbol) {
+  const formData = new FormData();
+  formData.append("symbol", symbol);
+  await postForm("/api/stocks/watchlist/square-off", formData);
+}
+
+async function enableStockTrading(symbol) {
+  const formData = new FormData();
+  formData.append("symbol", symbol);
+  await postForm("/api/stocks/watchlist/enable-trading", formData);
+}
+
+async function runStockAction(actionName, symbol, handler) {
+  const normalized = (symbol || "").trim().toUpperCase();
+  if (!normalized) {
+    return;
+  }
+  const key = `${actionName}:${normalized}`;
+  if (stockUiState.pendingActions.has(key)) {
+    return;
+  }
+  stockUiState.pendingActions.add(key);
+  if (runtimeUiState.dashboard) {
+    renderState(runtimeUiState.dashboard);
+  }
+  try {
+    await handler(normalized);
+  } finally {
+    stockUiState.pendingActions.delete(key);
+    if (runtimeUiState.dashboard) {
+      renderState(runtimeUiState.dashboard);
+    }
+  }
+}
+
 async function postForm(url, formData) {
   const data = await fetchJson(url, { method: "POST", body: formData });
   if (data.state) {
@@ -1645,14 +1684,28 @@ document.addEventListener("click", (event) => {
   const selectButton = event.target.closest(".stock-select-btn");
   if (selectButton) {
     runAction(async () => {
-      await selectStock(selectButton.dataset.symbol || "");
+      await runStockAction("select", selectButton.dataset.symbol || "", selectStock);
+    });
+    return;
+  }
+  const squareButton = event.target.closest(".stock-square-off-btn");
+  if (squareButton) {
+    runAction(async () => {
+      await runStockAction("square", squareButton.dataset.symbol || "", squareOffStock);
+    });
+    return;
+  }
+  const enableButton = event.target.closest(".stock-enable-btn");
+  if (enableButton) {
+    runAction(async () => {
+      await runStockAction("enable", enableButton.dataset.symbol || "", enableStockTrading);
     });
     return;
   }
   const removeButton = event.target.closest(".stock-remove-btn");
   if (removeButton) {
     runAction(async () => {
-      await removeStock(removeButton.dataset.symbol || "");
+      await runStockAction("remove", removeButton.dataset.symbol || "", removeStock);
     });
   }
 });

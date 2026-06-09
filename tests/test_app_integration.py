@@ -5306,6 +5306,77 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertEqual(state["instrument"]["security_id"], "")
         self.assertEqual(state["stock_watchlist"], [])
 
+    def test_stock_square_off_disables_symbol_and_enable_restores_trading(self) -> None:
+        self.test_engine.set_instrument_mode("stock")
+        spec = build_stock_instrument("SBIN", "3045", label="STATE BANK OF INDIA")
+        with self.test_engine.lock:
+            self.test_engine.stock_watchlist = {"SBIN": spec}
+            self.test_engine.selected_stock_symbol = "SBIN"
+            self.test_engine.stock_sessions["SBIN"] = self.test_engine._build_stock_runtime_session(spec)
+            self.test_engine._load_stock_session_locked("SBIN")
+            trade = SimulatedTrade(
+                trade_id="stock-square-off",
+                status="OPEN",
+                direction="LONG_STOCK",
+                instrument_mode="stock",
+                instrument_label="SBIN",
+                price_mode="cash",
+                trade_security_id="3045",
+                quote_exchange_segment="NSE_EQ",
+                option_type="CE",
+                strike=0,
+                symbol="SBIN EQ",
+                quantity=10,
+                open_quantity=10,
+                entry_time=datetime.fromisoformat("2026-05-14T09:15:00"),
+                entry_price=800.0,
+                entry_spot_price=800.0,
+                entry_option_price=800.0,
+                current_price=805.0,
+                current_option_price=805.0,
+                stop_price=790.0,
+                stop_option_price=790.0,
+                target_price=830.0,
+                target_option_price=830.0,
+            )
+            self.test_engine.active_trade = trade
+            self.test_engine.trade_history = [trade]
+            self.test_engine._capture_stock_session_locked("SBIN")
+
+        with patch.object(self.test_engine, "_square_off_active_trade_locked", return_value=True) as square_mock:
+            response = self.client.post("/api/stocks/watchlist/square-off", data={"symbol": "SBIN"})
+
+        self.assertEqual(response.status_code, 200)
+        square_mock.assert_called_once()
+        stock_item = response.json()["state"]["stock_watchlist"][0]
+        self.assertTrue(stock_item["trading_disabled"])
+
+        enable_response = self.client.post("/api/stocks/watchlist/enable-trading", data={"symbol": "SBIN"})
+
+        self.assertEqual(enable_response.status_code, 200)
+        enabled_item = enable_response.json()["state"]["stock_watchlist"][0]
+        self.assertFalse(enabled_item["trading_disabled"])
+
+    def test_disabled_stock_rejects_fresh_live_entries(self) -> None:
+        self.test_engine.set_instrument_mode("stock")
+        self.test_engine.live_trading_enabled = True
+        self.test_engine.execution_state.live_trading_enabled = True
+        self.test_engine.live_feed_adapter = Mock()
+        spec = build_stock_instrument("SBIN", "3045", label="STATE BANK OF INDIA")
+        with self.test_engine.lock:
+            self.test_engine.stock_watchlist = {"SBIN": spec}
+            self.test_engine.selected_stock_symbol = "SBIN"
+            self.test_engine.stock_watch_meta["SBIN"] = {"trading_disabled": True}
+            self.test_engine.stock_sessions["SBIN"] = self.test_engine._build_stock_runtime_session(spec)
+            self.test_engine._load_stock_session_locked("SBIN")
+        decision = TradeDecision(action=TradeAction.enter_call, reason="Fresh long setup.")
+
+        self.test_engine.apply_trade_logic(self._make_candle(0, 800, 802, 798, 801), decision, source="live")
+
+        self.assertIsNone(self.test_engine.active_trade)
+        self.assertEqual(self.test_engine.decision.action, TradeAction.no_trade)
+        self.assertIn("trading is disabled", self.test_engine.decision.reason)
+
     def test_connect_live_feed_in_stock_mode_subscribes_selected_watchlist(self) -> None:
         fake_adapter = Mock()
         fake_adapter.start = Mock()

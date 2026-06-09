@@ -139,6 +139,7 @@ class StockWatchItem(BaseModel):
     trade_bias: str = "both"
     selected: bool = False
     subscribed: bool = False
+    trading_disabled: bool = False
     last_ltp: float | None = None
     last_tick_at: datetime | None = None
     ticks_received: int = 0

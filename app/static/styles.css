@@ -1,15 +1,15 @@
 :root {
-  --bg: #f4efe5;
-  --panel: rgba(255, 250, 243, 0.9);
-  --panel-strong: #fff9f0;
-  --ink: #17211b;
-  --muted: #5d6b60;
+  --bg: #eef4f8;
+  --panel: rgba(255, 255, 255, 0.94);
+  --panel-strong: #f8fbfd;
+  --ink: #111827;
+  --muted: #586575;
   --accent: #0f766e;
-  --accent-strong: #09443f;
-  --danger: #9f1239;
-  --warning: #b45309;
-  --border: rgba(23, 33, 27, 0.1);
-  --shadow: 0 18px 50px rgba(62, 44, 24, 0.08);
+  --accent-strong: #0b4f71;
+  --danger: #b42318;
+  --warning: #b54708;
+  --border: rgba(15, 23, 42, 0.1);
+  --shadow: 0 18px 45px rgba(31, 41, 55, 0.1);
 }
 
 * {
@@ -19,10 +19,7 @@
 body {
   margin: 0;
   font-family: "Segoe UI", "Helvetica Neue", sans-serif;
-  background:
-    radial-gradient(circle at top left, rgba(15, 118, 110, 0.14), transparent 30%),
-    radial-gradient(circle at top right, rgba(180, 83, 9, 0.14), transparent 25%),
-    linear-gradient(180deg, #f8f3eb 0%, var(--bg) 100%);
+  background: linear-gradient(180deg, #f8fbfd 0%, var(--bg) 100%);
   color: var(--ink);
 }
 
@@ -38,7 +35,7 @@ body {
   background: var(--panel);
   border: 1px solid var(--border);
   box-shadow: var(--shadow);
-  border-radius: 24px;
+  border-radius: 10px;
 }
 
 .hero-card {
@@ -83,9 +80,35 @@ h2 {
 .metric,
 .stat-panel {
   background: var(--panel-strong);
-  border-radius: 18px;
+  border-radius: 8px;
   padding: 16px;
   border: 1px solid var(--border);
+}
+
+.quick-nav {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+  padding: 10px;
+  background: rgba(248, 251, 253, 0.92);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 10px 28px rgba(31, 41, 55, 0.08);
+  backdrop-filter: blur(12px);
+}
+
+.quick-nav a {
+  color: var(--accent-strong);
+  text-decoration: none;
+  font-weight: 700;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: rgba(15, 118, 110, 0.08);
+  border: 1px solid rgba(15, 118, 110, 0.16);
 }
 
 .metric span,
@@ -148,21 +171,31 @@ select {
 button {
   appearance: none;
   border: none;
-  border-radius: 14px;
+  border-radius: 8px;
   padding: 12px 16px;
   background: var(--accent);
   color: white;
   cursor: pointer;
-  transition: transform 0.15s ease, opacity 0.15s ease;
+  transition: opacity 0.15s ease, background 0.15s ease;
 }
 
 .secondary-btn {
-  background: #d8e3df;
+  background: #e5edf2;
   color: var(--ink);
 }
 
+.danger-btn {
+  background: var(--danger);
+  color: white;
+}
+
+.stable-action-btn {
+  min-width: 112px;
+  text-align: center;
+}
+
 button:hover {
-  transform: translateY(-1px);
+  opacity: 0.92;
 }
 
 button:disabled {
@@ -180,7 +213,7 @@ input[type="file"],
 textarea,
 select {
   width: 100%;
-  border-radius: 14px;
+  border-radius: 8px;
   border: 1px solid var(--border);
   padding: 12px 14px;
   background: white;
@@ -192,7 +225,7 @@ select {
 
 #priceChart {
   width: 100%;
-  border-radius: 18px;
+  border-radius: 8px;
   background: linear-gradient(180deg, rgba(15, 118, 110, 0.08), rgba(15, 118, 110, 0));
   border: 1px solid var(--border);
 }
@@ -215,7 +248,7 @@ select {
 .markdown-surface,
 .list-surface {
   background: var(--panel-strong);
-  border-radius: 18px;
+  border-radius: 8px;
   border: 1px solid var(--border);
 }
 
@@ -247,6 +280,21 @@ select {
 
 .list-item {
   padding: 12px;
+}
+
+.stock-watchlist-panel {
+  max-height: 680px;
+  overflow: auto;
+  scroll-margin-top: 76px;
+}
+
+.stock-card {
+  border-left: 4px solid rgba(15, 118, 110, 0.45);
+}
+
+.stock-card.stock-disabled {
+  border-left-color: var(--danger);
+  background: #fff8f7;
 }
 
 .list-item strong {
@@ -292,8 +340,17 @@ select {
   background: var(--ink);
   color: white;
   padding: 12px 16px;
-  border-radius: 14px;
+  border-radius: 8px;
   box-shadow: var(--shadow);
+}
+
+#live-panel,
+#stockWatchlist,
+#simulation-panel,
+#credentials-panel,
+#trade-panel,
+#learning-panel {
+  scroll-margin-top: 76px;
 }
 
 .hidden {

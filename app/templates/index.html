@@ -41,10 +41,19 @@
       </div>
     </section>
 
+    <nav class="quick-nav" aria-label="Dashboard shortcuts">
+      <a href="#live-panel">Live</a>
+      <a href="#stockWatchlist">Stocks</a>
+      <a href="#simulation-panel">Replay</a>
+      <a href="#credentials-panel">Credentials</a>
+      <a href="#trade-panel">Trades</a>
+      <a href="#learning-panel">Learning</a>
+    </nav>
+
     <section class="grid two-col">
       <article class="panel">
         <div class="panel-header">
-          <h2>Live Feed Controls</h2>
+          <h2 id="live-panel">Live Feed Controls</h2>
         </div>
         <form id="instrumentModeForm" class="stack-form">
           <label>Instrument Mode</label>
@@ -80,7 +89,7 @@
         <div id="stockSearchResults" class="list-surface">
           <div class="list-item empty-state">Search results will appear here in stock mode.</div>
         </div>
-        <div id="stockWatchlist" class="list-surface">
+        <div id="stockWatchlist" class="list-surface stock-watchlist-panel">
           <div class="list-item empty-state">The stock watchlist will appear here in stock mode.</div>
         </div>
         <form id="liveConnectForm" class="stack-form">
@@ -160,7 +169,7 @@
 
       <article class="panel">
         <div class="panel-header">
-          <h2>Simulation Controls</h2>
+          <h2 id="simulation-panel">Simulation Controls</h2>
         </div>
         <div class="button-row">
           <button id="loadSampleBtn">Load Sample Session</button>
@@ -208,7 +217,7 @@
     <section class="grid two-col">
       <article class="panel">
         <div class="panel-header">
-          <h2>Saved Credentials</h2>
+          <h2 id="credentials-panel">Saved Credentials</h2>
         </div>
         <form id="credentialSaveForm" class="stack-form">
           <label>Dhan Market Data Client ID</label>
@@ -532,7 +541,7 @@
 
       <article class="panel">
         <div class="panel-header">
-          <h2>Learning Inputs</h2>
+          <h2 id="learning-panel">Learning Inputs</h2>
         </div>
         <div class="list-surface">
           <div class="list-item">
@@ -773,7 +782,7 @@
     <section class="grid two-col">
       <article class="panel">
         <div class="panel-header">
-          <h2>Active Trade</h2>
+          <h2 id="trade-panel">Active Trade</h2>
         </div>
         <div id="activeTrade" class="trade-card empty-state">No active paper trade.</div>
       </article>

@@ -1295,6 +1295,51 @@ class SimulationEngine:
         with self.lock:
             return self.get_state()
 
+    def square_off_stock_position(self, symbol: str) -> DashboardState:
+        normalized = (symbol or "").strip().upper()
+        if not normalized:
+            raise ValueError("Stock symbol is required.")
+        with self.lock:
+            if normalized not in self.stock_watchlist:
+                raise ValueError(f"{normalized} is not in the stock watchlist.")
+            self.stock_watch_meta.setdefault(normalized, {})["trading_disabled"] = True
+        client_id, access_token = self._available_dhan_credentials()
+        reason = f"Manual square off button pressed for {normalized}."
+
+        def operation():
+            return self._square_off_active_trade_locked(client_id, access_token, reason=reason)
+
+        squared_off = bool(self._run_in_stock_session(normalized, operation))
+        with self.lock:
+            message = (
+                f"{reason} {'Closed the active trade' if squared_off else 'No active trade was open'} "
+                "and disabled fresh live entries for this stock."
+            )
+            self._record_execution_feedback_locked(symbol=normalized, message=message)
+            self.rulebook_service.learning_log.insert(
+                0,
+                f"{reason} {'Closed one tracked trade' if squared_off else 'No tracked trade was open'}; "
+                f"{normalized} is disabled until Enable is pressed.",
+            )
+            self._mark_state_dirty_locked()
+            return self.get_state()
+
+    def enable_stock_trading(self, symbol: str) -> DashboardState:
+        normalized = (symbol or "").strip().upper()
+        with self.lock:
+            if not normalized:
+                raise ValueError("Stock symbol is required.")
+            if normalized not in self.stock_watchlist:
+                raise ValueError(f"{normalized} is not in the stock watchlist.")
+            self.stock_watch_meta.setdefault(normalized, {})["trading_disabled"] = False
+            self._record_execution_feedback_locked(
+                symbol=normalized,
+                message=f"Trading enabled for {normalized}. Fresh live entries are allowed again.",
+            )
+            self.rulebook_service.learning_log.insert(0, f"Trading enabled for {normalized}.")
+            self._mark_state_dirty_locked()
+            return self.get_state()
+
     def select_stock(self, symbol: str) -> DashboardState:
         normalized = (symbol or "").strip().upper()
         with self.lock:
@@ -1637,6 +1682,7 @@ class SimulationEngine:
                     trade_bias=meta.get("trade_bias", "both"),
                     selected=symbol == self.selected_stock_symbol,
                     subscribed=bool(feed_security_id and feed_security_id in self._stock_quote_subscriptions),
+                    trading_disabled=bool(meta.get("trading_disabled")),
                     last_ltp=meta.get("last_ltp"),
                     last_tick_at=meta.get("last_tick_at"),
                     ticks_received=meta.get("ticks_received", 0),
@@ -6151,6 +6197,12 @@ class SimulationEngine:
             and not self.live_trading_enabled
         )
 
+    def _stock_live_trading_disabled_locked(self) -> bool:
+        if self.instrument_mode != InstrumentMode.stock:
+            return False
+        symbol = (self.instrument_spec.symbol or "").strip().upper().split()[0]
+        return bool(symbol and self.stock_watch_meta.get(symbol, {}).get("trading_disabled"))
+
     def _trade_is_broker_backed(self, trade: SimulatedTrade | None) -> bool:
         if trade is None:
             return False
@@ -6670,6 +6722,15 @@ class SimulationEngine:
 
         if decision.action in {TradeAction.enter_call, TradeAction.enter_put}:
             if self.active_trade:
+                return
+            if source == "live" and self._stock_live_trading_disabled_locked():
+                message = f"Live entry skipped: trading is disabled for {self.instrument_spec.symbol}. Press Enable to resume."
+                self.decision = decision
+                self.decision.action = TradeAction.no_trade
+                self.decision.reason = message
+                self._record_execution_feedback_locked(symbol=self.instrument_spec.symbol, message=message)
+                self.rulebook_service.learning_log.insert(0, message)
+                self._mark_state_dirty_locked()
                 return
             try:
                 trade = self._build_entry_trade(current_candle, decision, source=source)

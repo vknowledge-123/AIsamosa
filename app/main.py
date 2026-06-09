@@ -197,6 +197,26 @@ async def remove_stock_from_watchlist(symbol: str = Form(...)):
     return {"message": f"Removed {symbol.strip().upper()} from the stock watchlist.", "state": state}
 
 
+@app.post("/api/stocks/watchlist/square-off")
+async def square_off_stock_position(symbol: str = Form(...)):
+    try:
+        state = await run_in_threadpool(engine.square_off_stock_position, symbol)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    normalized = symbol.strip().upper()
+    return {"message": f"Square off requested for {normalized}; trading is disabled for this stock.", "state": state}
+
+
+@app.post("/api/stocks/watchlist/enable-trading")
+async def enable_stock_trading(symbol: str = Form(...)):
+    try:
+        state = await run_in_threadpool(engine.enable_stock_trading, symbol)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    normalized = symbol.strip().upper()
+    return {"message": f"Trading enabled again for {normalized}.", "state": state}
+
+
 @app.post("/api/simulation/step")
 async def step_simulation(steps: int = Form(default=1)):
     if steps < 1 or steps > 30:
