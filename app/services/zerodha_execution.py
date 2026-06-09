@@ -74,6 +74,7 @@ class ZerodhaExecutionService:
                 product=product,
                 order_type=kite.ORDER_TYPE_MARKET,
                 validity=kite.VALIDITY_DAY,
+                market_protection=-1.0,
                 tag=self._normalize_tag(correlation_id),
             )
         except Exception as exc:

@@ -25,7 +25,7 @@ from app.services.instruments import build_stock_instrument
 from app.services.simulation import SimulationEngine
 from app.services.stock_universe import StockFutureContract, StockUniverseEntry, StockUniverseService
 from app.services.zerodha_adapter import ZerodhaMarketFeedAdapter
-from app.services.zerodha_execution import ZerodhaInstrument
+from app.services.zerodha_execution import ZerodhaExecutionService, ZerodhaInstrument
 
 
 class AppIntegrationTests(unittest.TestCase):
@@ -944,6 +944,37 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertEqual(state.execution.order_updates_status, "kite-feed")
         self.assertTrue(state.execution.order_updates_connected)
 
+    def test_zerodha_market_orders_include_market_protection(self) -> None:
+        captured: dict[str, object] = {}
+
+        class FakeKite:
+            VARIETY_REGULAR = "regular"
+            ORDER_TYPE_MARKET = "MARKET"
+            VALIDITY_DAY = "DAY"
+
+            def place_order(self, **kwargs):
+                captured.update(kwargs)
+                return "kite-order-1"
+
+        service = ZerodhaExecutionService()
+        service._client = Mock(return_value=FakeKite())
+
+        result = service.place_market_order(
+            api_key="kite-key",
+            access_token="kite-token",
+            exchange="NSE",
+            tradingsymbol="CARTRADE",
+            transaction_type="BUY",
+            quantity=1,
+            product_type="INTRADAY",
+            correlation_id="cartrade-entry",
+        )
+
+        self.assertTrue(result.ok)
+        self.assertEqual(captured["market_protection"], -1.0)
+        self.assertEqual(captured["order_type"], "MARKET")
+        self.assertEqual(captured["tradingsymbol"], "CARTRADE")
+
     def test_zerodha_broker_sync_uses_kite_historical_service(self) -> None:
         self.test_engine.save_credentials(
             broker_provider="zerodha",
@@ -1040,6 +1071,20 @@ class AppIntegrationTests(unittest.TestCase):
             zerodha_api_key="kite-key",
             zerodha_access_token="kite-token",
         )
+        bundle = DhanSessionBundle(
+            previous_day_candles=[
+                Candle(timestamp=datetime(2026, 6, 5, 15, 29), open=99, high=101, low=98, close=100, volume=1000)
+            ],
+            intraday_candles=[
+                Candle(timestamp=datetime(2026, 6, 8, 9, 15), open=100, high=102, low=99, close=101, volume=1200)
+            ],
+            live_open_candle=None,
+            previous_day_source="zerodha-historical",
+            replay_session_day=date(2026, 6, 8),
+            intraday_source="zerodha-historical",
+            previous_context_day=date(2026, 6, 5),
+        )
+        self.test_engine.zerodha_chart_service.fetch_market_context = Mock(return_value=bundle)
 
         with patch("app.services.simulation.ZerodhaMarketFeedAdapter", FakeZerodhaFeed):
             state = self.test_engine.connect_live_feed()
