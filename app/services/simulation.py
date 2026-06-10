@@ -146,6 +146,13 @@ class SimulationEngine:
             daemon=True,
         )
         self._live_evaluation_worker.start()
+        self._order_update_queue: queue.Queue[dict | None] = queue.Queue()
+        self._order_update_worker = threading.Thread(
+            target=self._run_order_update_worker,
+            name="order-update-worker",
+            daemon=True,
+        )
+        self._order_update_worker.start()
         self._watchlist_subscription_refresh_event = threading.Event()
         self._watchlist_subscription_worker = threading.Thread(
             target=self._run_watchlist_subscription_worker,
@@ -1998,19 +2005,28 @@ class SimulationEngine:
                 return None
             adapter = self.live_feed_adapter
             broker = self._selected_broker_provider()
-            if broker == "zerodha":
-                desired = {
-                    self._live_feed_security_id_for_spec(spec, broker): self._zerodha_quote_subscription_for_spec(spec)
-                    for spec in self.stock_watchlist.values()
-                    if self._live_feed_security_id_for_spec(spec, broker)
-                }
-            else:
-                desired = {
-                    spec.security_id: resolve_quote_subscription(spec.security_id, spec.exchange_segment)
-                    for spec in self.stock_watchlist.values()
-                    if spec.security_id
-                }
+            specs = list(self.stock_watchlist.values())
             current = dict(self._stock_quote_subscriptions)
+        desired: dict[str, tuple] = {}
+        errors: list[str] = []
+        for spec in specs:
+            feed_security_id = self._live_feed_security_id_for_spec(spec, broker)
+            if not feed_security_id:
+                continue
+            try:
+                if broker == "zerodha":
+                    desired[feed_security_id] = self._zerodha_quote_subscription_for_spec(spec)
+                elif spec.security_id:
+                    desired[spec.security_id] = resolve_quote_subscription(spec.security_id, spec.exchange_segment)
+            except Exception as exc:
+                errors.append(f"{spec.symbol}: {exc}")
+        if errors:
+            with self.lock:
+                self.rulebook_service.learning_log.insert(
+                    0,
+                    f"Watchlist subscription skipped {len(errors)} symbol(s): {'; '.join(errors[:3])}",
+                )
+                self._mark_state_dirty_locked()
         return adapter, current, desired
 
     def _schedule_watchlist_subscription_refresh(self) -> None:
@@ -2251,9 +2267,9 @@ class SimulationEngine:
         else:
             with self.lock:
                 stock_symbols_to_prepare = list(self.stock_watchlist.keys())
+        feed_source = "zerodha-websocket" if broker == "zerodha" else "dhan-websocket"
+        feed_message = "Connecting to Zerodha Kite websocket." if broker == "zerodha" else "Connecting to Dhan market feed."
         with self.lock:
-            feed_source = "zerodha-websocket" if broker == "zerodha" else "dhan-websocket"
-            feed_message = "Connecting to Zerodha Kite websocket." if broker == "zerodha" else "Connecting to Dhan market feed."
             self.live_feed = self._build_live_feed_state(
                 connected=False,
                 status="connecting",
@@ -2261,67 +2277,77 @@ class SimulationEngine:
                 status_message=feed_message,
             )
             self._live_cumulative_volume_by_security_id.clear()
-            if self.instrument_mode == InstrumentMode.stock:
-                resolved_specs = [
-                    spec
-                    for spec in self.stock_watchlist.values()
-                    if broker == "zerodha" or spec.security_id
-                ]
-                instruments = [
+            instrument_mode = self.instrument_mode
+            active_spec = self.instrument_spec
+            companion_spec = self._active_companion_instrument_spec()
+            use_banknifty_companion = self._use_banknifty_companion()
+            resolved_specs = [
+                spec
+                for spec in self.stock_watchlist.values()
+                if broker == "zerodha" or spec.security_id
+            ] if instrument_mode == InstrumentMode.stock else []
+            self._mark_state_dirty_locked()
+        instruments: list[tuple] = []
+        if instrument_mode == InstrumentMode.stock:
+            instruments = [
+                (
+                    self._zerodha_quote_subscription_for_spec(spec)
+                    if broker == "zerodha"
+                    else resolve_quote_subscription(spec.security_id, spec.exchange_segment)
+                )
+                for spec in resolved_specs
+            ]
+            if companion_spec is not None and companion_spec.security_id:
+                instruments.append(
+                    self._zerodha_quote_subscription_for_spec(companion_spec)
+                    if broker == "zerodha"
+                    else resolve_quote_subscription(companion_spec.security_id, companion_spec.exchange_segment)
+                )
+            if not instruments:
+                raise ValueError("No stock in the watchlist has a resolved security id yet. Search once or wait a moment, then retry.")
+        else:
+            instruments = [
+                (
+                    self._zerodha_quote_subscription_for_spec(active_spec)
+                    if broker == "zerodha"
+                    else resolve_quote_subscription(active_spec.security_id, active_spec.exchange_segment)
+                )
+            ]
+            if use_banknifty_companion:
+                instruments.append(
                     (
-                        self._zerodha_quote_subscription_for_spec(spec)
-                        if broker == "zerodha"
-                        else resolve_quote_subscription(spec.security_id, spec.exchange_segment)
-                    )
-                    for spec in resolved_specs
-                ]
-                companion_spec = self._active_companion_instrument_spec()
-                if companion_spec is not None and companion_spec.security_id:
-                    instruments.append(
                         self._zerodha_quote_subscription_for_spec(companion_spec)
                         if broker == "zerodha"
-                        else resolve_quote_subscription(companion_spec.security_id, companion_spec.exchange_segment)
-                    )
-                if not instruments:
-                    raise ValueError("No stock in the watchlist has a resolved security id yet. Search once or wait a moment, then retry.")
-            else:
-                instruments = [
-                    (
-                        self._zerodha_quote_subscription_for_spec(self.instrument_spec)
-                        if broker == "zerodha"
-                        else resolve_quote_subscription(self.instrument_spec.security_id, self.instrument_spec.exchange_segment)
-                    )
-                ]
-                if self._use_banknifty_companion():
-                    instruments.append(
-                        (
-                            self._zerodha_quote_subscription_for_spec(self.companion_instrument_spec)
-                            if broker == "zerodha"
-                            else resolve_quote_subscription(
-                                self.companion_instrument_spec.security_id,
-                                self.companion_instrument_spec.exchange_segment,
-                            )
+                        else resolve_quote_subscription(
+                            companion_spec.security_id,
+                            companion_spec.exchange_segment,
                         )
                     )
-            self.live_feed_adapter = (
-                ZerodhaMarketFeedAdapter(
-                    zerodha_api_key,
-                    zerodha_token,
-                    instruments,
-                    order_update_callback=self.handle_order_update_packet,
                 )
-                if broker == "zerodha"
-                else DhanMarketFeedAdapter(client, token, instruments)
+        adapter = (
+            ZerodhaMarketFeedAdapter(
+                zerodha_api_key,
+                zerodha_token,
+                instruments,
+                order_update_callback=self.queue_order_update_packet,
             )
+            if broker == "zerodha"
+            else DhanMarketFeedAdapter(client, token, instruments)
+        )
+        with self.lock:
+            self.live_feed_adapter = adapter
             self._stock_quote_subscriptions = {}
-            if self.instrument_mode == InstrumentMode.stock:
+            if instrument_mode == InstrumentMode.stock:
                 for spec, subscription in zip(resolved_specs, instruments):
                     feed_security_id = self._live_feed_security_id_for_spec(spec, broker)
                     if feed_security_id:
                         self._stock_quote_subscriptions[feed_security_id] = subscription
                         self._stock_symbol_by_security_id[feed_security_id] = spec.symbol
-            self.live_feed_adapter.start(self.handle_live_packet, self.handle_live_status)
-            self._sync_active_trade_subscription_locked()
+            self._mark_state_dirty_locked()
+        adapter.start(self.handle_live_packet, self.handle_live_status)
+        with self.lock:
+            if self.live_feed_adapter is adapter:
+                self._sync_active_trade_subscription_locked()
             self.rulebook_service.learning_log.insert(
                 0,
                 (
@@ -2431,7 +2457,7 @@ class SimulationEngine:
                 return
             self.order_update_adapter = DhanOrderUpdateAdapter(client_id, access_token)
             adapter = self.order_update_adapter
-        adapter.start(self.handle_order_update_packet, self.handle_order_update_status)
+        adapter.start(self.queue_order_update_packet, self.handle_order_update_status)
 
     def _stop_order_updates(self) -> None:
         adapter = None
@@ -2467,6 +2493,19 @@ class SimulationEngine:
             self.execution_state.last_order_message = self._format_order_update_message(payload)
             self._apply_order_update_to_all_trades_locked(payload)
             self._mark_state_dirty_locked()
+
+    def queue_order_update_packet(self, packet: dict) -> None:
+        self._order_update_queue.put(packet)
+
+    def _run_order_update_worker(self) -> None:
+        while True:
+            packet = self._order_update_queue.get()
+            if packet is None:
+                return
+            try:
+                self.handle_order_update_packet(packet)
+            except Exception as exc:
+                self.handle_order_update_status("error", str(exc))
 
     def _record_execution_feedback_locked(
         self,

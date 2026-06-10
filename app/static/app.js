@@ -406,6 +406,63 @@ function setFormFieldValue(form, fieldName, value) {
   }
 }
 
+function enhanceFormLayout(formId) {
+  const form = document.getElementById(formId);
+  if (!form || form.dataset.layoutEnhanced === "true") {
+    return;
+  }
+  form.dataset.layoutEnhanced = "true";
+  Array.from(form.children).forEach((child) => {
+    if (child.matches?.("label.checkbox-row")) {
+      child.classList.add("form-field", "toggle-field");
+      return;
+    }
+    if (!child.matches?.("label")) {
+      return;
+    }
+    const control = child.nextElementSibling;
+    if (!control || !control.matches?.("input, select, textarea")) {
+      return;
+    }
+    const wrapper = document.createElement("div");
+    wrapper.className = "form-field";
+    const controlName = control.getAttribute("name") || control.id || "";
+    if (controlName) {
+      wrapper.dataset.fieldName = controlName;
+    }
+    if (["client_id", "access_token"].includes(controlName)) {
+      wrapper.dataset.brokerField = "dhan";
+    }
+    if (["zerodha_api_key", "zerodha_api_secret", "zerodha_access_token"].includes(controlName) || control.id === "zerodhaRequestTokenInput") {
+      wrapper.dataset.brokerField = "zerodha";
+    }
+    form.insertBefore(wrapper, child);
+    wrapper.appendChild(child);
+    wrapper.appendChild(control);
+  });
+}
+
+function applyBrokerVisibility() {
+  const credentialForm = document.getElementById("credentialSaveForm");
+  const broker = credentialForm?.elements.broker_provider?.value || runtimeUiState.dashboard?.credentials?.broker_provider || "dhan";
+  document.body.dataset.brokerProvider = broker;
+  document.querySelectorAll("[data-broker-field]").forEach((node) => {
+    node.classList.toggle("hidden", node.dataset.brokerField !== broker);
+  });
+  const brokerSummaryRows = {
+    dhan: ["savedClientIdValue", "savedDhanTokenValue"],
+    zerodha: ["savedZerodhaApiKeyValue", "savedZerodhaApiSecretValue", "savedZerodhaAccessTokenValue"],
+  };
+  Object.entries(brokerSummaryRows).forEach(([provider, ids]) => {
+    ids.forEach((id) => {
+      document.getElementById(id)?.closest(".list-item")?.classList.toggle("hidden", provider !== broker);
+    });
+  });
+  const liveConnectForm = document.getElementById("liveConnectForm");
+  liveConnectForm?.classList.toggle("broker-zerodha", broker === "zerodha");
+  liveConnectForm?.classList.toggle("broker-dhan", broker !== "zerodha");
+}
+
 function buildCredentialPayload(form) {
   if (!form) {
     return null;
@@ -1295,6 +1352,7 @@ function renderState(state) {
       setCredentialSaveStatus("Saved locally. Autosave is active.", "saved");
     }
   }
+  applyBrokerVisibility();
   persistBrowserSettingsFromForms();
 
   renderList(elements.learningLog, state.learning_log, (item) => `
@@ -1598,6 +1656,9 @@ document.getElementById("zerodhaGenerateTokenBtn")?.addEventListener("click", ()
 document.querySelectorAll("#credentialSaveForm input, #credentialSaveForm select").forEach((field) => {
   const eventName = field.tagName === "SELECT" ? "change" : "input";
   field.addEventListener(eventName, () => {
+    if (field.name === "broker_provider") {
+      applyBrokerVisibility();
+    }
     scheduleCredentialAutosave(field.name);
   });
 });
@@ -1710,7 +1771,11 @@ document.addEventListener("click", (event) => {
   }
 });
 
+enhanceFormLayout("liveConnectForm");
+enhanceFormLayout("credentialSaveForm");
+applyBrokerVisibility();
 restoreBrowserSettings();
+applyBrokerVisibility();
 syncLiveCredentialsFromSavedForm();
 showZerodhaCallbackToast();
 refreshState().catch((error) => setToast(error.message));

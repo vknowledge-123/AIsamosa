@@ -1175,6 +1175,29 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertEqual(order_updates[0]["Data"]["status"], "COMPLETE")
         self.assertEqual(order_updates[0]["Data"]["averageTradedPrice"], 101.5)
 
+    def test_zerodha_feed_adapter_keeps_running_when_callbacks_raise(self) -> None:
+        statuses: list[tuple[str, str | None]] = []
+        adapter = ZerodhaMarketFeedAdapter("kite-key", "kite-token", [(256265, "13", "quote")])
+        adapter.start = Mock()
+        adapter._packet_callback = Mock(side_effect=RuntimeError("temporary packet failure"))
+        adapter._order_update_callback = Mock(side_effect=RuntimeError("temporary order failure"))
+        adapter._status_callback = lambda status, message, *_args: statuses.append((status, message))
+
+        adapter._handle_ticks(None, [{"instrument_token": 256265, "last_price": 24123.45, "volume_traded": 1234}])
+        adapter._handle_order_update(None, {"order_id": "kite-1", "status": "COMPLETE", "average_price": 101.5})
+
+        self.assertEqual(adapter._packet_callback.call_count, 1)
+        self.assertEqual(adapter._order_update_callback.call_count, 1)
+        self.assertTrue(any("callback warning" in (message or "") for _, message in statuses))
+
+    def test_order_updates_are_queued_before_trade_state_processing(self) -> None:
+        packet = {"Data": {"orderId": "kite-queued", "status": "COMPLETE", "averageTradedPrice": 101.5}}
+
+        with patch.object(self.test_engine, "_order_update_queue") as queue_mock:
+            self.test_engine.queue_order_update_packet(packet)
+
+        queue_mock.put.assert_called_once_with(packet)
+
     def test_zerodha_feed_adapter_accepts_kite_volume_field_variants(self) -> None:
         packets: list[dict] = []
         adapter = ZerodhaMarketFeedAdapter("kite-key", "kite-token", [(11536, "11536", "quote")])

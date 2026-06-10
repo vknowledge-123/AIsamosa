@@ -235,12 +235,12 @@
           <input type="password" name="zerodha_api_secret" placeholder="Stored locally on this machine" />
           <label>Zerodha Access Token</label>
           <input type="password" name="zerodha_access_token" placeholder="Auto-generated after Zerodha login" />
-          <div class="button-row">
+          <div class="button-row broker-action-row" data-broker-field="zerodha">
             <button type="button" id="zerodhaLoginUrlBtn">Login Zerodha & Save Token</button>
           </div>
           <label>Zerodha Request Token Fallback</label>
           <input type="text" id="zerodhaRequestTokenInput" placeholder="Only paste manually if automatic callback fails" />
-          <div class="button-row">
+          <div class="button-row broker-action-row" data-broker-field="zerodha">
             <button type="button" id="zerodhaGenerateTokenBtn">Generate Token Manually</button>
           </div>
           <label>OpenAI API Key</label>

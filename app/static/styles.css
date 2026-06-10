@@ -208,6 +208,65 @@ button:disabled {
   gap: 10px;
 }
 
+.form-field {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.form-field label {
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+#liveConnectForm,
+#credentialSaveForm {
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  align-items: end;
+  gap: 12px;
+}
+
+#credentialSaveForm {
+  max-height: 720px;
+  overflow: auto;
+  padding-right: 6px;
+}
+
+#liveConnectForm .button-row,
+#credentialSaveForm .button-row,
+#credentialSaveForm > button,
+#credentialSaveStatus {
+  grid-column: 1 / -1;
+}
+
+.toggle-field {
+  align-self: stretch;
+  min-height: 46px;
+}
+
+.broker-action-row {
+  margin-bottom: 0;
+}
+
+body[data-broker-provider="zerodha"] #liveConnectForm::before {
+  content: "Zerodha selected: live feed, history sync, and orders use saved Kite credentials.";
+}
+
+body[data-broker-provider="dhan"] #liveConnectForm::before {
+  content: "Dhan selected: enter Dhan market-data credentials for live feed and history sync.";
+}
+
+#liveConnectForm::before {
+  grid-column: 1 / -1;
+  color: var(--accent-strong);
+  background: rgba(15, 118, 110, 0.08);
+  border: 1px solid rgba(15, 118, 110, 0.16);
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-weight: 700;
+}
+
 input[type="text"],
 input[type="file"],
 textarea,

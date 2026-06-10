@@ -32,6 +32,7 @@ class ZerodhaMarketFeedAdapter:
         self._status_callback: Callable[[str, str | None, int, datetime | None], None] | None = None
         self._order_update_callback = order_update_callback
         self._stop_event = threading.Event()
+        self._manual_reconnect_timer: threading.Timer | None = None
         self._tokens: dict[int, str] = {}
         self._modes: dict[int, str] = {}
         self.instruments = list(instruments)
@@ -65,6 +66,11 @@ class ZerodhaMarketFeedAdapter:
 
     def stop(self) -> None:
         self._stop_event.set()
+        with self._lock:
+            timer = self._manual_reconnect_timer
+            self._manual_reconnect_timer = None
+        if timer is not None:
+            timer.cancel()
         with self._lock:
             ticker = self._ticker
             self._ticker = None
@@ -160,7 +166,10 @@ class ZerodhaMarketFeedAdapter:
         for tick in ticks or []:
             packet = self._normalize_tick(tick)
             if packet is not None:
-                callback(packet)
+                try:
+                    callback(packet)
+                except Exception as exc:
+                    self._notify_status("connected", f"Zerodha tick callback warning: {exc}")
 
     def _normalize_tick(self, tick: dict[str, Any]) -> dict[str, Any] | None:
         token = tick.get("instrument_token")
@@ -213,16 +222,19 @@ class ZerodhaMarketFeedAdapter:
         order_id = data.get("order_id") or data.get("orderId")
         status = data.get("status") or data.get("order_status") or data.get("orderStatus")
         average_price = data.get("average_price") or data.get("averageTradedPrice")
-        self._order_update_callback(
-            {
-                "Data": {
-                    "orderId": order_id,
-                    "status": status,
-                    "averageTradedPrice": average_price,
-                    "raw": data,
+        try:
+            self._order_update_callback(
+                {
+                    "Data": {
+                        "orderId": order_id,
+                        "status": status,
+                        "averageTradedPrice": average_price,
+                        "raw": data,
+                    }
                 }
-            }
-        )
+            )
+        except Exception as exc:
+            self._notify_status("connected", f"Zerodha order-update callback warning: {exc}")
 
     def _handle_close(self, _ws, code, reason) -> None:
         self.connected = False
@@ -241,7 +253,39 @@ class ZerodhaMarketFeedAdapter:
 
     def _handle_no_reconnect(self, _ws) -> None:
         self.connected = False
-        self._notify_status("error", "Zerodha websocket could not reconnect.")
+        if self._stop_event.is_set():
+            self._notify_status("disconnected", None)
+            return
+        self._notify_status("reconnecting", "Zerodha websocket could not reconnect; scheduling a fresh Kite connection.")
+        self._schedule_manual_reconnect()
+
+    def _schedule_manual_reconnect(self, delay_seconds: float = 5.0) -> None:
+        with self._lock:
+            if self._manual_reconnect_timer is not None or self._stop_event.is_set():
+                return
+            timer = threading.Timer(delay_seconds, self._manual_reconnect)
+            timer.daemon = True
+            self._manual_reconnect_timer = timer
+            timer.start()
+
+    def _manual_reconnect(self) -> None:
+        with self._lock:
+            self._manual_reconnect_timer = None
+            ticker = self._ticker
+            self._ticker = None
+            packet_callback = self._packet_callback
+            status_callback = self._status_callback
+        if ticker is not None:
+            try:
+                ticker.close()
+            except Exception:
+                pass
+        if self._stop_event.is_set() or packet_callback is None:
+            return
+        try:
+            self.start(packet_callback, status_callback)
+        except Exception as exc:
+            self._notify_status("error", f"Zerodha manual reconnect failed: {exc}")
 
     def _notify_status(
         self,
