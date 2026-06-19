@@ -149,6 +149,7 @@ const runtimeUiState = {
   aiHealthPollTimer: null,
   stateEventSource: null,
   stateEventSourceRetryTimer: null,
+  zerodhaLoginInFlight: false,
 };
 
 const settingsUiState = {
@@ -1631,13 +1632,39 @@ document.getElementById("credentialSaveForm").addEventListener("submit", (event)
 });
 
 document.getElementById("zerodhaLoginUrlBtn")?.addEventListener("click", () => runAction(async () => {
-  await saveCredentialSettings({ immediate: true, notify: false });
-  const data = await fetchJson("/api/broker/zerodha/login-url");
-  if (!data.login_url) {
-    throw new Error("Zerodha API key is required before opening the login URL.");
+  const button = document.getElementById("zerodhaLoginUrlBtn");
+  if (runtimeUiState.zerodhaLoginInFlight) {
+    return;
   }
-  window.location.href = data.login_url;
-  setToast("Opening Zerodha login. Token will save automatically after authentication.");
+  runtimeUiState.zerodhaLoginInFlight = true;
+  const originalLabel = button?.textContent || "Login Zerodha & Save Token";
+  if (button) {
+    button.disabled = true;
+    button.textContent = "Opening Zerodha...";
+  }
+  try {
+    const credentialForm = document.getElementById("credentialSaveForm");
+    if (credentialForm?.elements.broker_provider) {
+      credentialForm.elements.broker_provider.value = "zerodha";
+      applyBrokerVisibility();
+    }
+    setLastAction("pending", "Zerodha login", "Saving Kite credentials and opening Zerodha login.");
+    await saveCredentialSettings({ immediate: true, notify: false });
+    const data = await fetchJson("/api/broker/zerodha/login-url");
+    if (!data.login_url) {
+      throw new Error("Zerodha API key is required before opening the login URL.");
+    }
+    setToast("Opening Zerodha login. Token will save automatically after authentication.");
+    window.location.assign(data.login_url);
+  } finally {
+    window.setTimeout(() => {
+      runtimeUiState.zerodhaLoginInFlight = false;
+      if (button) {
+        button.disabled = false;
+        button.textContent = originalLabel;
+      }
+    }, 2500);
+  }
 }));
 
 document.getElementById("zerodhaGenerateTokenBtn")?.addEventListener("click", () => runAction(async () => {

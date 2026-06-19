@@ -975,6 +975,41 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertEqual(captured["order_type"], "MARKET")
         self.assertEqual(captured["tradingsymbol"], "CARTRADE")
 
+    def test_zerodha_market_orders_retry_after_rate_limit(self) -> None:
+        calls: list[dict[str, object]] = []
+
+        class FakeKite:
+            VARIETY_REGULAR = "regular"
+            ORDER_TYPE_MARKET = "MARKET"
+            VALIDITY_DAY = "DAY"
+
+            def place_order(self, **kwargs):
+                calls.append(kwargs)
+                if len(calls) == 1:
+                    raise RuntimeError("Maximum allowed order requests per second exceeded.")
+                return "kite-order-2"
+
+        service = ZerodhaExecutionService()
+        service._min_order_interval = 0.0
+        service._client = Mock(return_value=FakeKite())
+
+        with patch("app.services.zerodha_execution.time.sleep", return_value=None) as sleep_mock:
+            result = service.place_market_order(
+                api_key="kite-key",
+                access_token="kite-token",
+                exchange="NSE",
+                tradingsymbol="MUTHOOTFIN",
+                transaction_type="SELL",
+                quantity=1,
+                product_type="INTRADAY",
+                correlation_id="muthootfin-exit",
+            )
+
+        self.assertTrue(result.ok)
+        self.assertEqual(result.order_id, "kite-order-2")
+        self.assertEqual(len(calls), 2)
+        sleep_mock.assert_called_with(1.15)
+
     def test_zerodha_broker_sync_uses_kite_historical_service(self) -> None:
         self.test_engine.save_credentials(
             broker_provider="zerodha",

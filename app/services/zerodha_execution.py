@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 import threading
+import time
 
 from app.services.dhan_execution import BrokerOrderResult
 
@@ -33,6 +34,9 @@ class ZerodhaExecutionService:
 
     def __init__(self) -> None:
         self._lock = threading.RLock()
+        self._order_lock = threading.Lock()
+        self._next_order_at = 0.0
+        self._min_order_interval = 0.45
         self._instrument_cache: dict[str, tuple[datetime, list[dict]]] = {}
 
     def login_url(self, api_key: str) -> str:
@@ -64,21 +68,32 @@ class ZerodhaExecutionService:
             raise ZerodhaExecutionError("Zerodha exchange and tradingsymbol are required.")
         kite = self._client(api_key=api_key, access_token=access_token)
         product = self._map_product(product_type)
-        try:
-            order_id = kite.place_order(
-                variety=kite.VARIETY_REGULAR,
-                exchange=exchange,
-                tradingsymbol=tradingsymbol,
-                transaction_type=transaction_type,
-                quantity=int(quantity),
-                product=product,
-                order_type=kite.ORDER_TYPE_MARKET,
-                validity=kite.VALIDITY_DAY,
-                market_protection=-1.0,
-                tag=self._normalize_tag(correlation_id),
-            )
-        except Exception as exc:
-            raise ZerodhaExecutionError(str(exc)) from exc
+        last_error: Exception | None = None
+        order_id = None
+        for attempt in range(2):
+            self._wait_for_order_slot()
+            try:
+                order_id = kite.place_order(
+                    variety=kite.VARIETY_REGULAR,
+                    exchange=exchange,
+                    tradingsymbol=tradingsymbol,
+                    transaction_type=transaction_type,
+                    quantity=int(quantity),
+                    product=product,
+                    order_type=kite.ORDER_TYPE_MARKET,
+                    validity=kite.VALIDITY_DAY,
+                    market_protection=-1.0,
+                    tag=self._normalize_tag(correlation_id),
+                )
+                break
+            except Exception as exc:
+                last_error = exc
+                if attempt == 0 and self._is_rate_limit_error(exc):
+                    time.sleep(1.15)
+                    continue
+                raise ZerodhaExecutionError(str(exc)) from exc
+        if order_id is None and last_error is not None:
+            raise ZerodhaExecutionError(str(last_error)) from last_error
         return BrokerOrderResult(
             ok=True,
             order_id=str(order_id or "") or None,
@@ -86,6 +101,19 @@ class ZerodhaExecutionService:
             message="Request accepted by Zerodha Kite.",
             raw={"order_id": order_id, "exchange": exchange, "tradingsymbol": tradingsymbol, "product": product},
         )
+
+    def _wait_for_order_slot(self) -> None:
+        with self._order_lock:
+            now = time.monotonic()
+            wait_seconds = max(0.0, self._next_order_at - now)
+            self._next_order_at = max(now, self._next_order_at) + self._min_order_interval
+        if wait_seconds > 0:
+            time.sleep(wait_seconds)
+
+    @staticmethod
+    def _is_rate_limit_error(exc: Exception) -> bool:
+        message = str(exc).lower()
+        return "requests per second" in message or "rate limit" in message
 
     def resolve_fno_tradingsymbol(
         self,
