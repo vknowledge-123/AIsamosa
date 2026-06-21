@@ -34,14 +34,10 @@ engine = SimulationEngine(settings)
 
 
 @app.get("/", response_class=HTMLResponse)
-async def dashboard(request: Request, request_token: str | None = None, status: str | None = None) -> HTMLResponse:
+async def dashboard(request: Request, request_token: str | None = None, status: str | None = None):
     if request_token:
-        try:
-            await run_in_threadpool(engine.generate_zerodha_session, request_token)
-        except Exception as exc:
-            query = urlencode({"zerodha_login": "error", "message": str(exc)})
-            return RedirectResponse(url=f"/?{query}", status_code=303)
-        return RedirectResponse(url="/?zerodha_login=success", status_code=303)
+        query = urlencode({"zerodha_login": "error", "message": "Use /zerodha/callback as the Kite redirect URL."})
+        return RedirectResponse(url=f"/?{query}", status_code=303)
     return templates.TemplateResponse(
         request=request,
         name="index.html",
@@ -55,11 +51,32 @@ async def zerodha_callback(request_token: str | None = None, status: str | None 
         query = urlencode({"zerodha_login": "error", "message": "Zerodha did not return request_token."})
         return RedirectResponse(url=f"/?{query}", status_code=303)
     try:
-        await run_in_threadpool(engine.generate_zerodha_session, request_token)
+        await run_in_threadpool(engine.start_zerodha_session_async, request_token)
     except Exception as exc:
         query = urlencode({"zerodha_login": "error", "message": str(exc)})
         return RedirectResponse(url=f"/?{query}", status_code=303)
-    return RedirectResponse(url="/?zerodha_login=success", status_code=303)
+    return RedirectResponse(url="/?zerodha_login=pending", status_code=303)
+
+
+@app.get("/api/static-health")
+async def static_health():
+    static_dir = app_dir / "static"
+    assets = {
+        "styles.css": static_dir / "styles.css",
+        "app.js": static_dir / "app.js",
+    }
+    return {
+        "static_dir": str(static_dir),
+        "assets": {
+            name: {
+                "exists": path.exists(),
+                "size": path.stat().st_size if path.exists() else 0,
+                "mtime": int(path.stat().st_mtime) if path.exists() else None,
+            }
+            for name, path in assets.items()
+        },
+        "static_version": static_version,
+    }
 
 
 @app.get("/api/state")
@@ -454,6 +471,15 @@ async def start_live_trading():
     return {"message": "Live heuristic trading is armed.", "state": state}
 
 
+@app.post("/api/trading/start-paper")
+async def start_live_paper_trading():
+    try:
+        state = await run_in_threadpool(engine.start_live_paper_trading)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"message": "Live paper trading is armed. No broker orders will be placed.", "state": state}
+
+
 @app.post("/api/trading/square-off")
 async def square_off_all_trades():
     try:
@@ -482,6 +508,7 @@ async def save_credentials(
     stock_execution_mode: str = Form(default="cash"),
     stock_future_lots: int = Form(default=1),
     stock_option_lots: int = Form(default=1),
+    heuristic_advance_timeframe_minutes: int = Form(default=3),
     nifty_expiry_preference: str = Form(default="current-weekly"),
     stock_partial_profit_enabled: str = Form(default="true"),
     stock_trailing_stop_enabled: str = Form(default="true"),
@@ -500,6 +527,7 @@ async def save_credentials(
     intelligent_pyramiding_enabled: str = Form(default="false"),
     stock_percent_pyramiding_enabled: str = Form(default="false"),
     stock_percent_pyramiding_step: float = Form(default=1.0),
+    stock_cost_sl_after_pyramid_enabled: str = Form(default="false"),
     nifty_point_pyramiding_enabled: str = Form(default="false"),
     nifty_point_pyramiding_points: float = Form(default=50.0),
     nifty_trade_bias: str = Form(default="both"),
@@ -518,6 +546,7 @@ async def save_credentials(
     pyramid_enabled = pyramiding_enabled.strip().lower() in {"1", "true", "yes", "on"}
     intelligent_pyramid_enabled = intelligent_pyramiding_enabled.strip().lower() in {"1", "true", "yes", "on"}
     stock_percent_pyramid_enabled = stock_percent_pyramiding_enabled.strip().lower() in {"1", "true", "yes", "on"}
+    stock_cost_after_pyramid_enabled = stock_cost_sl_after_pyramid_enabled.strip().lower() in {"1", "true", "yes", "on"}
     nifty_point_pyramid_enabled = nifty_point_pyramiding_enabled.strip().lower() in {"1", "true", "yes", "on"}
     global_mtm_enabled = global_mtm_square_off_enabled.strip().lower() in {"1", "true", "yes", "on"}
     state = await run_in_threadpool(
@@ -539,6 +568,7 @@ async def save_credentials(
         stock_execution_mode=stock_execution_mode,
         stock_future_lots=stock_future_lots,
         stock_option_lots=stock_option_lots,
+        heuristic_advance_timeframe_minutes=heuristic_advance_timeframe_minutes,
         nifty_expiry_preference=nifty_expiry_preference,
         stock_partial_profit_enabled=partial_profit_enabled,
         stock_trailing_stop_enabled=trailing_stop_enabled,
@@ -557,6 +587,7 @@ async def save_credentials(
         intelligent_pyramiding_enabled=intelligent_pyramid_enabled,
         stock_percent_pyramiding_enabled=stock_percent_pyramid_enabled,
         stock_percent_pyramiding_step=stock_percent_pyramiding_step,
+        stock_cost_sl_after_pyramid_enabled=stock_cost_after_pyramid_enabled,
         nifty_point_pyramiding_enabled=nifty_point_pyramid_enabled,
         nifty_point_pyramiding_points=nifty_point_pyramiding_points,
         nifty_trade_bias=nifty_trade_bias,

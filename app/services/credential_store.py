@@ -43,6 +43,7 @@ class CredentialStore:
         stock_execution_mode: str | None = None,
         stock_future_lots: int | None = None,
         stock_option_lots: int | None = None,
+        heuristic_advance_timeframe_minutes: int | None = None,
         nifty_expiry_preference: str | None = None,
         stock_partial_profit_enabled: bool | None = None,
         stock_trailing_stop_enabled: bool | None = None,
@@ -61,6 +62,7 @@ class CredentialStore:
         intelligent_pyramiding_enabled: bool | None = None,
         stock_percent_pyramiding_enabled: bool | None = None,
         stock_percent_pyramiding_step: float | None = None,
+        stock_cost_sl_after_pyramid_enabled: bool | None = None,
         nifty_point_pyramiding_enabled: bool | None = None,
         nifty_point_pyramiding_points: float | None = None,
         nifty_trade_bias: str | None = None,
@@ -160,6 +162,11 @@ class CredentialStore:
             if payload.get("stock_option_lots") != normalized:
                 payload["stock_option_lots"] = normalized
                 updated = True
+        if heuristic_advance_timeframe_minutes is not None:
+            normalized = min(max(int(heuristic_advance_timeframe_minutes), 1), 60)
+            if payload.get("heuristic_advance_timeframe_minutes") != normalized:
+                payload["heuristic_advance_timeframe_minutes"] = normalized
+                updated = True
         if nifty_expiry_preference and nifty_expiry_preference.strip():
             normalized = nifty_expiry_preference.strip().lower()
             if payload.get("nifty_expiry_preference") != normalized:
@@ -249,6 +256,11 @@ class CredentialStore:
             normalized = round(max(float(stock_percent_pyramiding_step), 0.0), 2)
             if payload.get("stock_percent_pyramiding_step") != normalized:
                 payload["stock_percent_pyramiding_step"] = normalized
+                updated = True
+        if stock_cost_sl_after_pyramid_enabled is not None:
+            normalized = bool(stock_cost_sl_after_pyramid_enabled)
+            if payload.get("stock_cost_sl_after_pyramid_enabled") != normalized:
+                payload["stock_cost_sl_after_pyramid_enabled"] = normalized
                 updated = True
         if nifty_point_pyramiding_enabled is not None:
             normalized = bool(nifty_point_pyramiding_enabled)
@@ -398,6 +410,8 @@ class CredentialStore:
         raw = str(payload.get("operating_mode") or settings.operating_mode or OperatingMode.full_ai.value).strip().lower()
         if raw == OperatingMode.heuristic.value:
             return OperatingMode.heuristic
+        if raw == OperatingMode.heuristic_advance.value:
+            return OperatingMode.heuristic_advance
         return OperatingMode.full_ai
 
     def get_nifty_order_lots(self, settings: Settings) -> int:
@@ -435,6 +449,14 @@ class CredentialStore:
             return max(int(raw), 1)
         except (TypeError, ValueError):
             return max(int(settings.stock_option_lots), 1)
+
+    def get_heuristic_advance_timeframe_minutes(self, settings: Settings) -> int:
+        payload = self.load()
+        raw = payload.get("heuristic_advance_timeframe_minutes", settings.heuristic_advance_timeframe_minutes)
+        try:
+            return min(max(int(raw), 1), 60)
+        except (TypeError, ValueError):
+            return min(max(int(settings.heuristic_advance_timeframe_minutes), 1), 60)
 
     def get_nifty_expiry_preference(self, settings: Settings) -> str:
         payload = self.load()
@@ -533,6 +555,13 @@ class CredentialStore:
             minimum=0.0,
         )
 
+    def get_stock_cost_sl_after_pyramid_enabled(self, settings: Settings) -> bool:
+        payload = self.load()
+        return self._coerce_bool(
+            payload.get("stock_cost_sl_after_pyramid_enabled"),
+            bool(settings.stock_cost_sl_after_pyramid_enabled),
+        )
+
     def get_nifty_option_trade_mode(self, settings: Settings) -> str:
         payload = self.load()
         return self._normalize_nifty_option_trade_mode(payload.get("nifty_option_trade_mode") or settings.nifty_option_trade_mode)
@@ -618,6 +647,7 @@ class CredentialStore:
             stock_execution_mode=self.get_stock_execution_mode(settings),
             stock_future_lots=self.get_stock_future_lots(settings),
             stock_option_lots=self.get_stock_option_lots(settings),
+            heuristic_advance_timeframe_minutes=self.get_heuristic_advance_timeframe_minutes(settings),
             nifty_expiry_preference=self.get_nifty_expiry_preference(settings),
             stock_partial_profit_enabled=self.get_stock_partial_profit_enabled(settings),
             stock_trailing_stop_enabled=self.get_stock_trailing_stop_enabled(settings),
@@ -636,6 +666,7 @@ class CredentialStore:
             intelligent_pyramiding_enabled=self.get_intelligent_pyramiding_enabled(settings),
             stock_percent_pyramiding_enabled=self.get_stock_percent_pyramiding_enabled(settings),
             stock_percent_pyramiding_step=self.get_stock_percent_pyramiding_step(settings),
+            stock_cost_sl_after_pyramid_enabled=self.get_stock_cost_sl_after_pyramid_enabled(settings),
             nifty_point_pyramiding_enabled=self.get_nifty_point_pyramiding_enabled(settings),
             nifty_point_pyramiding_points=self.get_nifty_point_pyramiding_points(settings),
             nifty_trade_bias=self.get_nifty_trade_bias(settings),

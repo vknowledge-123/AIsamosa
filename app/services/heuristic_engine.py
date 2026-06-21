@@ -6491,6 +6491,35 @@ class HeuristicDecisionEngine:
 
         if (
             stock_mode_trade
+            and context.stock_cost_sl_after_pyramid_enabled
+            and context.stock_percent_pyramiding_enabled
+            and max(int(trade.pyramid_count or 0), 0) >= 1
+            and any(leg.add_number == 1 and leg.status == "OPEN" for leg in trade.pyramid_legs)
+        ):
+            cost_tagged = (
+                context.current_candle.low <= trade.entry_spot_price
+                if bullish_trade
+                else context.current_candle.high >= trade.entry_spot_price
+            )
+            if cost_tagged:
+                return TradeDecision(
+                    action=TradeAction.exit,
+                    confidence=0.91,
+                    reason=(
+                        "Stock cost-SL after pyramiding is active: first stock percentage add was completed, "
+                        f"then price reversed back to original entry cost {trade.entry_spot_price:.2f}, "
+                        "so exit the full position at cost instead of letting the add turn the trade negative."
+                    ),
+                    decision_source="heuristic",
+                    option_type=trade.option_type,
+                    target_spot_price=round(trade.entry_spot_price, 2),
+                    market_state=observation.day_type,
+                    setup_type=trade.setup_type,
+                    rule_ids_used=["R41", "R42", "R43", "R66", "R99", "STOCK-COST-PYRAMID"],
+                )
+
+        if (
+            stock_mode_trade
             and context.stock_partial_profit_enabled
             and trade.first_target_price is not None
             and trade.partial_exit_count == 0

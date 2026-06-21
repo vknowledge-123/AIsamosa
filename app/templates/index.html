@@ -101,6 +101,7 @@
             <button type="submit" id="connectLiveBtn">Connect Live Feed</button>
             <button type="button" id="syncHistoryBtn" class="secondary-btn">Sync 1m Context</button>
             <button type="button" id="startTradingBtn">Start Trading</button>
+            <button type="button" id="startPaperTradingBtn" class="secondary-btn">Demo Trading</button>
             <button type="button" id="squareOffBtn" class="secondary-btn">Square Off</button>
             <button type="button" id="disconnectLiveBtn" class="secondary-btn">Disconnect Feed</button>
           </div>
@@ -260,7 +261,10 @@
           <select name="operating_mode">
             <option value="full-ai">Full AI Mode</option>
             <option value="heuristic">Heuristic Mode</option>
+            <option value="heuristic-advance">Heuristic Advance Mode</option>
           </select>
+          <label>Heuristic Advance Timeframe Minutes</label>
+          <input type="number" name="heuristic_advance_timeframe_minutes" min="1" max="60" step="1" value="3" />
           <label>Nifty Order Lots</label>
           <input type="number" name="nifty_order_lots" min="1" step="1" value="1" />
           <label>Stock Trade Capital</label>
@@ -338,6 +342,10 @@
           <label>Stock % Pyramiding Step</label>
           <input type="number" name="stock_percent_pyramiding_step" min="0" step="0.1" value="1" />
           <label class="checkbox-row">
+            <input type="checkbox" name="stock_cost_sl_after_pyramid_enabled" />
+            <span>Enable Stock Cost SL After First % Pyramid Add</span>
+          </label>
+          <label class="checkbox-row">
             <input type="checkbox" name="nifty_point_pyramiding_enabled" />
             <span>Enable Nifty Point-Wise Pyramiding</span>
           </label>
@@ -411,6 +419,10 @@
           <div class="list-item">
             <strong>Trading Decision Mode</strong>
             <p id="savedOperatingModeValue">full-ai</p>
+          </div>
+          <div class="list-item">
+            <strong>Advance Timeframe</strong>
+            <p id="savedHeuristicAdvanceTimeframeValue">3 min</p>
           </div>
           <div class="list-item">
             <strong>Nifty Order Lots</strong>
@@ -519,6 +531,10 @@
           <div class="list-item">
             <strong>Stock % Pyramid Step</strong>
             <p id="savedStockPercentPyramidingStepValue">1</p>
+          </div>
+          <div class="list-item">
+            <strong>Stock Cost SL After Pyramid</strong>
+            <p id="savedStockCostAfterPyramidValue">Disabled</p>
           </div>
           <div class="list-item">
             <strong>Nifty Point-Wise Pyramiding</strong>

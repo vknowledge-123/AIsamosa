@@ -21,6 +21,7 @@ class TradeAction(str, Enum):
 
 class OperatingMode(str, Enum):
     heuristic = "heuristic"
+    heuristic_advance = "heuristic-advance"
     full_ai = "full-ai"
 
 
@@ -207,11 +208,13 @@ class StrategyContext(BaseModel):
     intelligent_pyramiding_enabled: bool = False
     stock_percent_pyramiding_enabled: bool = False
     stock_percent_pyramiding_step: float = 1.0
+    stock_cost_sl_after_pyramid_enabled: bool = False
     nifty_point_pyramiding_enabled: bool = False
     nifty_point_pyramiding_points: float = 50.0
     nifty_trade_bias: str = "both"
     nifty_option_trade_mode: str = "selling"
     stock_trade_bias: str = "both"
+    heuristic_advance_timeframe_minutes: int = 3
 
 
 class PendingSetup(BaseModel):
@@ -278,6 +281,9 @@ class PyramidLeg(BaseModel):
     status: str = "OPEN"
     quantity: int
     open_quantity: int
+    broker_pending_entry_quantity: int = 0
+    broker_filled_entry_quantity: int = 0
+    broker_pending_exit_quantity: int = 0
     entry_time: datetime
     entry_price: float
     entry_spot_price: float
@@ -310,6 +316,11 @@ class SimulatedTrade(BaseModel):
     base_quantity: int | None = None
     open_quantity: int | None = None
     closed_quantity: int = 0
+    broker_pending_entry_quantity: int = 0
+    broker_filled_entry_quantity: int = 0
+    broker_pending_exit_quantity: int = 0
+    broker_pending_exit_note: str | None = None
+    broker_pending_exit_pyramid_leg_ids: list[str] = Field(default_factory=list)
     entry_time: datetime
     entry_price: float
     entry_spot_price: float
@@ -421,10 +432,12 @@ class CredentialSummary(BaseModel):
     intelligent_pyramiding_enabled: bool = False
     stock_percent_pyramiding_enabled: bool = False
     stock_percent_pyramiding_step: float = 1.0
+    stock_cost_sl_after_pyramid_enabled: bool = False
     nifty_point_pyramiding_enabled: bool = False
     nifty_point_pyramiding_points: float = 50.0
     nifty_trade_bias: str = "both"
     nifty_option_trade_mode: str = "selling"
+    heuristic_advance_timeframe_minutes: int = 3
     global_mtm_square_off_enabled: bool = False
     global_mtm_square_off_threshold: float = 0.0
     dhan_credential_message: str | None = None
@@ -434,6 +447,7 @@ class CredentialSummary(BaseModel):
 
 class ExecutionState(BaseModel):
     live_trading_enabled: bool = False
+    live_paper_trading_enabled: bool = False
     order_updates_connected: bool = False
     order_updates_status: str = "disconnected"
     order_updates_message: str | None = None

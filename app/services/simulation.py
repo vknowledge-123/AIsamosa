@@ -38,6 +38,7 @@ from app.schemas import (
     Zone,
 )
 from app.services.ai_service import AIDecisionService
+from app.services.advanced_indicator_engine import AdvancedIndicatorEngine
 from app.services.credential_store import CredentialStore
 from app.services.dhan_adapter import DhanMarketFeedAdapter, resolve_quote_subscription
 from app.services.dhan_execution import DhanExecutionError, DhanExecutionService
@@ -104,6 +105,7 @@ class SimulationEngine:
         self.zerodha_chart_service = ZerodhaChartService(self.zerodha_execution_service)
         self.stock_universe = StockUniverseService()
         self.heuristic_engine = HeuristicDecisionEngine()
+        self.advanced_indicator_engine = AdvancedIndicatorEngine()
         self._configure_ai_service()
         self.operating_mode = self.credential_store.get_operating_mode(settings)
         self.instrument_mode = InstrumentMode.nifty
@@ -174,6 +176,7 @@ class SimulationEngine:
         self._runtime_dhan_client_id = ""
         self._runtime_dhan_access_token = ""
         self.live_trading_enabled = False
+        self.live_paper_trading_enabled = False
         self._global_mtm_square_off_triggered = False
         self.pending_setup: PendingSetup | None = None
         self._default_heuristic_engine = self.heuristic_engine
@@ -344,6 +347,9 @@ class SimulationEngine:
 
     def _stock_percent_pyramiding_step(self) -> float:
         return self.credential_store.get_stock_percent_pyramiding_step(self.settings)
+
+    def _stock_cost_sl_after_pyramid_enabled(self) -> bool:
+        return self.credential_store.get_stock_cost_sl_after_pyramid_enabled(self.settings)
 
     def _nifty_expiry_preference(self) -> str:
         return self.credential_store.get_nifty_expiry_preference(self.settings)
@@ -770,12 +776,56 @@ class SimulationEngine:
             self._mark_state_dirty_locked()
         return self.get_state()
 
+    def start_zerodha_session_async(self, request_token: str) -> DashboardState:
+        if not request_token.strip():
+            raise ValueError("Zerodha request token is required.")
+        api_key, api_secret, _ = self._available_zerodha_credentials()
+        if not api_key or not api_secret:
+            raise ValueError("Save Zerodha API key and API secret before generating access token.")
+        job_id = uuid.uuid4().hex[:10]
+        with self.lock:
+            self._operation_job_token = job_id
+            self._set_operation_job_locked(
+                job_id=job_id,
+                job_type="zerodha-auth",
+                status="running",
+                message="Generating Zerodha Kite access token in the background.",
+                started_at=datetime.now(),
+            )
+            self.rulebook_service.learning_log.insert(0, "Zerodha callback received; access-token generation started.")
+            self._mark_state_dirty_locked()
+
+        worker = threading.Thread(
+            target=self._run_operation_job,
+            kwargs={
+                "job_id": job_id,
+                "job_type": "zerodha-auth",
+                "target": lambda: self.generate_zerodha_session(request_token),
+                "success_message": "Zerodha Kite access token generated and saved.",
+                "error_prefix": "Zerodha token generation failed",
+            },
+            name=f"zerodha-auth-{job_id}",
+            daemon=True,
+        )
+        worker.start()
+        return self.get_state()
+
     def _normalize_replay_decision_duration_minutes(self, minutes: int | None) -> int:
         try:
             normalized = int(minutes or 1)
         except (TypeError, ValueError):
             normalized = 1
         return min(max(normalized, 1), 60)
+
+    def _heuristic_advance_timeframe_minutes(self) -> int:
+        return self.credential_store.get_heuristic_advance_timeframe_minutes(self.settings)
+
+    def _effective_decision_timeframe_minutes(self, source: str, replay_decision_duration_minutes: int) -> int:
+        if self.operating_mode == OperatingMode.heuristic_advance:
+            return self._heuristic_advance_timeframe_minutes()
+        if source == "replay":
+            return replay_decision_duration_minutes
+        return 1
 
     def _minutes_since_session_open(self, candle_time: datetime) -> int:
         session_open = candle_time.replace(hour=9, minute=15, second=0, microsecond=0)
@@ -825,15 +875,16 @@ class SimulationEngine:
         source: str,
         replay_decision_duration_minutes: int,
     ) -> StrategyContext:
-        if source != "replay" or replay_decision_duration_minutes <= 1:
+        effective_timeframe = self._effective_decision_timeframe_minutes(source, replay_decision_duration_minutes)
+        if effective_timeframe <= 1:
             return self.build_context()
         session_candles = self._aggregate_candles(
             get_session_candles_up_to_index(self.candles, evaluation_index),
-            replay_decision_duration_minutes,
+            effective_timeframe,
         )
         previous_day_candles = self._aggregate_candles(
             get_previous_day_candles(self.candles, evaluation_index),
-            replay_decision_duration_minutes,
+            effective_timeframe,
         )
         (
             companion_session_candles,
@@ -843,7 +894,7 @@ class SimulationEngine:
             companion_previous_day,
         ) = self._build_companion_snapshot_locked(
             evaluation_index=evaluation_index,
-            replay_decision_duration_minutes=replay_decision_duration_minutes,
+            replay_decision_duration_minutes=effective_timeframe,
             source=source,
         )
         current_candle = session_candles[-1] if session_candles else self.candles[evaluation_index]
@@ -910,11 +961,13 @@ class SimulationEngine:
             intelligent_pyramiding_enabled=False if self._stock_derivative_execution_mode_enabled() else self.credential_store.get_intelligent_pyramiding_enabled(self.settings),
             stock_percent_pyramiding_enabled=False if self._stock_derivative_execution_mode_enabled() else self._stock_percent_pyramiding_enabled(),
             stock_percent_pyramiding_step=self._stock_percent_pyramiding_step(),
+            stock_cost_sl_after_pyramid_enabled=self._stock_cost_sl_after_pyramid_enabled(),
             nifty_point_pyramiding_enabled=self._nifty_point_pyramiding_enabled(),
             nifty_point_pyramiding_points=self._nifty_point_pyramiding_points(),
             nifty_trade_bias=self._nifty_trade_bias(),
             nifty_option_trade_mode=self.credential_store.get_nifty_option_trade_mode(self.settings),
             stock_trade_bias=self.stock_watch_meta.get(self.instrument_spec.symbol, {}).get("trade_bias", "both"),
+            heuristic_advance_timeframe_minutes=self._heuristic_advance_timeframe_minutes(),
         )
 
     def _ensure_default_stock_watchlist(self) -> None:
@@ -2362,8 +2415,8 @@ class SimulationEngine:
         return state
 
     def start_live_trading(self) -> DashboardState:
-        if self.operating_mode != OperatingMode.heuristic:
-            raise ValueError("Switch Trading Decision Mode to Heuristic before starting real order automation.")
+        if self.operating_mode not in {OperatingMode.heuristic, OperatingMode.heuristic_advance}:
+            raise ValueError("Switch Trading Decision Mode to Heuristic or Heuristic Advance before starting real order automation.")
         broker = self._selected_broker_provider()
         client_id, access_token = self._available_dhan_credentials()
         if broker == "zerodha":
@@ -2386,8 +2439,10 @@ class SimulationEngine:
                 if selected_symbol and selected_symbol in self.stock_sessions:
                     self._load_stock_session_locked(selected_symbol)
             self.live_trading_enabled = True
+            self.live_paper_trading_enabled = False
             self._global_mtm_square_off_triggered = False
             self.execution_state.live_trading_enabled = True
+            self.execution_state.live_paper_trading_enabled = False
             self.execution_state.last_order_message = "Live heuristic execution is armed."
             if broker == "zerodha":
                 self.execution_state.order_updates_connected = True
@@ -2413,6 +2468,53 @@ class SimulationEngine:
             self._mark_state_dirty_locked()
             return self.get_state()
 
+    def start_live_paper_trading(self) -> DashboardState:
+        if self.operating_mode not in {OperatingMode.heuristic, OperatingMode.heuristic_advance}:
+            raise ValueError("Switch Trading Decision Mode to Heuristic or Heuristic Advance before starting demo trading.")
+        with self.lock:
+            if self.live_feed_adapter is None:
+                raise ValueError("Connect the selected live feed before starting demo trading.")
+        self._stop_order_updates()
+        with self.lock:
+            if self.live_feed_adapter is None:
+                raise ValueError("Connect the selected live feed before starting demo trading.")
+            cleared_symbols: list[str] = []
+            if self.instrument_mode == InstrumentMode.stock:
+                selected_symbol = self.selected_stock_symbol
+                if selected_symbol:
+                    self._capture_stock_session_locked(selected_symbol)
+                for symbol, session in self.stock_sessions.items():
+                    if self._clear_simulated_active_trade_from_session(session):
+                        cleared_symbols.append(symbol)
+                if selected_symbol and selected_symbol in self.stock_sessions:
+                    self._load_stock_session_locked(selected_symbol)
+            elif self.active_trade is not None and not self._trade_is_broker_backed(self.active_trade):
+                self.trade_history = [item for item in self.trade_history if item.trade_id != self.active_trade.trade_id]
+                self.active_trade = None
+            self.live_trading_enabled = False
+            self.live_paper_trading_enabled = True
+            self._global_mtm_square_off_triggered = False
+            self.execution_state.live_trading_enabled = False
+            self.execution_state.live_paper_trading_enabled = True
+            self.execution_state.order_updates_connected = False
+            self.execution_state.order_updates_status = "paper"
+            self.execution_state.order_updates_message = "Demo trading is armed. Orders are simulated from live websocket decisions only."
+            self.execution_state.last_order_error = None
+            self.execution_state.last_order_error_at = None
+            self.execution_state.last_order_message = "Live paper trading is armed."
+            if cleared_symbols:
+                cleared_list = ", ".join(sorted(cleared_symbols))
+                self.rulebook_service.learning_log.insert(
+                    0,
+                    f"Cleared old simulated stock trades before arming demo trading: {cleared_list}.",
+                )
+            self.rulebook_service.learning_log.insert(
+                0,
+                "Started live paper trading. Signals use realtime websocket data, but no broker orders will be placed.",
+            )
+            self._mark_state_dirty_locked()
+            return self.get_state()
+
     def square_off_all_trades(self) -> DashboardState:
         return self._square_off_all_trades_with_reason("Manual square off button pressed.")
 
@@ -2420,12 +2522,15 @@ class SimulationEngine:
         client_id, access_token = self._available_dhan_credentials()
         broker = self._selected_broker_provider()
         with self.lock:
+            was_live_paper = self.live_paper_trading_enabled
             self.live_trading_enabled = False
+            self.live_paper_trading_enabled = False
             self.execution_state.live_trading_enabled = False
+            self.execution_state.live_paper_trading_enabled = False
             self.execution_state.last_order_message = f"{reason} Live heuristic execution is disarmed."
             self._mark_state_dirty_locked()
         squared_off = 0
-        if broker == "zerodha" or (client_id and access_token):
+        if was_live_paper or broker == "zerodha" or (client_id and access_token):
             if self.instrument_mode == InstrumentMode.stock:
                 watched_symbols = list(self.stock_watchlist.keys())
                 selected = self.selected_stock_symbol
@@ -2630,12 +2735,63 @@ class SimulationEngine:
                 bundles[symbol] = (spec, bundle)
         return bundles, skipped
 
+    def _order_update_status(self, payload: dict) -> str:
+        return str(
+            payload.get("Status")
+            or payload.get("status")
+            or payload.get("orderStatus")
+            or payload.get("order_status")
+            or ""
+        ).strip().upper()
+
+    def _order_status_is_filled(self, status: str) -> bool:
+        normalized = status.strip().upper().replace(" ", "_")
+        return normalized in {"TRADED", "COMPLETE", "COMPLETED", "FILLED", "EXECUTED"}
+
+    def _order_status_is_rejected_or_cancelled(self, status: str) -> bool:
+        normalized = status.strip().upper().replace(" ", "_")
+        return normalized in {"REJECTED", "CANCELLED", "CANCELED", "EXPIRED", "FAILED"}
+
+    def _order_update_quantity(self, payload: dict, fallback: int = 0) -> int:
+        for key in (
+            "TradedQty",
+            "tradedQty",
+            "tradedQuantity",
+            "filledQuantity",
+            "filled_quantity",
+            "filledQty",
+            "quantity",
+            "Quantity",
+        ):
+            raw = payload.get(key)
+            if raw in (None, ""):
+                continue
+            try:
+                quantity = int(float(raw))
+            except (TypeError, ValueError):
+                continue
+            if quantity > 0:
+                return quantity
+        return max(int(fallback or 0), 0)
+
+    def _order_update_price(self, payload: dict) -> float | None:
+        raw = payload.get("AvgTradedPrice") or payload.get("averageTradedPrice") or payload.get("average_price")
+        if raw in (None, ""):
+            return None
+        try:
+            return round(float(raw), 2)
+        except (TypeError, ValueError):
+            return None
+
     def _apply_order_update_to_trade_locked(self, trade: SimulatedTrade | None, payload: dict) -> None:
         if trade is None:
             return
         order_id = str(payload.get("OrderNo") or payload.get("orderNo") or payload.get("orderId") or "").strip()
         if not order_id:
             return
+        status = self._order_update_status(payload)
+        status_message = self._format_order_update_message(payload)
+        traded_price = self._order_update_price(payload)
         if order_id not in {trade.broker_order_id, trade.broker_exit_order_id}:
             matched_leg = next(
                 (
@@ -2647,48 +2803,115 @@ class SimulationEngine:
             )
             if matched_leg is None:
                 return
-            matched_leg.broker_status = str(payload.get("Status") or payload.get("status") or payload.get("orderStatus") or "").strip() or matched_leg.broker_status
-            matched_leg.broker_status_message = self._format_order_update_message(payload)
+            matched_leg.broker_status = status or matched_leg.broker_status
+            matched_leg.broker_status_message = status_message
             trade.broker_status = matched_leg.broker_status
             trade.broker_status_message = matched_leg.broker_status_message
-            avg_traded_price = payload.get("AvgTradedPrice") or payload.get("averageTradedPrice")
-            if avg_traded_price not in (None, ""):
-                try:
-                    traded_price = round(float(avg_traded_price), 2)
-                except (TypeError, ValueError):
+            if order_id == matched_leg.broker_order_id:
+                if self._order_status_is_rejected_or_cancelled(status):
+                    matched_leg.status = status or "REJECTED"
+                    matched_leg.open_quantity = 0
+                    matched_leg.broker_pending_entry_quantity = 0
+                    trade.pyramid_count = max(
+                        sum(1 for leg in trade.pyramid_legs if leg.status in {"OPEN", "PENDING"} and leg.status != matched_leg.status),
+                        0,
+                    )
                     return
-                if order_id == matched_leg.broker_order_id and matched_leg.status == "OPEN":
-                    old_price = matched_leg.entry_price
-                    matched_leg.entry_price = traded_price
-                    if (trade.open_quantity or 0) > 0:
-                        trade.entry_price = round(
-                            trade.entry_price + ((traded_price - old_price) * matched_leg.open_quantity / (trade.open_quantity or 1)),
-                            2,
-                        )
+                if self._order_status_is_filled(status):
+                    fill_quantity = self._order_update_quantity(payload, matched_leg.broker_pending_entry_quantity or matched_leg.quantity)
+                    fill_quantity = max(min(fill_quantity, matched_leg.quantity), 0)
+                    if fill_quantity <= 0:
+                        return
+                    fill_price = traded_price if traded_price is not None else matched_leg.entry_price
+                    old_open_quantity = max(int(trade.open_quantity or 0), 0)
+                    old_entry_value = trade.entry_price * old_open_quantity
+                    matched_leg.status = "OPEN"
+                    matched_leg.open_quantity = fill_quantity
+                    matched_leg.broker_filled_entry_quantity = fill_quantity
+                    matched_leg.broker_pending_entry_quantity = 0
+                    matched_leg.entry_price = fill_price
+                    trade.quantity = max(int(trade.quantity or 0), old_open_quantity) + fill_quantity
+                    trade.open_quantity = old_open_quantity + fill_quantity
+                    if trade.open_quantity > 0:
+                        trade.entry_price = round((old_entry_value + (fill_price * fill_quantity)) / trade.open_quantity, 2)
                         trade.entry_option_price = trade.entry_price
-                    trade.current_price = traded_price
-                    trade.current_option_price = traded_price
+                    trade.current_price = fill_price
+                    trade.current_option_price = fill_price
                     trade.current_quote_source = "dhan-order-update"
-                elif order_id == matched_leg.broker_exit_order_id:
-                    matched_leg.exit_price = traded_price
-            return
-        trade.broker_status = str(payload.get("Status") or payload.get("status") or payload.get("orderStatus") or "").strip() or trade.broker_status
-        trade.broker_status_message = self._format_order_update_message(payload)
-        avg_traded_price = payload.get("AvgTradedPrice") or payload.get("averageTradedPrice")
-        if avg_traded_price not in (None, ""):
-            try:
-                traded_price = round(float(avg_traded_price), 2)
-            except (TypeError, ValueError):
+                    trade.current_quote_time = datetime.now()
+                    trade.pnl = self.calculate_trade_pnl(trade, trade.current_price)
                 return
-            if order_id == trade.broker_order_id:
-                trade.entry_price = traded_price
-                trade.entry_option_price = traded_price
-                trade.current_price = traded_price
-                trade.current_option_price = traded_price
+            if order_id == matched_leg.broker_exit_order_id:
+                if self._order_status_is_filled(status):
+                    matched_leg.exit_price = traded_price if traded_price is not None else matched_leg.exit_price
+                    self._close_pyramid_legs(
+                        Candle(
+                            timestamp=datetime.now(),
+                            open=matched_leg.exit_price or trade.current_price,
+                            high=matched_leg.exit_price or trade.current_price,
+                            low=matched_leg.exit_price or trade.current_price,
+                            close=matched_leg.exit_price or trade.current_price,
+                            volume=0.0,
+                        ),
+                        trade.broker_pending_exit_note or trade.exit_notes or "Broker confirmed pyramid-leg exit.",
+                        [matched_leg.leg_id],
+                    )
+            return
+        trade.broker_status = status or trade.broker_status
+        trade.broker_status_message = status_message
+        if order_id == trade.broker_order_id:
+            if self._order_status_is_rejected_or_cancelled(status):
+                trade.broker_pending_entry_quantity = 0
+                trade.status = status or trade.status
+                if trade is self.active_trade and max(int(trade.open_quantity or 0), 0) <= 0:
+                    self.active_trade = None
+                return
+            if self._order_status_is_filled(status):
+                fill_quantity = self._order_update_quantity(payload, trade.broker_pending_entry_quantity or trade.quantity)
+                fill_quantity = max(min(fill_quantity, trade.quantity), 0)
+                fill_price = traded_price if traded_price is not None else trade.entry_price
+                trade.broker_pending_entry_quantity = 0
+                trade.broker_filled_entry_quantity = fill_quantity
+                trade.open_quantity = fill_quantity
+                trade.entry_price = fill_price
+                trade.entry_option_price = fill_price
+                trade.current_price = fill_price
+                trade.current_option_price = fill_price
                 trade.current_quote_source = "dhan-order-update"
-            elif order_id == trade.broker_exit_order_id:
-                trade.exit_price = traded_price
-                trade.exit_option_price = traded_price
+                trade.current_quote_time = datetime.now()
+                trade.pnl = self.calculate_trade_pnl(trade, trade.current_price)
+            return
+        if order_id == trade.broker_exit_order_id:
+            if not self._order_status_is_filled(status):
+                return
+            fill_quantity = self._order_update_quantity(
+                payload,
+                trade.broker_pending_exit_quantity or (trade.open_quantity if trade.open_quantity is not None else trade.quantity),
+            )
+            fill_price = traded_price if traded_price is not None else trade.current_price
+            trade.broker_pending_exit_quantity = 0
+            exit_candle = Candle(
+                timestamp=datetime.now(),
+                open=fill_price,
+                high=fill_price,
+                low=fill_price,
+                close=fill_price,
+                volume=0.0,
+            )
+            open_quantity = trade.open_quantity if trade.open_quantity is not None else trade.quantity
+            if trade is self.active_trade:
+                if fill_quantity >= open_quantity:
+                    self.close_active_trade(exit_candle, trade.broker_pending_exit_note or trade.exit_notes or "Broker confirmed exit.", exit_price_override=fill_price)
+                else:
+                    self.partial_exit_active_trade(
+                        exit_candle,
+                        trade.broker_pending_exit_note or trade.exit_notes or "Broker confirmed partial exit.",
+                        quantity=fill_quantity,
+                        exit_price_override=fill_price,
+                    )
+            else:
+                trade.exit_price = fill_price
+                trade.exit_option_price = fill_price
 
     def _apply_order_update_to_all_trades_locked(self, payload: dict) -> None:
         seen: set[int] = set()
@@ -3818,6 +4041,7 @@ class SimulationEngine:
         stock_execution_mode: str | None = None,
         stock_future_lots: int | None = None,
         stock_option_lots: int | None = None,
+        heuristic_advance_timeframe_minutes: int | None = None,
         nifty_expiry_preference: str | None = None,
         stock_partial_profit_enabled: bool | None = None,
         stock_trailing_stop_enabled: bool | None = None,
@@ -3836,6 +4060,7 @@ class SimulationEngine:
         intelligent_pyramiding_enabled: bool | None = None,
         stock_percent_pyramiding_enabled: bool | None = None,
         stock_percent_pyramiding_step: float | None = None,
+        stock_cost_sl_after_pyramid_enabled: bool | None = None,
         nifty_point_pyramiding_enabled: bool | None = None,
         nifty_point_pyramiding_points: float | None = None,
         nifty_trade_bias: str | None = None,
@@ -3862,6 +4087,7 @@ class SimulationEngine:
                 stock_execution_mode=stock_execution_mode,
                 stock_future_lots=stock_future_lots,
                 stock_option_lots=stock_option_lots,
+                heuristic_advance_timeframe_minutes=heuristic_advance_timeframe_minutes,
                 nifty_expiry_preference=nifty_expiry_preference,
                 stock_partial_profit_enabled=stock_partial_profit_enabled,
                 stock_trailing_stop_enabled=stock_trailing_stop_enabled,
@@ -3880,6 +4106,7 @@ class SimulationEngine:
                 intelligent_pyramiding_enabled=intelligent_pyramiding_enabled,
                 stock_percent_pyramiding_enabled=stock_percent_pyramiding_enabled,
                 stock_percent_pyramiding_step=stock_percent_pyramiding_step,
+                stock_cost_sl_after_pyramid_enabled=stock_cost_sl_after_pyramid_enabled,
                 nifty_point_pyramiding_enabled=nifty_point_pyramiding_enabled,
                 nifty_point_pyramiding_points=nifty_point_pyramiding_points,
                 nifty_trade_bias=nifty_trade_bias,
@@ -4070,10 +4297,13 @@ class SimulationEngine:
             intelligent_pyramiding_enabled=False if self._stock_derivative_execution_mode_enabled() else self.credential_store.get_intelligent_pyramiding_enabled(self.settings),
             stock_percent_pyramiding_enabled=False if self._stock_derivative_execution_mode_enabled() else self._stock_percent_pyramiding_enabled(),
             stock_percent_pyramiding_step=self._stock_percent_pyramiding_step(),
+            stock_cost_sl_after_pyramid_enabled=self._stock_cost_sl_after_pyramid_enabled(),
             nifty_point_pyramiding_enabled=self._nifty_point_pyramiding_enabled(),
             nifty_point_pyramiding_points=self._nifty_point_pyramiding_points(),
             nifty_trade_bias=self._nifty_trade_bias(),
             nifty_option_trade_mode=self.credential_store.get_nifty_option_trade_mode(self.settings),
+            stock_trade_bias=self.stock_watch_meta.get(self.instrument_spec.symbol, {}).get("trade_bias", "both"),
+            heuristic_advance_timeframe_minutes=self._heuristic_advance_timeframe_minutes(),
         )
 
     def get_state(self) -> DashboardState:
@@ -4585,9 +4815,12 @@ class SimulationEngine:
                     return
                 self.current_index = evaluation_index
                 self._clear_pending_setup_if_new_session_locked(self.candles[evaluation_index])
-                if source == "replay" and not self._is_replay_decision_boundary(
+                if self.operating_mode == OperatingMode.heuristic_advance and self.pending_setup is not None:
+                    self.pending_setup = None
+                effective_timeframe = self._effective_decision_timeframe_minutes(source, replay_decision_duration_minutes)
+                if effective_timeframe > 1 and not self._is_replay_decision_boundary(
                     evaluation_index,
-                    replay_decision_duration_minutes,
+                    effective_timeframe,
                 ):
                     if self.active_trade and self.active_trade.current_quote_source == "simulated":
                         self.active_trade.current_price = self.current_trade_market_price(
@@ -4608,7 +4841,7 @@ class SimulationEngine:
                     replay_decision_duration_minutes=replay_decision_duration_minutes,
                 )
                 trigger_decision = None
-                if not self._stock_pre_arm_paper_execution_disabled(source):
+                if self.operating_mode != OperatingMode.heuristic_advance and not self._stock_pre_arm_paper_execution_disabled(source):
                     trigger_decision = self.evaluate_pending_setup_trigger(snapshot.current_candle)
                 if trigger_decision is not None:
                     trigger_decision = self._apply_stock_trade_bias_filter_locked(trigger_decision)
@@ -4627,7 +4860,9 @@ class SimulationEngine:
                     self._mark_state_dirty_locked()
                     return
             heuristic_decision = self.heuristic_decision(snapshot)
-            if source == "replay" and self.instrument_mode == InstrumentMode.nifty and self.instrument_spec.symbol == "NIFTY":
+            if self.operating_mode == OperatingMode.heuristic_advance:
+                decision = heuristic_decision
+            elif source == "replay" and self.instrument_mode == InstrumentMode.nifty and self.instrument_spec.symbol == "NIFTY":
                 decision = heuristic_decision
             else:
                 decision = self.ai_service.decide(snapshot, heuristic_decision, self.operating_mode)
@@ -5753,6 +5988,21 @@ class SimulationEngine:
                     )
                     self._mark_state_dirty_locked()
                     return True
+            if (
+                exit_note is None
+                and self.instrument_mode == InstrumentMode.stock
+                and trade.price_mode == "cash"
+                and self._stock_cost_sl_after_pyramid_enabled()
+                and self._stock_percent_pyramiding_enabled()
+                and max(int(trade.pyramid_count or 0), 0) >= 1
+                and any(leg.add_number == 1 and leg.status == "OPEN" for leg in trade.pyramid_legs)
+            ):
+                cost_hit = ltp <= trade.entry_spot_price if bullish_trade else ltp >= trade.entry_spot_price
+                if cost_hit:
+                    exit_note = (
+                        "Stock cost-SL after pyramiding triggered: first stock percentage add was completed, "
+                        f"then live price {ltp:.2f} returned to original entry cost {trade.entry_spot_price:.2f}."
+                    )
             if exit_note is None:
                 return False
             exit_candle = Candle(
@@ -5940,7 +6190,7 @@ class SimulationEngine:
 
     def _global_mtm_square_off_note_locked(self, reference_time: datetime | None = None) -> str | None:
         if (
-            not self.live_trading_enabled
+            not self._live_execution_armed()
             or self._global_mtm_square_off_triggered
             or not self._global_mtm_square_off_enabled()
         ):
@@ -5965,12 +6215,24 @@ class SimulationEngine:
             if note is None:
                 return
             self._global_mtm_square_off_triggered = True
-        self._square_off_all_trades_with_reason(note)
+            self._square_off_all_trades_with_reason(note)
+
+    def _live_execution_armed(self) -> bool:
+        return bool(self.live_trading_enabled or self.live_paper_trading_enabled)
 
     def heuristic_decision(self, context: StrategyContext) -> TradeDecision:
         current_trade_price = None
         if context.active_trade is not None:
             current_trade_price = self.current_trade_market_price(context.current_candle.close, context.active_trade)
+        if self.operating_mode == OperatingMode.heuristic_advance:
+            if context.active_trade is not None:
+                decision = self.heuristic_engine.decide(context, current_trade_price=current_trade_price)
+                decision.decision_source = "heuristic-advance-exit"
+                return decision
+            decision = self.advanced_indicator_engine.decide(context.previous_day_candles + context.session_candles)
+            if context.instrument.supports_options and decision.action in {TradeAction.enter_call, TradeAction.enter_put}:
+                decision.strike = decision.strike or self.select_itm_strike(context.current_candle.close, decision.option_type or "CE")
+            return decision
         decision = self.heuristic_engine.decide(context, current_trade_price=current_trade_price)
         decision.decision_source = "heuristic"
         if context.instrument.supports_options and decision.action in {TradeAction.enter_call, TradeAction.enter_put}:
@@ -5981,7 +6243,8 @@ class SimulationEngine:
         return (
             source == "live"
             and self.live_trading_enabled
-            and self.operating_mode == OperatingMode.heuristic
+            and not self.live_paper_trading_enabled
+            and self.operating_mode in {OperatingMode.heuristic, OperatingMode.heuristic_advance}
             and self.live_feed_adapter is not None
         )
 
@@ -6233,7 +6496,7 @@ class SimulationEngine:
             self.instrument_mode == InstrumentMode.stock
             and not self.instrument_spec.supports_options
             and source in {"sync", "live"}
-            and not self.live_trading_enabled
+            and not self._live_execution_armed()
         )
 
     def _stock_live_trading_disabled_locked(self) -> bool:
@@ -6246,6 +6509,22 @@ class SimulationEngine:
         if trade is None:
             return False
         return bool(trade.broker_order_id or trade.broker_entry_correlation_id)
+
+    def _trade_has_pending_broker_entry(self, trade: SimulatedTrade | None) -> bool:
+        return bool(trade is not None and max(int(trade.broker_pending_entry_quantity or 0), 0) > 0)
+
+    def _trade_has_pending_broker_exit(self, trade: SimulatedTrade | None) -> bool:
+        if trade is None:
+            return False
+        return bool(
+            max(int(trade.broker_pending_exit_quantity or 0), 0) > 0
+            or any(max(int(leg.broker_pending_exit_quantity or 0), 0) > 0 for leg in trade.pyramid_legs)
+        )
+
+    def _trade_has_pending_broker_add(self, trade: SimulatedTrade | None) -> bool:
+        if trade is None:
+            return False
+        return any(max(int(leg.broker_pending_entry_quantity or 0), 0) > 0 for leg in trade.pyramid_legs)
 
     def _clear_simulated_active_trade_from_session(self, session: StockRuntimeSession) -> bool:
         trade = session.active_trade
@@ -6486,9 +6765,12 @@ class SimulationEngine:
         trade.broker_entry_correlation_id = correlation_id
         trade.broker_status = result.order_status or "PENDING"
         trade.broker_status_message = result.message
+        trade.broker_pending_entry_quantity = trade.quantity
+        trade.broker_filled_entry_quantity = 0
+        trade.open_quantity = 0
         trade.entry_quote_source = f"{trade.broker_provider or self._selected_broker_provider()}-market-order"
         trade.current_quote_source = trade.entry_quote_source
-        success_message = f"Live entry order sent for {trade.symbol} with qty {trade.quantity}."
+        success_message = f"Live entry order sent for {trade.symbol} with qty {trade.quantity}; waiting for traded update."
         self._record_execution_feedback_locked(symbol=trade.symbol, message=success_message)
         self.rulebook_service.learning_log.insert(0, success_message)
         self._finalize_open_trade(current_candle, trade, decision.reason)
@@ -6505,6 +6787,16 @@ class SimulationEngine:
             return False
         trade = self.active_trade
         open_quantity = trade.open_quantity if trade.open_quantity is not None else trade.quantity
+        if open_quantity <= 0:
+            message = f"Live exit skipped for {trade.symbol}: no broker-confirmed open quantity yet."
+            self._record_execution_feedback_locked(symbol=trade.symbol, message=message)
+            self.rulebook_service.learning_log.insert(0, message)
+            return False
+        if self._trade_has_pending_broker_exit(trade):
+            message = f"Live exit skipped for {trade.symbol}: an exit order is already pending broker confirmation."
+            self._record_execution_feedback_locked(symbol=trade.symbol, message=message)
+            self.rulebook_service.learning_log.insert(0, message)
+            return False
         exit_quantity = open_quantity if quantity is None else max(1, min(quantity, open_quantity))
         transaction_type = "SELL" if self._is_long_trade_direction(trade.direction) else "BUY"
         correlation_id = (
@@ -6540,24 +6832,21 @@ class SimulationEngine:
         trade.broker_exit_correlation_id = correlation_id
         trade.broker_status = result.order_status or "PENDING"
         trade.broker_status_message = result.message
-        success_message = f"Live exit order sent for {trade.symbol} with qty {exit_quantity}."
+        trade.broker_pending_exit_quantity = exit_quantity
+        trade.broker_pending_exit_note = note
+        trade.broker_pending_exit_pyramid_leg_ids = list(pyramid_leg_ids or [])
+        if pyramid_leg_ids:
+            for leg in trade.pyramid_legs:
+                if leg.leg_id in set(pyramid_leg_ids):
+                    leg.broker_exit_order_id = result.order_id
+                    leg.broker_exit_correlation_id = correlation_id
+                    leg.broker_status = result.order_status or "PENDING"
+                    leg.broker_status_message = result.message
+                    leg.broker_pending_exit_quantity = max(int(leg.open_quantity or 0), 0)
+        success_message = f"Live exit order sent for {trade.symbol} with qty {exit_quantity}; waiting for traded update."
         self._record_execution_feedback_locked(symbol=trade.symbol, message=success_message)
         self.rulebook_service.learning_log.insert(0, success_message)
         self._mark_state_dirty_locked()
-        if pyramid_leg_ids:
-            self._close_pyramid_legs(
-                current_candle,
-                note,
-                pyramid_leg_ids,
-                broker_exit_order_id=result.order_id,
-                broker_exit_correlation_id=correlation_id,
-                broker_status=result.order_status or "PENDING",
-                broker_status_message=result.message,
-            )
-        elif exit_quantity >= open_quantity:
-            self.close_active_trade(current_candle, note)
-        else:
-            self.partial_exit_active_trade(current_candle, note, quantity=exit_quantity)
         return True
 
     def _add_to_active_trade(
@@ -6665,6 +6954,7 @@ class SimulationEngine:
             leg.broker_exit_correlation_id = broker_exit_correlation_id or leg.broker_exit_correlation_id
             leg.broker_status = broker_status or leg.broker_status
             leg.broker_status_message = broker_status_message or leg.broker_status_message
+            leg.broker_pending_exit_quantity = 0
         new_open_quantity = max(old_open_quantity - exit_quantity, 0)
         if new_open_quantity > 0:
             remaining_value = max((trade.entry_price * old_open_quantity) - removed_value, 0.0)
@@ -6681,6 +6971,9 @@ class SimulationEngine:
         trade.pnl = self.calculate_trade_pnl(trade, exit_price)
         trade.exit_notes = note
         trade.notes = note
+        trade.broker_pending_exit_quantity = 0
+        trade.broker_pending_exit_pyramid_leg_ids = []
+        trade.broker_pending_exit_note = None
         self._mark_state_dirty_locked()
         return True
 
@@ -6688,6 +6981,11 @@ class SimulationEngine:
         if not self.active_trade:
             return False
         trade = self.active_trade
+        if self._trade_has_pending_broker_entry(trade) or self._trade_has_pending_broker_add(trade):
+            message = f"Live add skipped for {trade.symbol}: an entry/add order is already pending broker confirmation."
+            self._record_execution_feedback_locked(symbol=trade.symbol, message=message)
+            self.rulebook_service.learning_log.insert(0, message)
+            return False
         base_quantity = max(int(trade.base_quantity or trade.quantity or 1), 1)
         add_quantity = base_quantity
         transaction_type = "BUY" if self._is_long_trade_direction(trade.direction) else "SELL"
@@ -6718,23 +7016,49 @@ class SimulationEngine:
             return False
         trade.broker_status = result.order_status or "PENDING"
         trade.broker_status_message = result.message
-        success_message = f"Live pyramiding add order sent for {trade.symbol} with qty {add_quantity}."
+        success_message = f"Live pyramiding add order sent for {trade.symbol} with qty {add_quantity}; waiting for traded update."
         self._record_execution_feedback_locked(symbol=trade.symbol, message=success_message)
         self.rulebook_service.learning_log.insert(0, success_message)
-        return self._add_to_active_trade(
-            current_candle,
-            decision.reason,
-            quantity=add_quantity,
-            add_invalidation_level=decision.invalidation_level,
-            broker_order_id=result.order_id,
-            broker_entry_correlation_id=correlation_id,
-            broker_status=result.order_status or "PENDING",
-            broker_status_message=result.message,
+        trade.pyramid_count += 1
+        trade.last_pyramid_time = current_candle.timestamp
+        trade.pyramid_legs.append(
+            PyramidLeg(
+                leg_id=uuid.uuid4().hex[:10],
+                add_number=trade.pyramid_count,
+                status="PENDING",
+                quantity=add_quantity,
+                open_quantity=0,
+                broker_pending_entry_quantity=add_quantity,
+                entry_time=current_candle.timestamp,
+                entry_price=self.current_trade_market_price(current_candle.close, trade),
+                entry_spot_price=current_candle.close,
+                invalidation_level=round(decision.invalidation_level if decision.invalidation_level is not None else (trade.invalidation_level or current_candle.close), 2),
+                broker_order_id=result.order_id,
+                broker_entry_correlation_id=correlation_id,
+                broker_status=result.order_status or "PENDING",
+                broker_status_message=result.message,
+            )
         )
+        self._mark_state_dirty_locked()
+        return True
 
     def _square_off_active_trade_locked(self, client_id: str, access_token: str, *, reason: str) -> bool:
         if self.active_trade is None:
             return False
+        if not self._trade_is_broker_backed(self.active_trade):
+            exit_price = self.active_trade.current_price
+            self.close_active_trade(
+                Candle(
+                    timestamp=datetime.now(),
+                    open=exit_price,
+                    high=exit_price,
+                    low=exit_price,
+                    close=exit_price,
+                    volume=0.0,
+                ),
+                reason,
+            )
+            return True
         return self._exit_live_trade(
             Candle(
                 timestamp=datetime.now(),
@@ -6883,11 +7207,13 @@ class SimulationEngine:
             if exited and self.normalize_pending_setup_action(decision.pending_setup_action) in {"ARM", "REPLACE", "KEEP"}:
                 self._trigger_pending_setup_after_exit(current_candle, source)
 
-    def close_active_trade(self, candle: Candle, note: str) -> None:
+    def close_active_trade(self, candle: Candle, note: str, *, exit_price_override: float | None = None) -> None:
         if not self.active_trade:
             return
         exit_quote = None
         if (
+            exit_price_override is None
+            and
             self.active_trade.price_mode == "option"
             and self.active_trade.option_security_id
             and self.active_trade.broker_provider != "zerodha"
@@ -6907,7 +7233,9 @@ class SimulationEngine:
                     exit_quote = None
         self.active_trade.exit_time = exit_quote.quote_time if exit_quote else candle.timestamp
         exit_price = (
-            exit_quote.last_price
+            exit_price_override
+            if exit_price_override is not None
+            else exit_quote.last_price
             if exit_quote
             else self.current_trade_market_price(candle.close, self.active_trade)
         )
@@ -6932,6 +7260,9 @@ class SimulationEngine:
             )
         self.active_trade.closed_quantity += remaining_quantity
         self.active_trade.open_quantity = 0
+        self.active_trade.broker_pending_exit_quantity = 0
+        self.active_trade.broker_pending_exit_pyramid_leg_ids = []
+        self.active_trade.broker_pending_exit_note = None
         for leg in self.active_trade.pyramid_legs:
             if leg.status == "OPEN":
                 leg.status = "CLOSED"
@@ -6939,6 +7270,7 @@ class SimulationEngine:
                 leg.exit_price = exit_price
                 leg.exit_spot_price = candle.close
                 leg.open_quantity = 0
+                leg.broker_pending_exit_quantity = 0
         self.active_trade.pnl = round(self.active_trade.booked_pnl, 2)
         self.active_trade.status = "CLOSED"
         self.active_trade.exit_notes = note
@@ -6949,20 +7281,23 @@ class SimulationEngine:
         self._sync_active_trade_subscription_locked()
         self._mark_state_dirty_locked()
 
-    def partial_exit_active_trade(self, candle: Candle, note: str, quantity: int | None = None) -> None:
+    def partial_exit_active_trade(self, candle: Candle, note: str, quantity: int | None = None, *, exit_price_override: float | None = None) -> None:
         if not self.active_trade:
             return
         open_quantity = self.active_trade.open_quantity if self.active_trade.open_quantity is not None else self.active_trade.quantity
         if open_quantity <= 1:
             return
         exit_quantity = max(1, min(quantity or max(1, open_quantity // 2), open_quantity - 1))
-        exit_price = self.current_trade_market_price(candle.close, self.active_trade)
+        exit_price = exit_price_override if exit_price_override is not None else self.current_trade_market_price(candle.close, self.active_trade)
         if self._is_short_trade_direction(self.active_trade.direction):
             booked_increment = (self.active_trade.entry_price - exit_price) * exit_quantity
         else:
             booked_increment = (exit_price - self.active_trade.entry_price) * exit_quantity
         self.active_trade.booked_pnl = round(self.active_trade.booked_pnl + booked_increment, 2)
         self.active_trade.open_quantity = open_quantity - exit_quantity
+        self.active_trade.broker_pending_exit_quantity = 0
+        self.active_trade.broker_pending_exit_pyramid_leg_ids = []
+        self.active_trade.broker_pending_exit_note = None
         self.active_trade.closed_quantity += exit_quantity
         self.active_trade.partial_exit_count += 1
         self.active_trade.last_partial_exit_time = candle.timestamp

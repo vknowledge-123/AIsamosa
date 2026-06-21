@@ -423,9 +423,13 @@ Detected conflicts:
         heuristic_decision: TradeDecision,
         operating_mode: OperatingMode,
     ) -> TradeDecision:
-        if operating_mode == OperatingMode.heuristic:
-            heuristic_decision.decision_source = "heuristic"
-            self._record_decision_status("heuristic", "Heuristic mode is active, so AI trading logic was skipped.")
+        if operating_mode in {OperatingMode.heuristic, OperatingMode.heuristic_advance}:
+            if operating_mode == OperatingMode.heuristic and heuristic_decision.decision_source == "heuristic":
+                heuristic_decision.decision_source = "heuristic"
+            self._record_decision_status(
+                operating_mode.value,
+                f"{operating_mode.value} mode is active, so AI trading logic was skipped.",
+            )
             return heuristic_decision
 
         if not self.enabled:

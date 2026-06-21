@@ -1,2505 +1,4271 @@
 {
-  "updated_at": "2026-05-21T13:25:56.191613",
+  "updated_at": "2026-06-21T20:29:02.500405",
   "entries": [
     {
       "symbol": "ARE&M",
       "label": "AMARA RAJA ENERGY MOB LTD",
-      "security_id": "100"
+      "security_id": "100",
+      "future": null
     },
     {
       "symbol": "FACT",
       "label": "FACT LTD",
-      "security_id": "1008"
+      "security_id": "1008",
+      "future": null
     },
     {
       "symbol": "GODREJCP",
       "label": "GODREJ CONSUMER PRODUCTS",
-      "security_id": "10099"
+      "security_id": "10099",
+      "future": {
+        "label": "GODREJCP JUN FUT",
+        "trading_symbol": "GODREJCP-JUN2026-FUT",
+        "security_id": "62582",
+        "expiry": "2026-06-30",
+        "lot_size": 500
+      }
     },
     {
       "symbol": "SCHAEFFLER",
       "label": "SCHAEFFLER INDIA LIMITED",
-      "security_id": "1011"
+      "security_id": "1011",
+      "future": null
     },
     {
       "symbol": "ADANIENSOL",
       "label": "ADANI ENERGY SOLUTION LTD",
-      "security_id": "10217"
+      "security_id": "10217",
+      "future": {
+        "label": "ADANIENSOL JUN FUT",
+        "trading_symbol": "ADANIENSOL-JUN2026-FUT",
+        "security_id": "62342",
+        "expiry": "2026-06-30",
+        "lot_size": 675
+      }
     },
     {
       "symbol": "FEDERALBNK",
       "label": "FEDERAL BANK LTD",
-      "security_id": "1023"
+      "security_id": "1023",
+      "future": {
+        "label": "FEDERALBNK JUN FUT",
+        "trading_symbol": "FEDERALBNK-JUN2026-FUT",
+        "security_id": "62569",
+        "expiry": "2026-06-30",
+        "lot_size": 2500
+      }
     },
     {
       "symbol": "SYNGENE",
       "label": "SYNGENE INTERNATIONAL LTD",
-      "security_id": "10243"
+      "security_id": "10243",
+      "future": null
     },
     {
       "symbol": "FINCABLES",
       "label": "FINOLEX CABLES LTD",
-      "security_id": "1038"
+      "security_id": "1038",
+      "future": null
     },
     {
       "symbol": "LUPIN",
       "label": "LUPIN LIMITED",
-      "security_id": "10440"
+      "security_id": "10440",
+      "future": {
+        "label": "LUPIN JUN FUT",
+        "trading_symbol": "LUPIN-JUN2026-FUT",
+        "security_id": "62674",
+        "expiry": "2026-06-30",
+        "lot_size": 425
+      }
     },
     {
       "symbol": "UNITDSPR",
       "label": "UNITED SPIRITS LIMITED",
-      "security_id": "10447"
+      "security_id": "10447",
+      "future": {
+        "label": "UNITDSPR JUN FUT",
+        "trading_symbol": "UNITDSPR-JUN2026-FUT",
+        "security_id": "62863",
+        "expiry": "2026-06-30",
+        "lot_size": 400
+      }
     },
     {
       "symbol": "BHARTIARTL",
       "label": "BHARTI AIRTEL LIMITED",
-      "security_id": "10604"
+      "security_id": "10604",
+      "future": {
+        "label": "BHARTIARTL JUN FUT",
+        "trading_symbol": "BHARTIARTL-JUN2026-FUT",
+        "security_id": "62384",
+        "expiry": "2026-06-30",
+        "lot_size": 475
+      }
     },
     {
       "symbol": "OLECTRA",
       "label": "OLECTRA GREENTECH LIMITED",
-      "security_id": "10637"
+      "security_id": "10637",
+      "future": null
     },
     {
       "symbol": "PNB",
       "label": "PUNJAB NATIONAL BANK",
-      "security_id": "10666"
+      "security_id": "10666",
+      "future": {
+        "label": "PNB JUN FUT",
+        "trading_symbol": "PNB-JUN2026-FUT",
+        "security_id": "62773",
+        "expiry": "2026-06-30",
+        "lot_size": 8000
+      }
     },
     {
       "symbol": "INDIAMART",
       "label": "INDIAMART INTERMESH LTD",
-      "security_id": "10726"
+      "security_id": "10726",
+      "future": null
     },
     {
       "symbol": "OFSS",
       "label": "ORACLE FIN SERV SOFT LTD.",
-      "security_id": "10738"
+      "security_id": "10738",
+      "future": {
+        "label": "OFSS JUN FUT",
+        "trading_symbol": "OFSS-JUN2026-FUT",
+        "security_id": "62732",
+        "expiry": "2026-06-30",
+        "lot_size": 75
+      }
     },
     {
       "symbol": "UNIONBANK",
       "label": "UNION BANK OF INDIA",
-      "security_id": "10753"
+      "security_id": "10753",
+      "future": {
+        "label": "UNIONBANK JUN FUT",
+        "trading_symbol": "UNIONBANK-JUN2026-FUT",
+        "security_id": "62862",
+        "expiry": "2026-06-30",
+        "lot_size": 4425
+      }
     },
     {
       "symbol": "ZENSARTECH",
       "label": "ZENSAR TECHNOLOGIES  LTD",
-      "security_id": "1076"
+      "security_id": "1076",
+      "future": null
     },
     {
       "symbol": "SYRMA",
       "label": "SYRMA SGS TECHNOLOGY LTD",
-      "security_id": "10793"
+      "security_id": "10793",
+      "future": null
     },
     {
       "symbol": "CANBK",
       "label": "CANARA BANK",
-      "security_id": "10794"
+      "security_id": "10794",
+      "future": {
+        "label": "CANBK JUN FUT",
+        "trading_symbol": "CANBK-JUN2026-FUT",
+        "security_id": "62397",
+        "expiry": "2026-06-30",
+        "lot_size": 6750
+      }
     },
     {
       "symbol": "GABRIEL",
       "label": "GABRIEL INDIA LTD",
-      "security_id": "1085"
+      "security_id": "1085",
+      "future": null
     },
     {
       "symbol": "GODREJIND",
       "label": "GODREJ INDUSTRIES LTD",
-      "security_id": "10925"
+      "security_id": "10925",
+      "future": null
     },
     {
       "symbol": "DIVISLAB",
       "label": "DIVI S LABORATORIES LTD",
-      "security_id": "10940"
+      "security_id": "10940",
+      "future": {
+        "label": "DIVISLAB JUN FUT",
+        "trading_symbol": "DIVISLAB-JUN2026-FUT",
+        "security_id": "62561",
+        "expiry": "2026-06-30",
+        "lot_size": 100
+      }
     },
     {
       "symbol": "RADICO",
       "label": "RADICO KHAITAN LTD",
-      "security_id": "10990"
+      "security_id": "10990",
+      "future": {
+        "label": "RADICO JUN FUT",
+        "trading_symbol": "RADICO-JUN2026-FUT",
+        "security_id": "58361",
+        "expiry": "2026-06-30",
+        "lot_size": 150
+      }
     },
     {
       "symbol": "MARUTI",
       "label": "MARUTI SUZUKI INDIA LTD.",
-      "security_id": "10999"
+      "security_id": "10999",
+      "future": {
+        "label": "MARUTI JUN FUT",
+        "trading_symbol": "MARUTI-JUN2026-FUT",
+        "security_id": "62683",
+        "expiry": "2026-06-30",
+        "lot_size": 50
+      }
     },
     {
       "symbol": "IDFCFIRSTB",
       "label": "IDFC FIRST BANK LIMITED",
-      "security_id": "11184"
+      "security_id": "11184",
+      "future": {
+        "label": "IDFCFIRSTB JUN FUT",
+        "trading_symbol": "IDFCFIRSTB-JUN2026-FUT",
+        "security_id": "62608",
+        "expiry": "2026-06-30",
+        "lot_size": 9275
+      }
     },
     {
       "symbol": "INDIGO",
       "label": "INTERGLOBE AVIATION LTD",
-      "security_id": "11195"
+      "security_id": "11195",
+      "future": {
+        "label": "INDIGO JUN FUT",
+        "trading_symbol": "INDIGO-JUN2026-FUT",
+        "security_id": "62617",
+        "expiry": "2026-06-30",
+        "lot_size": 150
+      }
     },
     {
       "symbol": "UCOBANK",
       "label": "UCO BANK",
-      "security_id": "11223"
+      "security_id": "11223",
+      "future": null
     },
     {
       "symbol": "JSL",
       "label": "JINDAL STAINLESS LIMITED",
-      "security_id": "11236"
+      "security_id": "11236",
+      "future": null
     },
     {
       "symbol": "WELSPUNLIV",
       "label": "WELSPUN LIVING LIMITED",
-      "security_id": "11253"
+      "security_id": "11253",
+      "future": null
     },
     {
       "symbol": "IGL",
       "label": "INDRAPRASTHA GAS LTD",
-      "security_id": "11262"
+      "security_id": "11262",
+      "future": null
     },
     {
       "symbol": "UPL",
       "label": "UPL LIMITED",
-      "security_id": "11287"
+      "security_id": "11287",
+      "future": {
+        "label": "UPL JUN FUT",
+        "trading_symbol": "UPL-JUN2026-FUT",
+        "security_id": "62865",
+        "expiry": "2026-06-30",
+        "lot_size": 1355
+      }
     },
     {
       "symbol": "AFFLE",
       "label": "AFFLE 3I LIMITED",
-      "security_id": "11343"
+      "security_id": "11343",
+      "future": null
     },
     {
       "symbol": "PETRONET",
       "label": "PETRONET LNG LIMITED",
-      "security_id": "11351"
+      "security_id": "11351",
+      "future": {
+        "label": "PETRONET JUN FUT",
+        "trading_symbol": "PETRONET-JUN2026-FUT",
+        "security_id": "62763",
+        "expiry": "2026-06-30",
+        "lot_size": 1900
+      }
     },
     {
       "symbol": "BIOCON",
       "label": "BIOCON LIMITED.",
-      "security_id": "11373"
+      "security_id": "11373",
+      "future": {
+        "label": "BIOCON JUN FUT",
+        "trading_symbol": "BIOCON-JUN2026-FUT",
+        "security_id": "62386",
+        "expiry": "2026-06-30",
+        "lot_size": 2500
+      }
     },
     {
       "symbol": "MAHABANK",
       "label": "BANK OF MAHARASHTRA",
-      "security_id": "11377"
+      "security_id": "11377",
+      "future": null
     },
     {
       "symbol": "POONAWALLA",
       "label": "POONAWALLA FINCORP LTD",
-      "security_id": "11403"
+      "security_id": "11403",
+      "future": null
     },
     {
       "symbol": "RKFORGE",
       "label": "RAMKRISHNA FORGINGS LTD",
-      "security_id": "11411"
+      "security_id": "11411",
+      "future": null
     },
     {
       "symbol": "CCL",
       "label": "CCL PRODUCTS (I) LTD",
-      "security_id": "11452"
+      "security_id": "11452",
+      "future": null
     },
     {
       "symbol": "LT",
       "label": "LARSEN & TOUBRO LTD.",
-      "security_id": "11483"
+      "security_id": "11483",
+      "future": {
+        "label": "LT JUN FUT",
+        "trading_symbol": "LT-JUN2026-FUT",
+        "security_id": "62665",
+        "expiry": "2026-06-30",
+        "lot_size": 175
+      }
     },
     {
       "symbol": "APARINDS",
       "label": "APAR INDUSTRIES LTD.",
-      "security_id": "11491"
+      "security_id": "11491",
+      "future": null
     },
     {
       "symbol": "GLAXO",
       "label": "GLAXOSMITHKLINE PHARMA LT",
-      "security_id": "1153"
+      "security_id": "1153",
+      "future": null
     },
     {
       "symbol": "ULTRACEMCO",
       "label": "ULTRATECH CEMENT LIMITED",
-      "security_id": "11532"
+      "security_id": "11532",
+      "future": {
+        "label": "ULTRACEMCO JUN FUT",
+        "trading_symbol": "ULTRACEMCO-JUN2026-FUT",
+        "security_id": "62861",
+        "expiry": "2026-06-30",
+        "lot_size": 50
+      }
     },
     {
       "symbol": "TCS",
       "label": "TATA CONSULTANCY SERV LT",
-      "security_id": "11536"
+      "security_id": "11536",
+      "future": {
+        "label": "TCS JUN FUT",
+        "trading_symbol": "TCS-JUN2026-FUT",
+        "security_id": "62851",
+        "expiry": "2026-06-30",
+        "lot_size": 175
+      }
     },
     {
       "symbol": "COFORGE",
       "label": "COFORGE LIMITED",
-      "security_id": "11543"
+      "security_id": "11543",
+      "future": {
+        "label": "COFORGE JUN FUT",
+        "trading_symbol": "COFORGE-JUN2026-FUT",
+        "security_id": "62437",
+        "expiry": "2026-06-30",
+        "lot_size": 375
+      }
     },
     {
       "symbol": "PPLPHARMA",
       "label": "PIRAMAL PHARMA LIMITED",
-      "security_id": "11571"
+      "security_id": "11571",
+      "future": null
     },
     {
       "symbol": "FORCEMOT",
       "label": "FORCE MOTORS LIMITED",
-      "security_id": "11573"
+      "security_id": "11573",
+      "future": {
+        "label": "FORCEMOT JUN FUT",
+        "trading_symbol": "FORCEMOT-JUN2026-FUT",
+        "security_id": "62572",
+        "expiry": "2026-06-30",
+        "lot_size": 25
+      }
     },
     {
       "symbol": "NTPC",
       "label": "NTPC LTD",
-      "security_id": "11630"
+      "security_id": "11630",
+      "future": {
+        "label": "NTPC JUN FUT",
+        "trading_symbol": "NTPC-JUN2026-FUT",
+        "security_id": "62717",
+        "expiry": "2026-06-30",
+        "lot_size": 1500
+      }
     },
     {
       "symbol": "NEWGEN",
       "label": "NEWGEN SOFTWARE TECH LTD",
-      "security_id": "1164"
+      "security_id": "1164",
+      "future": null
     },
     {
       "symbol": "LALPATHLAB",
       "label": "DR. LAL PATH LABS LTD.",
-      "security_id": "11654"
+      "security_id": "11654",
+      "future": null
     },
     {
       "symbol": "JBMA",
       "label": "JBM AUTO LIMITED",
-      "security_id": "11655"
+      "security_id": "11655",
+      "future": null
     },
     {
       "symbol": "ALKEM",
       "label": "ALKEM LABORATORIES LTD.",
-      "security_id": "11703"
+      "security_id": "11703",
+      "future": {
+        "label": "ALKEM JUN FUT",
+        "trading_symbol": "ALKEM-JUN2026-FUT",
+        "security_id": "62349",
+        "expiry": "2026-06-30",
+        "lot_size": 125
+      }
     },
     {
       "symbol": "JSWSTEEL",
       "label": "JSW STEEL LIMITED",
-      "security_id": "11723"
+      "security_id": "11723",
+      "future": {
+        "label": "JSWSTEEL JUN FUT",
+        "trading_symbol": "JSWSTEEL-JUN2026-FUT",
+        "security_id": "62643",
+        "expiry": "2026-06-30",
+        "lot_size": 675
+      }
     },
     {
       "symbol": "JPPOWER",
       "label": "JAIPRAKASH POWER VEN. LTD",
-      "security_id": "11763"
+      "security_id": "11763",
+      "future": null
     },
     {
       "symbol": "IIFL",
       "label": "IIFL FINANCE LIMITED",
-      "security_id": "11809"
+      "security_id": "11809",
+      "future": null
     },
     {
       "symbol": "GODFRYPHLP",
       "label": "GODFREY PHILLIPS INDIA LT",
-      "security_id": "1181"
+      "security_id": "1181",
+      "future": {
+        "label": "GODFRYPHLP JUN FUT",
+        "trading_symbol": "GODFRYPHLP-JUN2026-FUT",
+        "security_id": "62581",
+        "expiry": "2026-06-30",
+        "lot_size": 275
+      }
     },
     {
       "symbol": "WELCORP",
       "label": "WELSPUN CORP LIMITED",
-      "security_id": "11821"
+      "security_id": "11821",
+      "future": null
     },
     {
       "symbol": "NH",
       "label": "NARAYANA HRUDAYALAYA LTD.",
-      "security_id": "11840"
+      "security_id": "11840",
+      "future": null
     },
     {
       "symbol": "AMBER",
       "label": "AMBER ENTERPRISES (I) LTD",
-      "security_id": "1185"
+      "security_id": "1185",
+      "future": {
+        "label": "AMBER JUN FUT",
+        "trading_symbol": "AMBER-JUN2026-FUT",
+        "security_id": "62359",
+        "expiry": "2026-06-30",
+        "lot_size": 100
+      }
     },
     {
       "symbol": "GLAND",
       "label": "GLAND PHARMA LIMITED",
-      "security_id": "1186"
+      "security_id": "1186",
+      "future": null
     },
     {
       "symbol": "GRANULES",
       "label": "GRANULES INDIA LIMITED",
-      "security_id": "11872"
+      "security_id": "11872",
+      "future": null
     },
     {
       "symbol": "YESBANK",
       "label": "YES BANK LIMITED",
-      "security_id": "11915"
+      "security_id": "11915",
+      "future": {
+        "label": "YESBANK JUN FUT",
+        "trading_symbol": "YESBANK-JUN2026-FUT",
+        "security_id": "62875",
+        "expiry": "2026-06-30",
+        "lot_size": 31100
+      }
     },
     {
       "symbol": "MEDANTA",
       "label": "GLOBAL HEALTH LIMITED",
-      "security_id": "11956"
+      "security_id": "11956",
+      "future": null
     },
     {
       "symbol": "BIKAJI",
       "label": "BIKAJI FOODS INTERN LTD",
-      "security_id": "11966"
+      "security_id": "11966",
+      "future": null
     },
     {
       "symbol": "SUZLON",
       "label": "SUZLON ENERGY LIMITED",
-      "security_id": "12018"
+      "security_id": "12018",
+      "future": {
+        "label": "SUZLON JUN FUT",
+        "trading_symbol": "SUZLON-JUN2026-FUT",
+        "security_id": "62840",
+        "expiry": "2026-06-30",
+        "lot_size": 9025
+      }
     },
     {
       "symbol": "FIVESTAR",
       "label": "FIVE-STAR BUS FIN LTD",
-      "security_id": "12032"
+      "security_id": "12032",
+      "future": null
     },
     {
       "symbol": "KAYNES",
       "label": "KAYNES TECHNOLOGY IND LTD",
-      "security_id": "12092"
+      "security_id": "12092",
+      "future": {
+        "label": "KAYNES JUN FUT",
+        "trading_symbol": "KAYNES-JUN2026-FUT",
+        "security_id": "62646",
+        "expiry": "2026-06-30",
+        "lot_size": 100
+      }
     },
     {
       "symbol": "GRASIM",
       "label": "GRASIM INDUSTRIES LTD",
-      "security_id": "1232"
+      "security_id": "1232",
+      "future": {
+        "label": "GRASIM JUN FUT",
+        "trading_symbol": "GRASIM-JUN2026-FUT",
+        "security_id": "62588",
+        "expiry": "2026-06-30",
+        "lot_size": 250
+      }
     },
     {
       "symbol": "CASTROLIND",
       "label": "CASTROL INDIA LIMITED",
-      "security_id": "1250"
+      "security_id": "1250",
+      "future": null
     },
     {
       "symbol": "AMBUJACEM",
       "label": "AMBUJA CEMENTS LTD",
-      "security_id": "1270"
+      "security_id": "1270",
+      "future": {
+        "label": "AMBUJACEM JUN FUT",
+        "trading_symbol": "AMBUJACEM-JUN2026-FUT",
+        "security_id": "62360",
+        "expiry": "2026-06-30",
+        "lot_size": 1050
+      }
     },
     {
       "symbol": "ABB",
       "label": "ABB INDIA LIMITED",
-      "security_id": "13"
+      "security_id": "13",
+      "future": {
+        "label": "ABB JUN FUT",
+        "trading_symbol": "ABB-JUN2026-FUT",
+        "security_id": "62332",
+        "expiry": "2026-06-30",
+        "lot_size": 125
+      }
     },
     {
       "symbol": "360ONE",
       "label": "360 ONE WAM LIMITED",
-      "security_id": "13061"
+      "security_id": "13061",
+      "future": {
+        "label": "360ONE JUN FUT",
+        "trading_symbol": "360ONE-JUN2026-FUT",
+        "security_id": "62331",
+        "expiry": "2026-06-30",
+        "lot_size": 500
+      }
     },
     {
       "symbol": "AIAENG",
       "label": "AIA ENGINEERING LIMITED",
-      "security_id": "13086"
+      "security_id": "13086",
+      "future": null
     },
     {
       "symbol": "PVRINOX",
       "label": "PVR INOX LIMITED",
-      "security_id": "13147"
+      "security_id": "13147",
+      "future": null
     },
     {
       "symbol": "KEC",
       "label": "KEC INTL. LIMITED",
-      "security_id": "13260"
+      "security_id": "13260",
+      "future": null
     },
     {
       "symbol": "JKCEMENT",
       "label": "JK CEMENT LIMITED",
-      "security_id": "13270"
+      "security_id": "13270",
+      "future": null
     },
     {
       "symbol": "M&MFIN",
       "label": "M&M FIN. SERVICES LTD",
-      "security_id": "13285"
+      "security_id": "13285",
+      "future": null
     },
     {
       "symbol": "KEI",
       "label": "KEI INDUSTRIES LTD.",
-      "security_id": "13310"
+      "security_id": "13310",
+      "future": {
+        "label": "KEI JUN FUT",
+        "trading_symbol": "KEI-JUN2026-FUT",
+        "security_id": "62647",
+        "expiry": "2026-06-30",
+        "lot_size": 175
+      }
     },
     {
       "symbol": "HDFCBANK",
       "label": "HDFC BANK LTD",
-      "security_id": "1333"
+      "security_id": "1333",
+      "future": {
+        "label": "HDFCBANK JUN FUT",
+        "trading_symbol": "HDFCBANK-JUN2026-FUT",
+        "security_id": "62593",
+        "expiry": "2026-06-30",
+        "lot_size": 550
+      }
     },
     {
       "symbol": "SOLARINDS",
       "label": "SOLAR INDUSTRIES (I) LTD",
-      "security_id": "13332"
+      "security_id": "13332",
+      "future": {
+        "label": "SOLARINDS JUN FUT",
+        "trading_symbol": "SOLARINDS-JUN2026-FUT",
+        "security_id": "62826",
+        "expiry": "2026-06-30",
+        "lot_size": 50
+      }
     },
     {
       "symbol": "GALLANTT",
       "label": "GALLANTT ISPAT LIMITED",
-      "security_id": "13337"
+      "security_id": "13337",
+      "future": null
     },
     {
       "symbol": "KFINTECH",
       "label": "KFIN TECHNOLOGIES LIMITED",
-      "security_id": "13359"
+      "security_id": "13359",
+      "future": {
+        "label": "KFINTECH JUN FUT",
+        "trading_symbol": "KFINTECH-JUN2026-FUT",
+        "security_id": "62648",
+        "expiry": "2026-06-30",
+        "lot_size": 500
+      }
     },
     {
       "symbol": "HEG",
       "label": "HEG LTD",
-      "security_id": "1336"
+      "security_id": "1336",
+      "future": null
     },
     {
       "symbol": "SUNTV",
       "label": "SUN TV NETWORK LIMITED",
-      "security_id": "13404"
+      "security_id": "13404",
+      "future": null
     },
     {
       "symbol": "GPIL",
       "label": "GODAWARI POW & ISP LTD",
-      "security_id": "13409"
+      "security_id": "13409",
+      "future": null
     },
     {
       "symbol": "HEROMOTOCO",
       "label": "HERO MOTOCORP LIMITED",
-      "security_id": "1348"
+      "security_id": "1348",
+      "future": {
+        "label": "HEROMOTOCO JUN FUT",
+        "trading_symbol": "HEROMOTOCO-JUN2026-FUT",
+        "security_id": "62595",
+        "expiry": "2026-06-30",
+        "lot_size": 150
+      }
     },
     {
       "symbol": "EMAMILTD",
       "label": "EMAMI LIMITED",
-      "security_id": "13517"
+      "security_id": "13517",
+      "future": null
     },
     {
       "symbol": "GMRAIRPORT",
       "label": "GMR AIRPORTS LIMITED",
-      "security_id": "13528"
+      "security_id": "13528",
+      "future": {
+        "label": "GMRAIRPORT JUN FUT",
+        "trading_symbol": "GMRAIRPORT-JUN2026-FUT",
+        "security_id": "62578",
+        "expiry": "2026-06-30",
+        "lot_size": 6975
+      }
     },
     {
       "symbol": "TECHM",
       "label": "TECH MAHINDRA LIMITED",
-      "security_id": "13538"
+      "security_id": "13538",
+      "future": {
+        "label": "TECHM JUN FUT",
+        "trading_symbol": "TECHM-JUN2026-FUT",
+        "security_id": "62852",
+        "expiry": "2026-06-30",
+        "lot_size": 600
+      }
     },
     {
       "symbol": "ACE",
       "label": "ACTION CONST EQUIP LTD",
-      "security_id": "13587"
+      "security_id": "13587",
+      "future": null
     },
     {
       "symbol": "IRCTC",
       "label": "INDIAN RAIL TOUR CORP LTD",
-      "security_id": "13611"
+      "security_id": "13611",
+      "future": null
     },
     {
       "symbol": "ANANTRAJ",
       "label": "ANANT RAJ LIMITED",
-      "security_id": "13620"
+      "security_id": "13620",
+      "future": null
     },
     {
       "symbol": "HINDALCO",
       "label": "HINDALCO  INDUSTRIES  LTD",
-      "security_id": "1363"
+      "security_id": "1363",
+      "future": {
+        "label": "HINDALCO JUN FUT",
+        "trading_symbol": "HINDALCO-JUN2026-FUT",
+        "security_id": "62596",
+        "expiry": "2026-06-30",
+        "lot_size": 700
+      }
     },
     {
       "symbol": "JMFINANCIL",
       "label": "JM FINANCIAL LIMITED",
-      "security_id": "13637"
+      "security_id": "13637",
+      "future": null
     },
     {
       "symbol": "ELECON",
       "label": "ELECON ENG. CO. LTD",
-      "security_id": "13643"
+      "security_id": "13643",
+      "future": null
     },
     {
       "symbol": "FLUOROCHEM",
       "label": "GUJARAT FLUOROCHEM LTD",
-      "security_id": "13750"
+      "security_id": "13750",
+      "future": null
     },
     {
       "symbol": "NAUKRI",
       "label": "INFO EDGE (I) LTD",
-      "security_id": "13751"
+      "security_id": "13751",
+      "future": {
+        "label": "NAUKRI JUN FUT",
+        "trading_symbol": "NAUKRI-JUN2026-FUT",
+        "security_id": "62712",
+        "expiry": "2026-06-30",
+        "lot_size": 375
+      }
     },
     {
       "symbol": "GESHIP",
       "label": "THE GE SHPG.LTD",
-      "security_id": "13776"
+      "security_id": "13776",
+      "future": null
     },
     {
       "symbol": "TORNTPOWER",
       "label": "TORRENT POWER LTD",
-      "security_id": "13786"
+      "security_id": "13786",
+      "future": null
     },
     {
       "symbol": "LTFOODS",
       "label": "LT FOODS LIMITED",
-      "security_id": "13816"
+      "security_id": "13816",
+      "future": null
     },
     {
       "symbol": "SOBHA",
       "label": "SOBHA LIMITED",
-      "security_id": "13826"
+      "security_id": "13826",
+      "future": null
     },
     {
       "symbol": "HINDUNILVR",
       "label": "HINDUSTAN UNILEVER LTD.",
-      "security_id": "1394"
+      "security_id": "1394",
+      "future": {
+        "label": "HINDUNILVR JUN FUT",
+        "trading_symbol": "HINDUNILVR-JUN2026-FUT",
+        "security_id": "62598",
+        "expiry": "2026-06-30",
+        "lot_size": 300
+      }
     },
     {
       "symbol": "HBLENGINE",
       "label": "HBL ENGINEERING LTD",
-      "security_id": "13966"
+      "security_id": "13966",
+      "future": null
     },
     {
       "symbol": "HINDPETRO",
       "label": "HINDUSTAN PETROLEUM CORP",
-      "security_id": "1406"
+      "security_id": "1406",
+      "future": {
+        "label": "HINDPETRO JUN FUT",
+        "trading_symbol": "HINDPETRO-JUN2026-FUT",
+        "security_id": "62597",
+        "expiry": "2026-06-30",
+        "lot_size": 2025
+      }
     },
     {
       "symbol": "UNOMINDA",
       "label": "UNO MINDA LIMITED",
-      "security_id": "14154"
+      "security_id": "14154",
+      "future": {
+        "label": "UNOMINDA JUN FUT",
+        "trading_symbol": "UNOMINDA-JUN2026-FUT",
+        "security_id": "62864",
+        "expiry": "2026-06-30",
+        "lot_size": 550
+      }
     },
     {
       "symbol": "NSLNISP",
       "label": "NMDC STEEL LIMITED",
-      "security_id": "14180"
+      "security_id": "14180",
+      "future": null
     },
     {
       "symbol": "TIMKEN",
       "label": "TIMKEN INDIA LTD.",
-      "security_id": "14198"
+      "security_id": "14198",
+      "future": null
     },
     {
       "symbol": "HINDZINC",
       "label": "HINDUSTAN ZINC LIMITED",
-      "security_id": "1424"
+      "security_id": "1424",
+      "future": {
+        "label": "HINDZINC JUN FUT",
+        "trading_symbol": "HINDZINC-JUN2026-FUT",
+        "security_id": "62599",
+        "expiry": "2026-06-30",
+        "lot_size": 1225
+      }
     },
     {
       "symbol": "REDINGTON",
       "label": "REDINGTON LIMITED",
-      "security_id": "14255"
+      "security_id": "14255",
+      "future": null
     },
     {
       "symbol": "PFC",
       "label": "POWER FIN CORP LTD.",
-      "security_id": "14299"
+      "security_id": "14299",
+      "future": {
+        "label": "PFC JUN FUT",
+        "trading_symbol": "PFC-JUN2026-FUT",
+        "security_id": "62764",
+        "expiry": "2026-06-30",
+        "lot_size": 1300
+      }
     },
     {
       "symbol": "FSL",
       "label": "FIRSTSOURCE SOLU. LTD.",
-      "security_id": "14304"
+      "security_id": "14304",
+      "future": null
     },
     {
       "symbol": "INDIANB",
       "label": "INDIAN BANK",
-      "security_id": "14309"
+      "security_id": "14309",
+      "future": {
+        "label": "INDIANB JUN FUT",
+        "trading_symbol": "INDIANB-JUN2026-FUT",
+        "security_id": "62616",
+        "expiry": "2026-06-30",
+        "lot_size": 1000
+      }
     },
     {
       "symbol": "HSCL",
       "label": "HIMADRI SPECIALITY CHEM L",
-      "security_id": "14334"
+      "security_id": "14334",
+      "future": null
     },
     {
       "symbol": "IDEA",
       "label": "VODAFONE IDEA LIMITED",
-      "security_id": "14366"
+      "security_id": "14366",
+      "future": {
+        "label": "IDEA JUN FUT",
+        "trading_symbol": "IDEA-JUN2026-FUT",
+        "security_id": "62607",
+        "expiry": "2026-06-30",
+        "lot_size": 71475
+      }
     },
     {
       "symbol": "PAGEIND",
       "label": "PAGE INDUSTRIES LTD",
-      "security_id": "14413"
+      "security_id": "14413",
+      "future": {
+        "label": "PAGEIND JUN FUT",
+        "trading_symbol": "PAGEIND-JUN2026-FUT",
+        "security_id": "62739",
+        "expiry": "2026-06-30",
+        "lot_size": 15
+      }
     },
     {
       "symbol": "ASTRAL",
       "label": "ASTRAL LIMITED",
-      "security_id": "14418"
+      "security_id": "14418",
+      "future": {
+        "label": "ASTRAL JUN FUT",
+        "trading_symbol": "ASTRAL-JUN2026-FUT",
+        "security_id": "62370",
+        "expiry": "2026-06-30",
+        "lot_size": 425
+      }
     },
     {
       "symbol": "JKTYRE",
       "label": "JK TYRE & INDUSTRIES LTD",
-      "security_id": "14435"
+      "security_id": "14435",
+      "future": null
     },
     {
       "symbol": "PHOENIXLTD",
       "label": "THE PHOENIX MILLS LTD",
-      "security_id": "14552"
+      "security_id": "14552",
+      "future": {
+        "label": "PHOENIXLTD JUN FUT",
+        "trading_symbol": "PHOENIXLTD-JUN2026-FUT",
+        "security_id": "62766",
+        "expiry": "2026-06-30",
+        "lot_size": 350
+      }
     },
     {
       "symbol": "FORTIS",
       "label": "FORTIS HEALTHCARE LTD",
-      "security_id": "14592"
+      "security_id": "14592",
+      "future": {
+        "label": "FORTIS JUN FUT",
+        "trading_symbol": "FORTIS-JUN2026-FUT",
+        "security_id": "62574",
+        "expiry": "2026-06-30",
+        "lot_size": 775
+      }
     },
     {
       "symbol": "JSWDULUX",
       "label": "JSW DULUX LIMITED",
-      "security_id": "1467"
+      "security_id": "1467",
+      "future": null
     },
     {
       "symbol": "NAVINFLUOR",
       "label": "NAVIN FLUORINE INT. LTD",
-      "security_id": "14672"
+      "security_id": "14672",
+      "future": null
     },
     {
       "symbol": "DLF",
       "label": "DLF LIMITED",
-      "security_id": "14732"
+      "security_id": "14732",
+      "future": {
+        "label": "DLF JUN FUT",
+        "trading_symbol": "DLF-JUN2026-FUT",
+        "security_id": "62563",
+        "expiry": "2026-06-30",
+        "lot_size": 825
+      }
     },
     {
       "symbol": "IDBI",
       "label": "IDBI BANK LIMITED",
-      "security_id": "1476"
+      "security_id": "1476",
+      "future": null
     },
     {
       "symbol": "CENTRALBK",
       "label": "CENTRAL BANK OF INDIA",
-      "security_id": "14894"
+      "security_id": "14894",
+      "future": null
     },
     {
       "symbol": "IFCI",
       "label": "IFCI LTD",
-      "security_id": "1491"
+      "security_id": "1491",
+      "future": null
     },
     {
       "symbol": "KPRMILL",
       "label": "KPR MILL LTD.",
-      "security_id": "14912"
+      "security_id": "14912",
+      "future": null
     },
     {
       "symbol": "CIEINDIA",
       "label": "CIE AUTOMOTIVE INDIA LTD",
-      "security_id": "14937"
+      "security_id": "14937",
+      "future": null
     },
     {
       "symbol": "MOTILALOFS",
       "label": "MOTILAL OSWAL FIN LTD",
-      "security_id": "14947"
+      "security_id": "14947",
+      "future": {
+        "label": "MOTILALOFS JUN FUT",
+        "trading_symbol": "MOTILALOFS-JUN2026-FUT",
+        "security_id": "62693",
+        "expiry": "2026-06-30",
+        "lot_size": 775
+      }
     },
     {
       "symbol": "POWERGRID",
       "label": "POWER GRID CORP. LTD.",
-      "security_id": "14977"
+      "security_id": "14977",
+      "future": {
+        "label": "POWERGRID JUN FUT",
+        "trading_symbol": "POWERGRID-JUN2026-FUT",
+        "security_id": "62791",
+        "expiry": "2026-06-30",
+        "lot_size": 1900
+      }
     },
     {
       "symbol": "ASTERDM",
       "label": "ASTER DM HEALTHCARE LTD.",
-      "security_id": "1508"
+      "security_id": "1508",
+      "future": null
     },
     {
       "symbol": "ADANIPORTS",
       "label": "ADANI PORT & SEZ LTD",
-      "security_id": "15083"
+      "security_id": "15083",
+      "future": {
+        "label": "ADANIPORTS JUN FUT",
+        "trading_symbol": "ADANIPORTS-JUN2026-FUT",
+        "security_id": "62345",
+        "expiry": "2026-06-30",
+        "lot_size": 475
+      }
     },
     {
       "symbol": "INDHOTEL",
       "label": "THE INDIAN HOTELS CO. LTD",
-      "security_id": "1512"
+      "security_id": "1512",
+      "future": {
+        "label": "INDHOTEL JUN FUT",
+        "trading_symbol": "INDHOTEL-JUN2026-FUT",
+        "security_id": "62615",
+        "expiry": "2026-06-30",
+        "lot_size": 1000
+      }
     },
     {
       "symbol": "COLPAL",
       "label": "COLGATE PALMOLIVE LTD.",
-      "security_id": "15141"
+      "security_id": "15141",
+      "future": {
+        "label": "COLPAL JUN FUT",
+        "trading_symbol": "COLPAL-JUN2026-FUT",
+        "security_id": "62498",
+        "expiry": "2026-06-30",
+        "lot_size": 225
+      }
     },
     {
       "symbol": "INDIACEM",
       "label": "THE INDIA CEMENTS LIMITED",
-      "security_id": "1515"
+      "security_id": "1515",
+      "future": null
     },
     {
       "symbol": "TARIL",
       "label": "TRANS & RECTI. LTD",
-      "security_id": "15174"
+      "security_id": "15174",
+      "future": null
     },
     {
       "symbol": "ECLERX",
       "label": "ECLERX SERVICES LTD",
-      "security_id": "15179"
+      "security_id": "15179",
+      "future": null
     },
     {
       "symbol": "BRIGADE",
       "label": "BRIGADE ENTER. LTD",
-      "security_id": "15184"
+      "security_id": "15184",
+      "future": null
     },
     {
       "symbol": "CEATLTD",
       "label": "CEAT LIMITED",
-      "security_id": "15254"
+      "security_id": "15254",
+      "future": null
     },
     {
       "symbol": "RPOWER",
       "label": "RELIANCE POWER LTD.",
-      "security_id": "15259"
+      "security_id": "15259",
+      "future": null
     },
     {
       "symbol": "IRB",
       "label": "IRB INFRA DEV LTD.",
-      "security_id": "15313"
+      "security_id": "15313",
+      "future": null
     },
     {
       "symbol": "NMDC",
       "label": "NMDC LTD.",
-      "security_id": "15332"
+      "security_id": "15332",
+      "future": {
+        "label": "NMDC JUN FUT",
+        "trading_symbol": "NMDC-JUN2026-FUT",
+        "security_id": "62716",
+        "expiry": "2026-06-30",
+        "lot_size": 6750
+      }
     },
     {
       "symbol": "RECLTD",
       "label": "REC LIMITED",
-      "security_id": "15355"
+      "security_id": "15355",
+      "future": {
+        "label": "RECLTD JUN FUT",
+        "trading_symbol": "RECLTD-JUN2026-FUT",
+        "security_id": "62797",
+        "expiry": "2026-06-30",
+        "lot_size": 1400
+      }
     },
     {
       "symbol": "MANKIND",
       "label": "MANKIND PHARMA LIMITED",
-      "security_id": "15380"
+      "security_id": "15380",
+      "future": {
+        "label": "MANKIND JUN FUT",
+        "trading_symbol": "MANKIND-JUN2026-FUT",
+        "security_id": "62681",
+        "expiry": "2026-06-30",
+        "lot_size": 225
+      }
     },
     {
       "symbol": "TITAGARH",
       "label": "TITAGARH RAIL SYSTEMS LTD",
-      "security_id": "15414"
+      "security_id": "15414",
+      "future": null
     },
     {
       "symbol": "APOLLOHOSP",
       "label": "APOLLO HOSPITALS ENTER. L",
-      "security_id": "157"
+      "security_id": "157",
+      "future": {
+        "label": "APOLLOHOSP JUN FUT",
+        "trading_symbol": "APOLLOHOSP-JUN2026-FUT",
+        "security_id": "62363",
+        "expiry": "2026-06-30",
+        "lot_size": 125
+      }
     },
     {
       "symbol": "GILLETTE",
       "label": "GILLETTE INDIA LTD",
-      "security_id": "1576"
+      "security_id": "1576",
+      "future": null
     },
     {
       "symbol": "INFY",
       "label": "INFOSYS LIMITED",
-      "security_id": "1594"
+      "security_id": "1594",
+      "future": {
+        "label": "INFY JUN FUT",
+        "trading_symbol": "INFY-JUN2026-FUT",
+        "security_id": "62620",
+        "expiry": "2026-06-30",
+        "lot_size": 400
+      }
     },
     {
       "symbol": "TATAINVEST",
       "label": "TATA INVESTMENT CORP LTD",
-      "security_id": "1621"
+      "security_id": "1621",
+      "future": null
     },
     {
       "symbol": "IOC",
       "label": "INDIAN OIL CORP LTD",
-      "security_id": "1624"
+      "security_id": "1624",
+      "future": {
+        "label": "IOC JUN FUT",
+        "trading_symbol": "IOC-JUN2026-FUT",
+        "security_id": "62622",
+        "expiry": "2026-06-30",
+        "lot_size": 4875
+      }
     },
     {
       "symbol": "LINDEINDIA",
       "label": "LINDE INDIA LIMITED",
-      "security_id": "1627"
+      "security_id": "1627",
+      "future": null
     },
     {
       "symbol": "APOLLOTYRE",
       "label": "APOLLO TYRES LTD",
-      "security_id": "163"
+      "security_id": "163",
+      "future": null
     },
     {
       "symbol": "IPCALAB",
       "label": "IPCA LABORATORIES LTD",
-      "security_id": "1633"
+      "security_id": "1633",
+      "future": null
     },
     {
       "symbol": "ITC",
       "label": "ITC LTD",
-      "security_id": "1660"
+      "security_id": "1660",
+      "future": {
+        "label": "ITC JUN FUT",
+        "trading_symbol": "ITC-JUN2026-FUT",
+        "security_id": "62625",
+        "expiry": "2026-06-30",
+        "lot_size": 1600
+      }
     },
     {
       "symbol": "BAJAJ-AUTO",
       "label": "BAJAJ AUTO LIMITED",
-      "security_id": "16669"
+      "security_id": "16669",
+      "future": {
+        "label": "BAJAJ-AUTO JUN FUT",
+        "trading_symbol": "BAJAJ-AUTO-JUN2026-FUT",
+        "security_id": "62374",
+        "expiry": "2026-06-30",
+        "lot_size": 75
+      }
     },
     {
       "symbol": "BAJAJFINSV",
       "label": "BAJAJ FINSERV LTD.",
-      "security_id": "16675"
+      "security_id": "16675",
+      "future": {
+        "label": "BAJAJFINSV JUN FUT",
+        "trading_symbol": "BAJAJFINSV-JUN2026-FUT",
+        "security_id": "62375",
+        "expiry": "2026-06-30",
+        "lot_size": 250
+      }
     },
     {
       "symbol": "PTCIL",
       "label": "PTC INDUSTRIES LIMITED",
-      "security_id": "16682"
+      "security_id": "16682",
+      "future": null
     },
     {
       "symbol": "UBL",
       "label": "UNITED BREWERIES LTD",
-      "security_id": "16713"
+      "security_id": "16713",
+      "future": null
     },
     {
       "symbol": "ITI",
       "label": "ITI LTD",
-      "security_id": "1675"
+      "security_id": "1675",
+      "future": null
     },
     {
       "symbol": "GVT&D",
       "label": "GE VERNOVA T&D INDIA LTD",
-      "security_id": "16783"
+      "security_id": "16783",
+      "future": {
+        "label": "GVT&D JUN FUT",
+        "trading_symbol": "GVT&D-JUN2026-FUT",
+        "security_id": "58209",
+        "expiry": "2026-06-30",
+        "lot_size": 125
+      }
     },
     {
       "symbol": "ZFCVINDIA",
       "label": "ZF COM VE CTR SYS IND LTD",
-      "security_id": "16915"
+      "security_id": "16915",
+      "future": null
     },
     {
       "symbol": "PATANJALI",
       "label": "PATANJALI FOODS LIMITED",
-      "security_id": "17029"
+      "security_id": "17029",
+      "future": {
+        "label": "PATANJALI JUN FUT",
+        "trading_symbol": "PATANJALI-JUN2026-FUT",
+        "security_id": "62744",
+        "expiry": "2026-06-30",
+        "lot_size": 900
+      }
     },
     {
       "symbol": "CROMPTON",
       "label": "CROMPT GREA CON ELEC LTD",
-      "security_id": "17094"
+      "security_id": "17094",
+      "future": {
+        "label": "CROMPTON JUN FUT",
+        "trading_symbol": "CROMPTON-JUN2026-FUT",
+        "security_id": "62508",
+        "expiry": "2026-06-30",
+        "lot_size": 1800
+      }
     },
     {
       "symbol": "SUMICHEM",
       "label": "SUMITOMO CHEM INDIA LTD",
-      "security_id": "17105"
+      "security_id": "17105",
+      "future": null
     },
     {
       "symbol": "JBCHEPHARM",
       "label": "J B CHEMICALS AND PHARMA",
-      "security_id": "1726"
+      "security_id": "1726",
+      "future": null
     },
     {
       "symbol": "BLS",
       "label": "BLS INTL SERVS LTD",
-      "security_id": "17279"
+      "security_id": "17279",
+      "future": null
     },
     {
       "symbol": "LLOYDSME",
       "label": "LLOYDS METALS N ENERGY L",
-      "security_id": "17313"
+      "security_id": "17313",
+      "future": null
     },
     {
       "symbol": "ADANIPOWER",
       "label": "ADANI POWER LTD",
-      "security_id": "17388"
+      "security_id": "17388",
+      "future": {
+        "label": "ADANIPOWER JUN FUT",
+        "trading_symbol": "ADANIPOWER-JUN2026-FUT",
+        "security_id": "62348",
+        "expiry": "2026-06-30",
+        "lot_size": 3550
+      }
     },
     {
       "symbol": "NHPC",
       "label": "NHPC LTD",
-      "security_id": "17400"
+      "security_id": "17400",
+      "future": {
+        "label": "NHPC JUN FUT",
+        "trading_symbol": "NHPC-JUN2026-FUT",
+        "security_id": "62715",
+        "expiry": "2026-06-30",
+        "lot_size": 6400
+      }
     },
     {
       "symbol": "NETWEB",
       "label": "NETWEB TECH INDIA LTD",
-      "security_id": "17433"
+      "security_id": "17433",
+      "future": null
     },
     {
       "symbol": "OIL",
       "label": "OIL INDIA LTD",
-      "security_id": "17438"
+      "security_id": "17438",
+      "future": {
+        "label": "OIL JUN FUT",
+        "trading_symbol": "OIL-JUN2026-FUT",
+        "security_id": "62737",
+        "expiry": "2026-06-30",
+        "lot_size": 1400
+      }
     },
     {
       "symbol": "MGL",
       "label": "MAHANAGAR GAS LTD.",
-      "security_id": "17534"
+      "security_id": "17534",
+      "future": null
     },
     {
       "symbol": "ZYDUSWELL",
       "label": "ZYDUS WELLNESS LIMITED",
-      "security_id": "17635"
+      "security_id": "17635",
+      "future": null
     },
     {
       "symbol": "SARDAEN",
       "label": "SARDA ENERGY & MIN LTD",
-      "security_id": "17758"
+      "security_id": "17758",
+      "future": null
     },
     {
       "symbol": "LTM",
       "label": "LTM LIMITED",
-      "security_id": "17818"
+      "security_id": "17818",
+      "future": {
+        "label": "LTM JUN FUT",
+        "trading_symbol": "LTM-JUN2026-FUT",
+        "security_id": "62673",
+        "expiry": "2026-06-30",
+        "lot_size": 150
+      }
     },
     {
       "symbol": "JSWENERGY",
       "label": "JSW ENERGY LIMITED",
-      "security_id": "17869"
+      "security_id": "17869",
+      "future": {
+        "label": "JSWENERGY JUN FUT",
+        "trading_symbol": "JSWENERGY-JUN2026-FUT",
+        "security_id": "62642",
+        "expiry": "2026-06-30",
+        "lot_size": 1000
+      }
     },
     {
       "symbol": "GODREJPROP",
       "label": "GODREJ PROPERTIES LTD",
-      "security_id": "17875"
+      "security_id": "17875",
+      "future": {
+        "label": "GODREJPROP JUN FUT",
+        "trading_symbol": "GODREJPROP-JUN2026-FUT",
+        "security_id": "62587",
+        "expiry": "2026-06-30",
+        "lot_size": 275
+      }
     },
     {
       "symbol": "ABBOTINDIA",
       "label": "ABBOTT INDIA LIMITED",
-      "security_id": "17903"
+      "security_id": "17903",
+      "future": null
     },
     {
       "symbol": "BAYERCROP",
       "label": "BAYER CROPSCIENCE LTD",
-      "security_id": "17927"
+      "security_id": "17927",
+      "future": null
     },
     {
       "symbol": "HINDCOPPER",
       "label": "HINDUSTAN COPPER LTD",
-      "security_id": "17939"
+      "security_id": "17939",
+      "future": null
     },
     {
       "symbol": "COHANCE",
       "label": "COHANCE LIFESCIENCES LTD",
-      "security_id": "17945"
+      "security_id": "17945",
+      "future": null
     },
     {
       "symbol": "MMTC",
       "label": "MMTC LIMITED",
-      "security_id": "17957"
+      "security_id": "17957",
+      "future": null
     },
     {
       "symbol": "NESTLEIND",
       "label": "NESTLE INDIA LIMITED",
-      "security_id": "17963"
+      "security_id": "17963",
+      "future": {
+        "label": "NESTLEIND JUN FUT",
+        "trading_symbol": "NESTLEIND-JUN2026-FUT",
+        "security_id": "62714",
+        "expiry": "2026-06-30",
+        "lot_size": 500
+      }
     },
     {
       "symbol": "SBICARD",
       "label": "SBI CARDS & PAY SER LTD",
-      "security_id": "17971"
+      "security_id": "17971",
+      "future": {
+        "label": "SBICARD JUN FUT",
+        "trading_symbol": "SBICARD-JUN2026-FUT",
+        "security_id": "62810",
+        "expiry": "2026-06-30",
+        "lot_size": 800
+      }
     },
     {
       "symbol": "WHIRLPOOL",
       "label": "WHIRLPOOL OF INDIA LTD",
-      "security_id": "18011"
+      "security_id": "18011",
+      "future": null
     },
     {
       "symbol": "SBFC",
       "label": "SBFC FINANCE LIMITED",
-      "security_id": "18026"
+      "security_id": "18026",
+      "future": null
     },
     {
       "symbol": "CONCORDBIO",
       "label": "CONCORD BIOTECH LIMITED",
-      "security_id": "18060"
+      "security_id": "18060",
+      "future": null
     },
     {
       "symbol": "KAJARIACER",
       "label": "KAJARIA CERAMICS LTD",
-      "security_id": "1808"
+      "security_id": "1808",
+      "future": null
     },
     {
       "symbol": "JUBLFOOD",
       "label": "JUBILANT FOODWORKS LTD",
-      "security_id": "18096"
+      "security_id": "18096",
+      "future": {
+        "label": "JUBLFOOD JUN FUT",
+        "trading_symbol": "JUBLFOOD-JUN2026-FUT",
+        "security_id": "62644",
+        "expiry": "2026-06-30",
+        "lot_size": 1250
+      }
     },
     {
       "symbol": "KPIL",
       "label": "KALPATARU PROJECT INT LTD",
-      "security_id": "1814"
+      "security_id": "1814",
+      "future": null
     },
     {
       "symbol": "JIOFIN",
       "label": "JIO FIN SERVICES LTD",
-      "security_id": "18143"
+      "security_id": "18143",
+      "future": {
+        "label": "JIOFIN JUN FUT",
+        "trading_symbol": "JIOFIN-JUN2026-FUT",
+        "security_id": "62641",
+        "expiry": "2026-06-30",
+        "lot_size": 2350
+      }
     },
     {
       "symbol": "PERSISTENT",
       "label": "PERSISTENT SYSTEMS LTD",
-      "security_id": "18365"
+      "security_id": "18365",
+      "future": {
+        "label": "PERSISTENT JUN FUT",
+        "trading_symbol": "PERSISTENT-JUN2026-FUT",
+        "security_id": "62762",
+        "expiry": "2026-06-30",
+        "lot_size": 100
+      }
     },
     {
       "symbol": "KARURVYSYA",
       "label": "KARUR VYSYA BANK LTD",
-      "security_id": "1838"
+      "security_id": "1838",
+      "future": null
     },
     {
       "symbol": "RBLBANK",
       "label": "RBL BANK LIMITED",
-      "security_id": "18391"
+      "security_id": "18391",
+      "future": {
+        "label": "RBLBANK JUN FUT",
+        "trading_symbol": "RBLBANK-JUN2026-FUT",
+        "security_id": "62795",
+        "expiry": "2026-06-30",
+        "lot_size": 3175
+      }
     },
     {
       "symbol": "POWERINDIA",
       "label": "HITACHI ENERGY INDIA LTD",
-      "security_id": "18457"
+      "security_id": "18457",
+      "future": {
+        "label": "POWERINDIA JUN FUT",
+        "trading_symbol": "POWERINDIA-JUN2026-FUT",
+        "security_id": "62792",
+        "expiry": "2026-06-30",
+        "lot_size": 25
+      }
     },
     {
       "symbol": "LTTS",
       "label": "L&T TECHNOLOGY SER. LTD.",
-      "security_id": "18564"
+      "security_id": "18564",
+      "future": null
     },
     {
       "symbol": "RRKABEL",
       "label": "R R KABEL LIMITED",
-      "security_id": "18566"
+      "security_id": "18566",
+      "future": null
     },
     {
       "symbol": "ICICIPRULI",
       "label": "ICICI PRU LIFE INS CO LTD",
-      "security_id": "18652"
+      "security_id": "18652",
+      "future": {
+        "label": "ICICIPRULI JUN FUT",
+        "trading_symbol": "ICICIPRULI-JUN2026-FUT",
+        "security_id": "62606",
+        "expiry": "2026-06-30",
+        "lot_size": 925
+      }
     },
     {
       "symbol": "NUVAMA",
       "label": "NUVAMA WEALTH MANAGE LTD",
-      "security_id": "18721"
+      "security_id": "18721",
+      "future": {
+        "label": "NUVAMA JUN FUT",
+        "trading_symbol": "NUVAMA-JUN2026-FUT",
+        "security_id": "62718",
+        "expiry": "2026-06-30",
+        "lot_size": 500
+      }
     },
     {
       "symbol": "SIGNATURE",
       "label": "SIGNATUREGLOBAL INDIA LTD",
-      "security_id": "18743"
+      "security_id": "18743",
+      "future": null
     },
     {
       "symbol": "ENDURANCE",
       "label": "ENDURANCE TECHNO. LTD.",
-      "security_id": "18822"
+      "security_id": "18822",
+      "future": null
     },
     {
       "symbol": "SJVN",
       "label": "SJVN LTD",
-      "security_id": "18883"
+      "security_id": "18883",
+      "future": null
     },
     {
       "symbol": "PNBHOUSING",
       "label": "PNB HOUSING FIN LTD.",
-      "security_id": "18908"
+      "security_id": "18908",
+      "future": {
+        "label": "PNBHOUSING JUN FUT",
+        "trading_symbol": "PNBHOUSING-JUN2026-FUT",
+        "security_id": "62777",
+        "expiry": "2026-06-30",
+        "lot_size": 650
+      }
     },
     {
       "symbol": "VBL",
       "label": "VARUN BEVERAGES LIMITED",
-      "security_id": "18921"
+      "security_id": "18921",
+      "future": {
+        "label": "VBL JUN FUT",
+        "trading_symbol": "VBL-JUN2026-FUT",
+        "security_id": "62866",
+        "expiry": "2026-06-30",
+        "lot_size": 1125
+      }
     },
     {
       "symbol": "CUMMINSIND",
       "label": "CUMMINS INDIA LTD",
-      "security_id": "1901"
+      "security_id": "1901",
+      "future": {
+        "label": "CUMMINSIND JUN FUT",
+        "trading_symbol": "CUMMINSIND-JUN2026-FUT",
+        "security_id": "62509",
+        "expiry": "2026-06-30",
+        "lot_size": 200
+      }
     },
     {
       "symbol": "JSWINFRA",
       "label": "JSW INFRASTRUCTURE LTD",
-      "security_id": "19020"
+      "security_id": "19020",
+      "future": null
     },
     {
       "symbol": "MANAPPURAM",
       "label": "MANAPPURAM FINANCE LTD",
-      "security_id": "19061"
+      "security_id": "19061",
+      "future": {
+        "label": "MANAPPURAM JUN FUT",
+        "trading_symbol": "MANAPPURAM-JUN2026-FUT",
+        "security_id": "62680",
+        "expiry": "2026-06-30",
+        "lot_size": 3000
+      }
     },
     {
       "symbol": "KOTAKBANK",
       "label": "KOTAK MAHINDRA BANK LTD",
-      "security_id": "1922"
+      "security_id": "1922",
+      "future": {
+        "label": "KOTAKBANK JUN FUT",
+        "trading_symbol": "KOTAKBANK-JUN2026-FUT",
+        "security_id": "62659",
+        "expiry": "2026-06-30",
+        "lot_size": 2000
+      }
     },
     {
       "symbol": "LAURUSLABS",
       "label": "LAURUS LABS LIMITED",
-      "security_id": "19234"
+      "security_id": "19234",
+      "future": {
+        "label": "LAURUSLABS JUN FUT",
+        "trading_symbol": "LAURUSLABS-JUN2026-FUT",
+        "security_id": "62661",
+        "expiry": "2026-06-30",
+        "lot_size": 850
+      }
     },
     {
       "symbol": "BSE",
       "label": "BSE LIMITED",
-      "security_id": "19585"
+      "security_id": "19585",
+      "future": {
+        "label": "BSE JUN FUT",
+        "trading_symbol": "BSE-JUN2026-FUT",
+        "security_id": "62395",
+        "expiry": "2026-06-30",
+        "lot_size": 375
+      }
     },
     {
       "symbol": "TRENT",
       "label": "TRENT LTD",
-      "security_id": "1964"
+      "security_id": "1964",
+      "future": {
+        "label": "TRENT JUN FUT",
+        "trading_symbol": "TRENT-JUN2026-FUT",
+        "security_id": "62859",
+        "expiry": "2026-06-30",
+        "lot_size": 150
+      }
     },
     {
       "symbol": "BLUEJET",
       "label": "BLUE JET HEALTHCARE LTD",
-      "security_id": "19686"
+      "security_id": "19686",
+      "future": null
     },
     {
       "symbol": "HONASA",
       "label": "HONASA CONSUMER LIMITED",
-      "security_id": "19813"
+      "security_id": "19813",
+      "future": null
     },
     {
       "symbol": "DMART",
       "label": "AVENUE SUPERMARTS LIMITED",
-      "security_id": "19913"
+      "security_id": "19913",
+      "future": {
+        "label": "DMART JUN FUT",
+        "trading_symbol": "DMART-JUN2026-FUT",
+        "security_id": "62564",
+        "expiry": "2026-06-30",
+        "lot_size": 150
+      }
     },
     {
       "symbol": "DEEPAKNTR",
       "label": "DEEPAK NITRITE LTD",
-      "security_id": "19943"
+      "security_id": "19943",
+      "future": null
     },
     {
       "symbol": "LICHSGFIN",
       "label": "LIC HOUSING FINANCE LTD",
-      "security_id": "1997"
+      "security_id": "1997",
+      "future": {
+        "label": "LICHSGFIN JUN FUT",
+        "trading_symbol": "LICHSGFIN-JUN2026-FUT",
+        "security_id": "62662",
+        "expiry": "2026-06-30",
+        "lot_size": 1000
+      }
     },
     {
       "symbol": "JWL",
       "label": "JUPITER WAGONS LIMITED",
-      "security_id": "20224"
+      "security_id": "20224",
+      "future": null
     },
     {
       "symbol": "OBEROIRLTY",
       "label": "OBEROI REALTY LIMITED",
-      "security_id": "20242"
+      "security_id": "20242",
+      "future": {
+        "label": "OBEROIRLTY JUN FUT",
+        "trading_symbol": "OBEROIRLTY-JUN2026-FUT",
+        "security_id": "62731",
+        "expiry": "2026-06-30",
+        "lot_size": 350
+      }
     },
     {
       "symbol": "IREDA",
       "label": "INDIAN RENEWABLE ENERGY",
-      "security_id": "20261"
+      "security_id": "20261",
+      "future": {
+        "label": "IREDA JUN FUT",
+        "trading_symbol": "IREDA-JUN2026-FUT",
+        "security_id": "62623",
+        "expiry": "2026-06-30",
+        "lot_size": 3450
+      }
     },
     {
       "symbol": "IRFC",
       "label": "INDIAN RAILWAY FIN CORP L",
-      "security_id": "2029"
+      "security_id": "2029",
+      "future": {
+        "label": "IRFC JUN FUT",
+        "trading_symbol": "IRFC-JUN2026-FUT",
+        "security_id": "62624",
+        "expiry": "2026-06-30",
+        "lot_size": 4250
+      }
     },
     {
       "symbol": "TATATECH",
       "label": "TATA TECHNOLOGIES LIMITED",
-      "security_id": "20293"
+      "security_id": "20293",
+      "future": null
     },
     {
       "symbol": "PRESTIGE",
       "label": "PRESTIGE ESTATE LTD",
-      "security_id": "20302"
+      "security_id": "20302",
+      "future": {
+        "label": "PRESTIGE JUN FUT",
+        "trading_symbol": "PRESTIGE-JUN2026-FUT",
+        "security_id": "62794",
+        "expiry": "2026-06-30",
+        "lot_size": 450
+      }
     },
     {
       "symbol": "M&M",
       "label": "MAHINDRA & MAHINDRA LTD",
-      "security_id": "2031"
+      "security_id": "2031",
+      "future": {
+        "label": "M&M JUN FUT",
+        "trading_symbol": "M&M-JUN2026-FUT",
+        "security_id": "62677",
+        "expiry": "2026-06-30",
+        "lot_size": 200
+      }
     },
     {
       "symbol": "CGCL",
       "label": "CAPRI GLOBAL CAPITAL LTD",
-      "security_id": "20329"
+      "security_id": "20329",
+      "future": null
     },
     {
       "symbol": "COALINDIA",
       "label": "COAL INDIA LTD",
-      "security_id": "20374"
+      "security_id": "20374",
+      "future": {
+        "label": "COALINDIA JUN FUT",
+        "trading_symbol": "COALINDIA-JUN2026-FUT",
+        "security_id": "62408",
+        "expiry": "2026-06-30",
+        "lot_size": 1350
+      }
     },
     {
       "symbol": "RAMCOCEM",
       "label": "THE RAMCO CEMENTS LIMITED",
-      "security_id": "2043"
+      "security_id": "2043",
+      "future": null
     },
     {
       "symbol": "CHENNPETRO",
       "label": "CHENNAI PETROLEUM CORP LT",
-      "security_id": "2049"
+      "security_id": "2049",
+      "future": null
     },
     {
       "symbol": "GRAVITA",
       "label": "GRAVITA INDIA LIMITED",
-      "security_id": "20534"
+      "security_id": "20534",
+      "future": null
     },
     {
       "symbol": "DOMS",
       "label": "DOMS INDUSTRIES LIMITED",
-      "security_id": "20551"
+      "security_id": "20551",
+      "future": null
     },
     {
       "symbol": "HOMEFIRST",
       "label": "HOME FIRST FIN CO IND LTD",
-      "security_id": "2056"
+      "security_id": "2056",
+      "future": null
     },
     {
       "symbol": "VTL",
       "label": "VARDHMAN TEXTILES LIMITED",
-      "security_id": "2073"
+      "security_id": "2073",
+      "future": null
     },
     {
       "symbol": "HUDCO",
       "label": "HSG & URBAN DEV CORPN LTD",
-      "security_id": "20825"
+      "security_id": "20825",
+      "future": null
     },
     {
       "symbol": "KIRLOSENG",
       "label": "KIRLOSKAR OIL ENG LTD",
-      "security_id": "20936"
+      "security_id": "20936",
+      "future": null
     },
     {
       "symbol": "TEJASNET",
       "label": "TEJAS NETWORKS LIMITED",
-      "security_id": "21131"
+      "security_id": "21131",
+      "future": null
     },
     {
       "symbol": "ERIS",
       "label": "ERIS LIFESCIENCES LIMITED",
-      "security_id": "21154"
+      "security_id": "21154",
+      "future": null
     },
     {
       "symbol": "CDSL",
       "label": "CENTRAL DEPO SER (I) LTD",
-      "security_id": "21174"
+      "security_id": "21174",
+      "future": {
+        "label": "CDSL JUN FUT",
+        "trading_symbol": "CDSL-JUN2026-FUT",
+        "security_id": "62398",
+        "expiry": "2026-06-30",
+        "lot_size": 475
+      }
     },
     {
       "symbol": "ASHOKLEY",
       "label": "ASHOK LEYLAND LTD",
-      "security_id": "212"
+      "security_id": "212",
+      "future": {
+        "label": "ASHOKLEY JUN FUT",
+        "trading_symbol": "ASHOKLEY-JUN2026-FUT",
+        "security_id": "62366",
+        "expiry": "2026-06-30",
+        "lot_size": 5000
+      }
     },
     {
       "symbol": "AUBANK",
       "label": "AU SMALL FINANCE BANK LTD",
-      "security_id": "21238"
+      "security_id": "21238",
+      "future": {
+        "label": "AUBANK JUN FUT",
+        "trading_symbol": "AUBANK-JUN2026-FUT",
+        "security_id": "62371",
+        "expiry": "2026-06-30",
+        "lot_size": 1000
+      }
     },
     {
       "symbol": "JYOTICNC",
       "label": "JYOTI CNC AUTOMATION LTD",
-      "security_id": "21334"
+      "security_id": "21334",
+      "future": null
     },
     {
       "symbol": "MFSL",
       "label": "MAX FINANCIAL SERV LTD",
-      "security_id": "2142"
+      "security_id": "2142",
+      "future": {
+        "label": "MFSL JUN FUT",
+        "trading_symbol": "MFSL-JUN2026-FUT",
+        "security_id": "62687",
+        "expiry": "2026-06-30",
+        "lot_size": 400
+      }
     },
     {
       "symbol": "BDL",
       "label": "BHARAT DYNAMICS LIMITED",
-      "security_id": "2144"
+      "security_id": "2144",
+      "future": {
+        "label": "BDL JUN FUT",
+        "trading_symbol": "BDL-JUN2026-FUT",
+        "security_id": "62381",
+        "expiry": "2026-06-30",
+        "lot_size": 350
+      }
     },
     {
       "symbol": "COCHINSHIP",
       "label": "COCHIN SHIPYARD LIMITED",
-      "security_id": "21508"
+      "security_id": "21508",
+      "future": {
+        "label": "COCHINSHIP JUN FUT",
+        "trading_symbol": "COCHINSHIP-JUN2026-FUT",
+        "security_id": "62436",
+        "expiry": "2026-06-30",
+        "lot_size": 400
+      }
     },
     {
       "symbol": "ABCAPITAL",
       "label": "ADITYA BIRLA CAPITAL LTD.",
-      "security_id": "21614"
+      "security_id": "21614",
+      "future": {
+        "label": "ABCAPITAL JUN FUT",
+        "trading_symbol": "ABCAPITAL-JUN2026-FUT",
+        "security_id": "62333",
+        "expiry": "2026-06-30",
+        "lot_size": 3100
+      }
     },
     {
       "symbol": "DIXON",
       "label": "DIXON TECHNO (INDIA) LTD",
-      "security_id": "21690"
+      "security_id": "21690",
+      "future": {
+        "label": "DIXON JUN FUT",
+        "trading_symbol": "DIXON-JUN2026-FUT",
+        "security_id": "62562",
+        "expiry": "2026-06-30",
+        "lot_size": 50
+      }
     },
     {
       "symbol": "CHOLAHLDNG",
       "label": "CHOLAMANDALAM FIN HOL LTD",
-      "security_id": "21740"
+      "security_id": "21740",
+      "future": null
     },
     {
       "symbol": "ICICIGI",
       "label": "ICICI LOMBARD GIC LIMITED",
-      "security_id": "21770"
+      "security_id": "21770",
+      "future": {
+        "label": "ICICIGI JUN FUT",
+        "trading_symbol": "ICICIGI-JUN2026-FUT",
+        "security_id": "62605",
+        "expiry": "2026-06-30",
+        "lot_size": 325
+      }
     },
     {
       "symbol": "SBILIFE",
       "label": "SBI LIFE INSURANCE CO LTD",
-      "security_id": "21808"
+      "security_id": "21808",
+      "future": {
+        "label": "SBILIFE JUN FUT",
+        "trading_symbol": "SBILIFE-JUN2026-FUT",
+        "security_id": "62811",
+        "expiry": "2026-06-30",
+        "lot_size": 375
+      }
     },
     {
       "symbol": "BOSCHLTD",
       "label": "BOSCH LIMITED",
-      "security_id": "2181"
+      "security_id": "2181",
+      "future": {
+        "label": "BOSCHLTD JUN FUT",
+        "trading_symbol": "BOSCHLTD-JUN2026-FUT",
+        "security_id": "62392",
+        "expiry": "2026-06-30",
+        "lot_size": 25
+      }
     },
     {
       "symbol": "HFCL",
       "label": "HFCL LIMITED",
-      "security_id": "21951"
+      "security_id": "21951",
+      "future": null
     },
     {
       "symbol": "ACC",
       "label": "ACC LIMITED",
-      "security_id": "22"
+      "security_id": "22",
+      "future": null
     },
     {
       "symbol": "IEX",
       "label": "INDIAN ENERGY EXC LTD",
-      "security_id": "220"
+      "security_id": "220",
+      "future": {
+        "label": "IEX JUN FUT",
+        "trading_symbol": "IEX-JUN2026-FUT",
+        "security_id": "62609",
+        "expiry": "2026-06-30",
+        "lot_size": 3750
+      }
     },
     {
       "symbol": "MAXHEALTH",
       "label": "MAX HEALTHCARE INS LTD",
-      "security_id": "22377"
+      "security_id": "22377",
+      "future": {
+        "label": "MAXHEALTH JUN FUT",
+        "trading_symbol": "MAXHEALTH-JUN2026-FUT",
+        "security_id": "62684",
+        "expiry": "2026-06-30",
+        "lot_size": 525
+      }
     },
     {
       "symbol": "BANDHANBNK",
       "label": "BANDHAN BANK LIMITED",
-      "security_id": "2263"
+      "security_id": "2263",
+      "future": {
+        "label": "BANDHANBNK JUN FUT",
+        "trading_symbol": "BANDHANBNK-JUN2026-FUT",
+        "security_id": "62378",
+        "expiry": "2026-06-30",
+        "lot_size": 3600
+      }
     },
     {
       "symbol": "MRF",
       "label": "MRF LTD",
-      "security_id": "2277"
+      "security_id": "2277",
+      "future": null
     },
     {
       "symbol": "MRPL",
       "label": "MRPL",
-      "security_id": "2283"
+      "security_id": "2283",
+      "future": null
     },
     {
       "symbol": "HAL",
       "label": "HINDUSTAN AERONAUTICS LTD",
-      "security_id": "2303"
+      "security_id": "2303",
+      "future": {
+        "label": "HAL JUN FUT",
+        "trading_symbol": "HAL-JUN2026-FUT",
+        "security_id": "62589",
+        "expiry": "2026-06-30",
+        "lot_size": 150
+      }
     },
     {
       "symbol": "NCC",
       "label": "NCC LIMITED",
-      "security_id": "2319"
+      "security_id": "2319",
+      "future": null
     },
     {
       "symbol": "BHARTIHEXA",
       "label": "BHARTI HEXACOM LIMITED",
-      "security_id": "23489"
+      "security_id": "23489",
+      "future": null
     },
     {
       "symbol": "AIIL",
       "label": "AUTHUM INVEST & INFRA LTD",
-      "security_id": "23553"
+      "security_id": "23553",
+      "future": null
     },
     {
       "symbol": "ASIANPAINT",
       "label": "ASIAN PAINTS LIMITED",
-      "security_id": "236"
+      "security_id": "236",
+      "future": {
+        "label": "ASIANPAINT JUN FUT",
+        "trading_symbol": "ASIANPAINT-JUN2026-FUT",
+        "security_id": "62367",
+        "expiry": "2026-06-30",
+        "lot_size": 250
+      }
     },
     {
       "symbol": "MUTHOOTFIN",
       "label": "MUTHOOT FINANCE LIMITED",
-      "security_id": "23650"
+      "security_id": "23650",
+      "future": {
+        "label": "MUTHOOTFIN JUN FUT",
+        "trading_symbol": "MUTHOOTFIN-JUN2026-FUT",
+        "security_id": "62697",
+        "expiry": "2026-06-30",
+        "lot_size": 275
+      }
     },
     {
       "symbol": "INDGN",
       "label": "INDEGENE LIMITED",
-      "security_id": "23693"
+      "security_id": "23693",
+      "future": null
     },
     {
       "symbol": "AADHARHFC",
       "label": "AADHAR HOUSING FINANCE L",
-      "security_id": "23729"
+      "security_id": "23729",
+      "future": null
     },
     {
       "symbol": "TBOTEK",
       "label": "TBO TEK LIMITED",
-      "security_id": "23740"
+      "security_id": "23740",
+      "future": null
     },
     {
       "symbol": "GODIGIT",
       "label": "GO DIGIT GENERAL INS LTD",
-      "security_id": "23799"
+      "security_id": "23799",
+      "future": null
     },
     {
       "symbol": "NEULANDLAB",
       "label": "NEULAND LAB LTD.",
-      "security_id": "2406"
+      "security_id": "2406",
+      "future": null
     },
     {
       "symbol": "PIIND",
       "label": "PI INDUSTRIES LTD",
-      "security_id": "24184"
+      "security_id": "24184",
+      "future": {
+        "label": "PIIND JUN FUT",
+        "trading_symbol": "PIIND-JUN2026-FUT",
+        "security_id": "62772",
+        "expiry": "2026-06-30",
+        "lot_size": 175
+      }
     },
     {
       "symbol": "ABDL",
       "label": "ALLIED BLEND N DISTILS L",
-      "security_id": "24308"
+      "security_id": "24308",
+      "future": null
     },
     {
       "symbol": "RAILTEL",
       "label": "RAILTEL CORP OF IND LTD",
-      "security_id": "2431"
+      "security_id": "2431",
+      "future": null
     },
     {
       "symbol": "EMCURE",
       "label": "EMCURE PHARMACEUTICALS L",
-      "security_id": "24398"
+      "security_id": "24398",
+      "future": null
     },
     {
       "symbol": "ONGC",
       "label": "OIL AND NATURAL GAS CORP.",
-      "security_id": "2475"
+      "security_id": "2475",
+      "future": {
+        "label": "ONGC JUN FUT",
+        "trading_symbol": "ONGC-JUN2026-FUT",
+        "security_id": "62738",
+        "expiry": "2026-06-30",
+        "lot_size": 2250
+      }
     },
     {
       "symbol": "OLAELEC",
       "label": "OLA ELECTRIC MOBILITY LTD",
-      "security_id": "24777"
+      "security_id": "24777",
+      "future": null
     },
     {
       "symbol": "FIRSTCRY",
       "label": "BRAINBEES SOLUTIONS LTD",
-      "security_id": "24814"
+      "security_id": "24814",
+      "future": null
     },
     {
       "symbol": "LTF",
       "label": "L&T FINANCE LIMITED",
-      "security_id": "24948"
+      "security_id": "24948",
+      "future": {
+        "label": "LTF JUN FUT",
+        "trading_symbol": "LTF-JUN2026-FUT",
+        "security_id": "62666",
+        "expiry": "2026-06-30",
+        "lot_size": 2250
+      }
     },
     {
       "symbol": "ADANIENT",
       "label": "ADANI ENTERPRISES LIMITED",
-      "security_id": "25"
+      "security_id": "25",
+      "future": {
+        "label": "ADANIENT JUN FUT",
+        "trading_symbol": "ADANIENT-JUN2026-FUT",
+        "security_id": "62343",
+        "expiry": "2026-06-30",
+        "lot_size": 309
+      }
     },
     {
       "symbol": "PREMIERENE",
       "label": "PREMIER ENERGIES LIMITED",
-      "security_id": "25049"
+      "security_id": "25049",
+      "future": {
+        "label": "PREMIERENE JUN FUT",
+        "trading_symbol": "PREMIERENE-JUN2026-FUT",
+        "security_id": "62793",
+        "expiry": "2026-06-30",
+        "lot_size": 575
+      }
     },
     {
       "symbol": "BAJAJHFL",
       "label": "BAJAJ HOUSING FINANCE LTD",
-      "security_id": "25270"
+      "security_id": "25270",
+      "future": null
     },
     {
       "symbol": "PGEL",
       "label": "PG ELECTROPLAST LTD",
-      "security_id": "25358"
+      "security_id": "25358",
+      "future": {
+        "label": "PGEL JUN FUT",
+        "trading_symbol": "PGEL-JUN2026-FUT",
+        "security_id": "62765",
+        "expiry": "2026-06-30",
+        "lot_size": 950
+      }
     },
     {
       "symbol": "TRITURBINE",
       "label": "TRIVENI TURBINE LIMITED",
-      "security_id": "25584"
+      "security_id": "25584",
+      "future": null
     },
     {
       "symbol": "POLYMED",
       "label": "POLY MEDICURE LIMITED",
-      "security_id": "25718"
+      "security_id": "25718",
+      "future": null
     },
     {
       "symbol": "APLAPOLLO",
       "label": "APL APOLLO TUBES LTD",
-      "security_id": "25780"
+      "security_id": "25780",
+      "future": {
+        "label": "APLAPOLLO JUN FUT",
+        "trading_symbol": "APLAPOLLO-JUN2026-FUT",
+        "security_id": "62362",
+        "expiry": "2026-06-30",
+        "lot_size": 350
+      }
     },
     {
       "symbol": "HYUNDAI",
       "label": "HYUNDAI MOTOR INDIA LTD",
-      "security_id": "25844"
+      "security_id": "25844",
+      "future": {
+        "label": "HYUNDAI JUN FUT",
+        "trading_symbol": "HYUNDAI-JUN2026-FUT",
+        "security_id": "62602",
+        "expiry": "2026-06-30",
+        "lot_size": 275
+      }
     },
     {
       "symbol": "MINDACORP",
       "label": "MINDA CORPORATION LTD",
-      "security_id": "25897"
+      "security_id": "25897",
+      "future": null
     },
     {
       "symbol": "WAAREEENER",
       "label": "WAAREE ENERGIES LIMITED",
-      "security_id": "25907"
+      "security_id": "25907",
+      "future": {
+        "label": "WAAREEENER JUN FUT",
+        "trading_symbol": "WAAREEENER-JUN2026-FUT",
+        "security_id": "62873",
+        "expiry": "2026-06-30",
+        "lot_size": 175
+      }
     },
     {
       "symbol": "AFCONS",
       "label": "AFCONS INFRASTRUCTURE LTD",
-      "security_id": "25977"
+      "security_id": "25977",
+      "future": null
     },
     {
       "symbol": "LEMONTREE",
       "label": "LEMON TREE HOTELS LTD",
-      "security_id": "2606"
+      "security_id": "2606",
+      "future": null
     },
     {
       "symbol": "ATUL",
       "label": "ATUL LTD",
-      "security_id": "263"
+      "security_id": "263",
+      "future": null
     },
     {
       "symbol": "PFIZER",
       "label": "PFIZER LTD",
-      "security_id": "2643"
+      "security_id": "2643",
+      "future": null
     },
     {
       "symbol": "PCBL",
       "label": "PCBL CHEMICAL LIMITED",
-      "security_id": "2649"
+      "security_id": "2649",
+      "future": null
     },
     {
       "symbol": "PIDILITIND",
       "label": "PIDILITE INDUSTRIES LTD",
-      "security_id": "2664"
+      "security_id": "2664",
+      "future": {
+        "label": "PIDILITIND JUN FUT",
+        "trading_symbol": "PIDILITIND-JUN2026-FUT",
+        "security_id": "62771",
+        "expiry": "2026-06-30",
+        "lot_size": 500
+      }
     },
     {
       "symbol": "SAGILITY",
       "label": "SAGILITY LIMITED",
-      "security_id": "27052"
+      "security_id": "27052",
+      "future": null
     },
     {
       "symbol": "ACMESOLAR",
       "label": "ACME SOLAR HOLDINGS LTD",
-      "security_id": "27061"
+      "security_id": "27061",
+      "future": null
     },
     {
       "symbol": "SWIGGY",
       "label": "SWIGGY LIMITED",
-      "security_id": "27066"
+      "security_id": "27066",
+      "future": {
+        "label": "SWIGGY JUN FUT",
+        "trading_symbol": "SWIGGY-JUN2026-FUT",
+        "security_id": "62841",
+        "expiry": "2026-06-30",
+        "lot_size": 1300
+      }
     },
     {
       "symbol": "SWANCORP",
       "label": "SWAN CORP LIMITED",
-      "security_id": "27095"
+      "security_id": "27095",
+      "future": null
     },
     {
       "symbol": "NIVABUPA",
       "label": "NIVA BUPA HEALTH INS CO L",
-      "security_id": "27097"
+      "security_id": "27097",
+      "future": null
     },
     {
       "symbol": "NTPCGREEN",
       "label": "NTPC GREEN ENERGY LIMITED",
-      "security_id": "27176"
+      "security_id": "27176",
+      "future": null
     },
     {
       "symbol": "AUROPHARMA",
       "label": "AUROBINDO PHARMA LTD",
-      "security_id": "275"
+      "security_id": "275",
+      "future": {
+        "label": "AUROPHARMA JUN FUT",
+        "trading_symbol": "AUROPHARMA-JUN2026-FUT",
+        "security_id": "62372",
+        "expiry": "2026-06-30",
+        "lot_size": 550
+      }
     },
     {
       "symbol": "GICRE",
       "label": "GENERAL INS CORP OF INDIA",
-      "security_id": "277"
+      "security_id": "277",
+      "future": null
     },
     {
       "symbol": "JUBLINGREA",
       "label": "JUBILANT INGREVIA LIMITED",
-      "security_id": "2783"
+      "security_id": "2783",
+      "future": null
     },
     {
       "symbol": "SAILIFE",
       "label": "SAI LIFE SCIENCES LIMITED",
-      "security_id": "27839"
+      "security_id": "27839",
+      "future": null
     },
     {
       "symbol": "VMM",
       "label": "VISHAL MEGA MART LIMITED",
-      "security_id": "27969"
+      "security_id": "27969",
+      "future": {
+        "label": "VMM JUN FUT",
+        "trading_symbol": "VMM-JUN2026-FUT",
+        "security_id": "62871",
+        "expiry": "2026-06-30",
+        "lot_size": 4850
+      }
     },
     {
       "symbol": "IKS",
       "label": "INVENTURUS KNOWLEDGE SO L",
-      "security_id": "28125"
+      "security_id": "28125",
+      "future": null
     },
     {
       "symbol": "ANURAS",
       "label": "ANUPAM RASAYAN INDIA LTD",
-      "security_id": "2829"
+      "security_id": "2829",
+      "future": null
     },
     {
       "symbol": "IGIL",
       "label": "INTL GEMOLOGICAL INST LTD",
-      "security_id": "28378"
+      "security_id": "28378",
+      "future": null
     },
     {
       "symbol": "CRAFTSMAN",
       "label": "CRAFTSMAN AUTOMATION LTD",
-      "security_id": "2854"
+      "security_id": "2854",
+      "future": null
     },
     {
       "symbol": "RELIANCE",
       "label": "RELIANCE INDUSTRIES LTD",
-      "security_id": "2885"
+      "security_id": "2885",
+      "future": {
+        "label": "RELIANCE JUN FUT",
+        "trading_symbol": "RELIANCE-JUN2026-FUT",
+        "security_id": "62802",
+        "expiry": "2026-06-30",
+        "lot_size": 500
+      }
     },
     {
       "symbol": "INDUSTOWER",
       "label": "INDUS TOWERS LIMITED",
-      "security_id": "29135"
+      "security_id": "29135",
+      "future": {
+        "label": "INDUSTOWER JUN FUT",
+        "trading_symbol": "INDUSTOWER-JUN2026-FUT",
+        "security_id": "62619",
+        "expiry": "2026-06-30",
+        "lot_size": 1700
+      }
     },
     {
       "symbol": "ONESOURCE",
       "label": "ONESOURCE SPECL PHARMA L",
-      "security_id": "29224"
+      "security_id": "29224",
+      "future": null
     },
     {
       "symbol": "ITCHOTELS",
       "label": "ITC HOTELS LIMITED",
-      "security_id": "29251"
+      "security_id": "29251",
+      "future": null
     },
     {
       "symbol": "KALYANKJIL",
       "label": "KALYAN JEWELLERS IND LTD",
-      "security_id": "2955"
+      "security_id": "2955",
+      "future": {
+        "label": "KALYANKJIL JUN FUT",
+        "trading_symbol": "KALYANKJIL-JUN2026-FUT",
+        "security_id": "62645",
+        "expiry": "2026-06-30",
+        "lot_size": 1175
+      }
     },
     {
       "symbol": "SAIL",
       "label": "STEEL AUTHORITY OF INDIA",
-      "security_id": "2963"
+      "security_id": "2963",
+      "future": {
+        "label": "SAIL JUN FUT",
+        "trading_symbol": "SAIL-JUN2026-FUT",
+        "security_id": "62806",
+        "expiry": "2026-06-30",
+        "lot_size": 4700
+      }
     },
     {
       "symbol": "HEXT",
       "label": "HEXAWARE TECHNOLOGIES LTD",
-      "security_id": "29666"
+      "security_id": "29666",
+      "future": null
     },
     {
       "symbol": "ABFRL",
       "label": "ADITYA BIRLA FASHION & RT",
-      "security_id": "30108"
+      "security_id": "30108",
+      "future": null
     },
     {
       "symbol": "SAMMAANCAP",
       "label": "SAMMAAN CAPITAL LIMITED",
-      "security_id": "30125"
+      "security_id": "30125",
+      "future": {
+        "label": "SAMMAANCAP JUN FUT",
+        "trading_symbol": "SAMMAANCAP-JUN2026-FUT",
+        "security_id": "62807",
+        "expiry": "2026-06-30",
+        "lot_size": 4300
+      }
     },
     {
       "symbol": "JINDALSAW",
       "label": "JINDAL SAW LIMITED",
-      "security_id": "3024"
+      "security_id": "3024",
+      "future": null
     },
     {
       "symbol": "SBIN",
       "label": "STATE BANK OF INDIA",
-      "security_id": "3045"
+      "security_id": "3045",
+      "future": {
+        "label": "SBIN JUN FUT",
+        "trading_symbol": "SBIN-JUN2026-FUT",
+        "security_id": "62812",
+        "expiry": "2026-06-30",
+        "lot_size": 750
+      }
     },
     {
       "symbol": "SCI",
       "label": "SHIPPING CORP OF INDIA LT",
-      "security_id": "3048"
+      "security_id": "3048",
+      "future": null
     },
     {
       "symbol": "BAJAJHLDNG",
       "label": "BAJAJ HOLDINGS & INVS LTD",
-      "security_id": "305"
+      "security_id": "305",
+      "future": {
+        "label": "BAJAJHLDNG JUN FUT",
+        "trading_symbol": "BAJAJHLDNG-JUN2026-FUT",
+        "security_id": "62376",
+        "expiry": "2026-06-30",
+        "lot_size": 50
+      }
     },
     {
       "symbol": "VEDL",
       "label": "VEDANTA LIMITED",
-      "security_id": "3063"
+      "security_id": "3063",
+      "future": {
+        "label": "VEDL JUN FUT",
+        "trading_symbol": "VEDL-JUN2026-FUT",
+        "security_id": "62867",
+        "expiry": "2026-06-30",
+        "lot_size": 1150
+      }
     },
     {
       "symbol": "SHREECEM",
       "label": "SHREE CEMENT LIMITED",
-      "security_id": "3103"
+      "security_id": "3103",
+      "future": {
+        "label": "SHREECEM JUN FUT",
+        "trading_symbol": "SHREECEM-JUN2026-FUT",
+        "security_id": "62813",
+        "expiry": "2026-06-30",
+        "lot_size": 25
+      }
     },
     {
       "symbol": "RHIM",
       "label": "RHI MAGNESITA INDIA LTD",
-      "security_id": "31163"
+      "security_id": "31163",
+      "future": null
     },
     {
       "symbol": "MCX",
       "label": "MULTI COMMODITY EXCHANGE",
-      "security_id": "31181"
+      "security_id": "31181",
+      "future": {
+        "label": "MCX JUN FUT",
+        "trading_symbol": "MCX-JUN2026-FUT",
+        "security_id": "62686",
+        "expiry": "2026-06-30",
+        "lot_size": 625
+      }
     },
     {
       "symbol": "TIINDIA",
       "label": "TUBE INVEST OF INDIA LTD",
-      "security_id": "312"
+      "security_id": "312",
+      "future": {
+        "label": "TIINDIA JUN FUT",
+        "trading_symbol": "TIINDIA-JUN2026-FUT",
+        "security_id": "62853",
+        "expiry": "2026-06-30",
+        "lot_size": 200
+      }
     },
     {
       "symbol": "SCHNEIDER",
       "label": "SCHNEIDER ELECTRIC INFRA",
-      "security_id": "31234"
+      "security_id": "31234",
+      "future": null
     },
     {
       "symbol": "NBCC",
       "label": "NBCC (INDIA) LIMITED",
-      "security_id": "31415"
+      "security_id": "31415",
+      "future": {
+        "label": "NBCC JUN FUT",
+        "trading_symbol": "NBCC-JUN2026-FUT",
+        "security_id": "62713",
+        "expiry": "2026-06-30",
+        "lot_size": 6500
+      }
     },
     {
       "symbol": "SIEMENS",
       "label": "SIEMENS LTD",
-      "security_id": "3150"
+      "security_id": "3150",
+      "future": {
+        "label": "SIEMENS JUN FUT",
+        "trading_symbol": "SIEMENS-JUN2026-FUT",
+        "security_id": "62825",
+        "expiry": "2026-06-30",
+        "lot_size": 175
+      }
     },
     {
       "symbol": "BAJFINANCE",
       "label": "BAJAJ FINANCE LIMITED",
-      "security_id": "317"
+      "security_id": "317",
+      "future": {
+        "label": "BAJFINANCE JUN FUT",
+        "trading_symbol": "BAJFINANCE-JUN2026-FUT",
+        "security_id": "62377",
+        "expiry": "2026-06-30",
+        "lot_size": 750
+      }
     },
     {
       "symbol": "LODHA",
       "label": "LODHA DEVELOPERS LIMITED",
-      "security_id": "3220"
+      "security_id": "3220",
+      "future": {
+        "label": "LODHA JUN FUT",
+        "trading_symbol": "LODHA-JUN2026-FUT",
+        "security_id": "62664",
+        "expiry": "2026-06-30",
+        "lot_size": 450
+      }
     },
     {
       "symbol": "ANGELONE",
       "label": "ANGEL ONE LIMITED",
-      "security_id": "324"
+      "security_id": "324",
+      "future": {
+        "label": "ANGELONE JUN FUT",
+        "trading_symbol": "ANGELONE-JUN2026-FUT",
+        "security_id": "62361",
+        "expiry": "2026-06-30",
+        "lot_size": 2500
+      }
     },
     {
       "symbol": "SRF",
       "label": "SRF LTD",
-      "security_id": "3273"
+      "security_id": "3273",
+      "future": {
+        "label": "SRF JUN FUT",
+        "trading_symbol": "SRF-JUN2026-FUT",
+        "security_id": "62830",
+        "expiry": "2026-06-30",
+        "lot_size": 200
+      }
     },
     {
       "symbol": "SUNDARMFIN",
       "label": "SUNDARAM FINANCE LTD",
-      "security_id": "3339"
+      "security_id": "3339",
+      "future": null
     },
     {
       "symbol": "BALKRISIND",
       "label": "BALKRISHNA IND. LTD",
-      "security_id": "335"
+      "security_id": "335",
+      "future": null
     },
     {
       "symbol": "SUNPHARMA",
       "label": "SUN PHARMACEUTICAL IND L",
-      "security_id": "3351"
+      "security_id": "3351",
+      "future": {
+        "label": "SUNPHARMA JUN FUT",
+        "trading_symbol": "SUNPHARMA-JUN2026-FUT",
+        "security_id": "62838",
+        "expiry": "2026-06-30",
+        "lot_size": 350
+      }
     },
     {
       "symbol": "SUPREMEIND",
       "label": "SUPREME INDUSTRIES LTD",
-      "security_id": "3363"
+      "security_id": "3363",
+      "future": {
+        "label": "SUPREMEIND JUN FUT",
+        "trading_symbol": "SUPREMEIND-JUN2026-FUT",
+        "security_id": "62839",
+        "expiry": "2026-06-30",
+        "lot_size": 175
+      }
     },
     {
       "symbol": "TATACHEM",
       "label": "TATA CHEMICALS LTD",
-      "security_id": "3405"
+      "security_id": "3405",
+      "future": null
     },
     {
       "symbol": "BALRAMCHIN",
       "label": "BALRAMPUR CHINI MILLS LTD",
-      "security_id": "341"
+      "security_id": "341",
+      "future": null
     },
     {
       "symbol": "TATAELXSI",
       "label": "TATA ELXSI LIMITED",
-      "security_id": "3411"
+      "security_id": "3411",
+      "future": {
+        "label": "TATAELXSI JUN FUT",
+        "trading_symbol": "TATAELXSI-JUN2026-FUT",
+        "security_id": "62848",
+        "expiry": "2026-06-30",
+        "lot_size": 100
+      }
     },
     {
       "symbol": "HONAUT",
       "label": "HONEYWELL AUTOMATION IND",
-      "security_id": "3417"
+      "security_id": "3417",
+      "future": null
     },
     {
       "symbol": "CAMS",
       "label": "COMPUTER AGE MNGT SER LTD",
-      "security_id": "342"
+      "security_id": "342",
+      "future": {
+        "label": "CAMS JUN FUT",
+        "trading_symbol": "CAMS-JUN2026-FUT",
+        "security_id": "62396",
+        "expiry": "2026-06-30",
+        "lot_size": 750
+      }
     },
     {
       "symbol": "TATAPOWER",
       "label": "TATA POWER CO LTD",
-      "security_id": "3426"
+      "security_id": "3426",
+      "future": {
+        "label": "TATAPOWER JUN FUT",
+        "trading_symbol": "TATAPOWER-JUN2026-FUT",
+        "security_id": "62849",
+        "expiry": "2026-06-30",
+        "lot_size": 1450
+      }
     },
     {
       "symbol": "TATACONSUM",
       "label": "TATA CONSUMER PRODUCT LTD",
-      "security_id": "3432"
+      "security_id": "3432",
+      "future": {
+        "label": "TATACONSUM JUN FUT",
+        "trading_symbol": "TATACONSUM-JUN2026-FUT",
+        "security_id": "62842",
+        "expiry": "2026-06-30",
+        "lot_size": 550
+      }
     },
     {
       "symbol": "TMPV",
       "label": "TATA MOTORS PASS VEH LTD",
-      "security_id": "3456"
+      "security_id": "3456",
+      "future": {
+        "label": "TMPV JUN FUT",
+        "trading_symbol": "TMPV-JUN2026-FUT",
+        "security_id": "62855",
+        "expiry": "2026-06-30",
+        "lot_size": 800
+      }
     },
     {
       "symbol": "THERMAX",
       "label": "THERMAX LTD",
-      "security_id": "3475"
+      "security_id": "3475",
+      "future": null
     },
     {
       "symbol": "TATASTEEL",
       "label": "TATA STEEL LIMITED",
-      "security_id": "3499"
+      "security_id": "3499",
+      "future": {
+        "label": "TATASTEEL JUN FUT",
+        "trading_symbol": "TATASTEEL-JUN2026-FUT",
+        "security_id": "62850",
+        "expiry": "2026-06-30",
+        "lot_size": 2750
+      }
     },
     {
       "symbol": "TITAN",
       "label": "TITAN COMPANY LIMITED",
-      "security_id": "3506"
+      "security_id": "3506",
+      "future": {
+        "label": "TITAN JUN FUT",
+        "trading_symbol": "TITAN-JUN2026-FUT",
+        "security_id": "62854",
+        "expiry": "2026-06-30",
+        "lot_size": 175
+      }
     },
     {
       "symbol": "TORNTPHARM",
       "label": "TORRENT PHARMACEUTICALS L",
-      "security_id": "3518"
+      "security_id": "3518",
+      "future": {
+        "label": "TORNTPHARM JUN FUT",
+        "trading_symbol": "TORNTPHARM-JUN2026-FUT",
+        "security_id": "62858",
+        "expiry": "2026-06-30",
+        "lot_size": 125
+      }
     },
     {
       "symbol": "ADANIGREEN",
       "label": "ADANI GREEN ENERGY LTD",
-      "security_id": "3563"
+      "security_id": "3563",
+      "future": {
+        "label": "ADANIGREEN JUN FUT",
+        "trading_symbol": "ADANIGREEN-JUN2026-FUT",
+        "security_id": "62344",
+        "expiry": "2026-06-30",
+        "lot_size": 600
+      }
     },
     {
       "symbol": "NAM-INDIA",
       "label": "NIPPON L I A M LTD",
-      "security_id": "357"
+      "security_id": "357",
+      "future": {
+        "label": "NAM-INDIA JUN FUT",
+        "trading_symbol": "NAM-INDIA-JUN2026-FUT",
+        "security_id": "62710",
+        "expiry": "2026-06-30",
+        "lot_size": 625
+      }
     },
     {
       "symbol": "JUBLPHARMA",
       "label": "JUBILANT PHARMOVA LTD",
-      "security_id": "3637"
+      "security_id": "3637",
+      "future": null
     },
     {
       "symbol": "BATAINDIA",
       "label": "BATA INDIA LTD",
-      "security_id": "371"
+      "security_id": "371",
+      "future": null
     },
     {
       "symbol": "VOLTAS",
       "label": "VOLTAS LTD",
-      "security_id": "3718"
+      "security_id": "3718",
+      "future": {
+        "label": "VOLTAS JUN FUT",
+        "trading_symbol": "VOLTAS-JUN2026-FUT",
+        "security_id": "62872",
+        "expiry": "2026-06-30",
+        "lot_size": 375
+      }
     },
     {
       "symbol": "TATACOMM",
       "label": "TATA COMMUNICATIONS LTD",
-      "security_id": "3721"
+      "security_id": "3721",
+      "future": null
     },
     {
       "symbol": "RITES",
       "label": "RITES LIMITED",
-      "security_id": "3761"
+      "security_id": "3761",
+      "future": null
     },
     {
       "symbol": "WIPRO",
       "label": "WIPRO LTD",
-      "security_id": "3787"
+      "security_id": "3787",
+      "future": {
+        "label": "WIPRO JUN FUT",
+        "trading_symbol": "WIPRO-JUN2026-FUT",
+        "security_id": "62874",
+        "expiry": "2026-06-30",
+        "lot_size": 3000
+      }
     },
     {
       "symbol": "BBTC",
       "label": "BOMBAY BURMAH TRADING COR",
-      "security_id": "380"
+      "security_id": "380",
+      "future": null
     },
     {
       "symbol": "ZEEL",
       "label": "ZEE ENTERTAINMENT ENT LTD",
-      "security_id": "3812"
+      "security_id": "3812",
+      "future": null
     },
     {
       "symbol": "BEL",
       "label": "BHARAT ELECTRONICS LTD",
-      "security_id": "383"
+      "security_id": "383",
+      "future": {
+        "label": "BEL JUN FUT",
+        "trading_symbol": "BEL-JUN2026-FUT",
+        "security_id": "62382",
+        "expiry": "2026-06-30",
+        "lot_size": 1425
+      }
     },
     {
       "symbol": "CAPLIPOINT",
       "label": "CAPLIN POINT LAB LTD.",
-      "security_id": "3906"
+      "security_id": "3906",
+      "future": null
     },
     {
       "symbol": "NATCOPHARM",
       "label": "NATCO PHARMA LTD.",
-      "security_id": "3918"
+      "security_id": "3918",
+      "future": null
     },
     {
       "symbol": "BEML",
       "label": "BEML LIMITED",
-      "security_id": "395"
+      "security_id": "395",
+      "future": null
     },
     {
       "symbol": "NIACL",
       "label": "THE NEW INDIA ASSU CO LTD",
-      "security_id": "399"
+      "security_id": "399",
+      "future": null
     },
     {
       "symbol": "AEGISLOG",
       "label": "AEGIS LOGISTICS LIMITED",
-      "security_id": "40"
+      "security_id": "40",
+      "future": null
     },
     {
       "symbol": "NAVA",
       "label": "NAVA LIMITED",
-      "security_id": "4014"
+      "security_id": "4014",
+      "future": null
     },
     {
       "symbol": "BERGEPAINT",
       "label": "BERGER PAINTS (I) LTD",
-      "security_id": "404"
+      "security_id": "404",
+      "future": null
     },
     {
       "symbol": "MARICO",
       "label": "MARICO LIMITED",
-      "security_id": "4067"
+      "security_id": "4067",
+      "future": {
+        "label": "MARICO JUN FUT",
+        "trading_symbol": "MARICO-JUN2026-FUT",
+        "security_id": "62682",
+        "expiry": "2026-06-30",
+        "lot_size": 1200
+      }
     },
     {
       "symbol": "MOTHERSON",
       "label": "SAMVRDHNA MTHRSN INTL LTD",
-      "security_id": "4204"
+      "security_id": "4204",
+      "future": {
+        "label": "MOTHERSON JUN FUT",
+        "trading_symbol": "MOTHERSON-JUN2026-FUT",
+        "security_id": "62688",
+        "expiry": "2026-06-30",
+        "lot_size": 6150
+      }
     },
     {
       "symbol": "BHARATFORG",
       "label": "BHARAT FORGE LTD",
-      "security_id": "422"
+      "security_id": "422",
+      "future": {
+        "label": "BHARATFORG JUN FUT",
+        "trading_symbol": "BHARATFORG-JUN2026-FUT",
+        "security_id": "62383",
+        "expiry": "2026-06-30",
+        "lot_size": 500
+      }
     },
     {
       "symbol": "HDFCAMC",
       "label": "HDFC AMC LIMITED",
-      "security_id": "4244"
+      "security_id": "4244",
+      "future": {
+        "label": "HDFCAMC JUN FUT",
+        "trading_symbol": "HDFCAMC-JUN2026-FUT",
+        "security_id": "62592",
+        "expiry": "2026-06-30",
+        "lot_size": 300
+      }
     },
     {
       "symbol": "SHRIRAMFIN",
       "label": "SHRIRAM FINANCE LIMITED",
-      "security_id": "4306"
+      "security_id": "4306",
+      "future": {
+        "label": "SHRIRAMFIN JUN FUT",
+        "trading_symbol": "SHRIRAMFIN-JUN2026-FUT",
+        "security_id": "62816",
+        "expiry": "2026-06-30",
+        "lot_size": 825
+      }
     },
     {
       "symbol": "BHEL",
       "label": "BHEL",
-      "security_id": "438"
+      "security_id": "438",
+      "future": {
+        "label": "BHEL JUN FUT",
+        "trading_symbol": "BHEL-JUN2026-FUT",
+        "security_id": "62385",
+        "expiry": "2026-06-30",
+        "lot_size": 2625
+      }
     },
     {
       "symbol": "CREDITACC",
       "label": "CREDITACCESS GRAMEEN LTD",
-      "security_id": "4421"
+      "security_id": "4421",
+      "future": null
     },
     {
       "symbol": "MPHASIS",
       "label": "MPHASIS LIMITED",
-      "security_id": "4503"
+      "security_id": "4503",
+      "future": {
+        "label": "MPHASIS JUN FUT",
+        "trading_symbol": "MPHASIS-JUN2026-FUT",
+        "security_id": "62694",
+        "expiry": "2026-06-30",
+        "lot_size": 275
+      }
     },
     {
       "symbol": "BANKBARODA",
       "label": "BANK OF BARODA",
-      "security_id": "4668"
+      "security_id": "4668",
+      "future": {
+        "label": "BANKBARODA JUN FUT",
+        "trading_symbol": "BANKBARODA-JUN2026-FUT",
+        "security_id": "62379",
+        "expiry": "2026-06-30",
+        "lot_size": 2925
+      }
     },
     {
       "symbol": "HDFCLIFE",
       "label": "HDFC LIFE INS CO LTD",
-      "security_id": "467"
+      "security_id": "467",
+      "future": {
+        "label": "HDFCLIFE JUN FUT",
+        "trading_symbol": "HDFCLIFE-JUN2026-FUT",
+        "security_id": "62594",
+        "expiry": "2026-06-30",
+        "lot_size": 1100
+      }
     },
     {
       "symbol": "SONACOMS",
       "label": "SONA BLW PRECISION FRGS L",
-      "security_id": "4684"
+      "security_id": "4684",
+      "future": {
+        "label": "SONACOMS JUN FUT",
+        "trading_symbol": "SONACOMS-JUN2026-FUT",
+        "security_id": "62827",
+        "expiry": "2026-06-30",
+        "lot_size": 1225
+      }
     },
     {
       "symbol": "SHYAMMETL",
       "label": "SHYAM METALICS AND ENGY L",
-      "security_id": "4693"
+      "security_id": "4693",
+      "future": null
     },
     {
       "symbol": "GAIL",
       "label": "GAIL (INDIA) LTD",
-      "security_id": "4717"
+      "security_id": "4717",
+      "future": {
+        "label": "GAIL JUN FUT",
+        "trading_symbol": "GAIL-JUN2026-FUT",
+        "security_id": "62575",
+        "expiry": "2026-06-30",
+        "lot_size": 3150
+      }
     },
     {
       "symbol": "3MINDIA",
       "label": "3M INDIA LIMITED",
-      "security_id": "474"
+      "security_id": "474",
+      "future": null
     },
     {
       "symbol": "BANKINDIA",
       "label": "BANK OF INDIA",
-      "security_id": "4745"
+      "security_id": "4745",
+      "future": {
+        "label": "BANKINDIA JUN FUT",
+        "trading_symbol": "BANKINDIA-JUN2026-FUT",
+        "security_id": "62380",
+        "expiry": "2026-06-30",
+        "lot_size": 5200
+      }
     },
     {
       "symbol": "CONCOR",
       "label": "CONTAINER CORP OF IND LTD",
-      "security_id": "4749"
+      "security_id": "4749",
+      "future": {
+        "label": "CONCOR JUN FUT",
+        "trading_symbol": "CONCOR-JUN2026-FUT",
+        "security_id": "62499",
+        "expiry": "2026-06-30",
+        "lot_size": 1250
+      }
     },
     {
       "symbol": "KIMS",
       "label": "KRISHNA INST OF MED SCI L",
-      "security_id": "4847"
+      "security_id": "4847",
+      "future": null
     },
     {
       "symbol": "SAREGAMA",
       "label": "SAREGAMA INDIA LIMITED",
-      "security_id": "4892"
+      "security_id": "4892",
+      "future": null
     },
     {
       "symbol": "ENGINERSIN",
       "label": "ENGINEERS INDIA LTD",
-      "security_id": "4907"
+      "security_id": "4907",
+      "future": null
     },
     {
       "symbol": "BLUEDART",
       "label": "BLUE DART EXPRESS LTD",
-      "security_id": "495"
+      "security_id": "495",
+      "future": null
     },
     {
       "symbol": "ICICIBANK",
       "label": "ICICI BANK LTD.",
-      "security_id": "4963"
+      "security_id": "4963",
+      "future": {
+        "label": "ICICIBANK JUN FUT",
+        "trading_symbol": "ICICIBANK-JUN2026-FUT",
+        "security_id": "62604",
+        "expiry": "2026-06-30",
+        "lot_size": 700
+      }
     },
     {
       "symbol": "IRCON",
       "label": "IRCON INTERNATIONAL LTD",
-      "security_id": "4986"
+      "security_id": "4986",
+      "future": null
     },
     {
       "symbol": "CLEAN",
       "label": "CLEAN SCIENCE & TECH LTD",
-      "security_id": "5049"
+      "security_id": "5049",
+      "future": null
     },
     {
       "symbol": "MAZDOCK",
       "label": "MAZAGON DOCK SHIPBUIL LTD",
-      "security_id": "509"
+      "security_id": "509",
+      "future": {
+        "label": "MAZDOCK JUN FUT",
+        "trading_symbol": "MAZDOCK-JUN2026-FUT",
+        "security_id": "62685",
+        "expiry": "2026-06-30",
+        "lot_size": 200
+      }
     },
     {
       "symbol": "ETERNAL",
       "label": "ETERNAL LIMITED",
-      "security_id": "5097"
+      "security_id": "5097",
+      "future": {
+        "label": "ETERNAL JUN FUT",
+        "trading_symbol": "ETERNAL-JUN2026-FUT",
+        "security_id": "62567",
+        "expiry": "2026-06-30",
+        "lot_size": 2425
+      }
     },
     {
       "symbol": "GMDCLTD",
       "label": "GUJARAT MINERAL DEV CORP",
-      "security_id": "5204"
+      "security_id": "5204",
+      "future": null
     },
     {
       "symbol": "INDUSINDBK",
       "label": "INDUSIND BANK LIMITED",
-      "security_id": "5258"
+      "security_id": "5258",
+      "future": {
+        "label": "INDUSINDBK JUN FUT",
+        "trading_symbol": "INDUSINDBK-JUN2026-FUT",
+        "security_id": "62618",
+        "expiry": "2026-06-30",
+        "lot_size": 700
+      }
     },
     {
       "symbol": "BPCL",
       "label": "BHARAT PETROLEUM CORP  LT",
-      "security_id": "526"
+      "security_id": "526",
+      "future": {
+        "label": "BPCL JUN FUT",
+        "trading_symbol": "BPCL-JUN2026-FUT",
+        "security_id": "62393",
+        "expiry": "2026-06-30",
+        "lot_size": 1975
+      }
     },
     {
       "symbol": "UTIAMC",
       "label": "UTI ASSET MNGMT CO LTD",
-      "security_id": "527"
+      "security_id": "527",
+      "future": null
     },
     {
       "symbol": "DEVYANI",
       "label": "DEVYANI INTERNATIONAL LTD",
-      "security_id": "5373"
+      "security_id": "5373",
+      "future": null
     },
     {
       "symbol": "ASAHIINDIA",
       "label": "ASAHI INDIA GLASS LIMITED",
-      "security_id": "5378"
+      "security_id": "5378",
+      "future": null
     },
     {
       "symbol": "AAVAS",
       "label": "AAVAS FINANCIERS LIMITED",
-      "security_id": "5385"
+      "security_id": "5385",
+      "future": null
     },
     {
       "symbol": "CARTRADE",
       "label": "CARTRADE TECH LIMITED",
-      "security_id": "5407"
+      "security_id": "5407",
+      "future": null
     },
     {
       "symbol": "NUVOCO",
       "label": "NUVOCO VISTAS CORP LTD",
-      "security_id": "5426"
+      "security_id": "5426",
+      "future": null
     },
     {
       "symbol": "APTUS",
       "label": "APTUS VALUE HSG FIN I LTD",
-      "security_id": "5435"
+      "security_id": "5435",
+      "future": null
     },
     {
       "symbol": "BRITANNIA",
       "label": "BRITANNIA INDUSTRIES LTD",
-      "security_id": "547"
+      "security_id": "547",
+      "future": {
+        "label": "BRITANNIA JUN FUT",
+        "trading_symbol": "BRITANNIA-JUN2026-FUT",
+        "security_id": "62394",
+        "expiry": "2026-06-30",
+        "lot_size": 125
+      }
     },
     {
       "symbol": "GRSE",
       "label": "GARDEN REACH SHIP&ENG LTD",
-      "security_id": "5475"
+      "security_id": "5475",
+      "future": null
     },
     {
       "symbol": "ACUTAAS",
       "label": "ACUTAAS CHEMICALS LIMITED",
-      "security_id": "5578"
+      "security_id": "5578",
+      "future": null
     },
     {
       "symbol": "VIJAYA",
       "label": "VIJAYA DIAGNOSTIC CEN LTD",
-      "security_id": "5585"
+      "security_id": "5585",
+      "future": null
     },
     {
       "symbol": "CEMPRO",
       "label": "CEMINDIA PROJECTS LIMITED",
-      "security_id": "5622"
+      "security_id": "5622",
+      "future": null
     },
     {
       "symbol": "J&KBANK",
       "label": "J & K BANK LTD.",
-      "security_id": "5633"
+      "security_id": "5633",
+      "future": null
     },
     {
       "symbol": "CUB",
       "label": "CITY UNION BANK LTD",
-      "security_id": "5701"
+      "security_id": "5701",
+      "future": null
     },
     {
       "symbol": "CYIENT",
       "label": "CYIENT LIMITED",
-      "security_id": "5748"
+      "security_id": "5748",
+      "future": null
     },
     {
       "symbol": "CANFINHOME",
       "label": "CAN FIN HOMES LTD",
-      "security_id": "583"
+      "security_id": "583",
+      "future": null
     },
     {
       "symbol": "AXISBANK",
       "label": "AXIS BANK LIMITED",
-      "security_id": "5900"
+      "security_id": "5900",
+      "future": {
+        "label": "AXISBANK JUN FUT",
+        "trading_symbol": "AXISBANK-JUN2026-FUT",
+        "security_id": "62373",
+        "expiry": "2026-06-30",
+        "lot_size": 625
+      }
     },
     {
       "symbol": "GRAPHITE",
       "label": "GRAPHITE INDIA LTD",
-      "security_id": "592"
+      "security_id": "592",
+      "future": null
     },
     {
       "symbol": "INTELLECT",
       "label": "INTELLECT DESIGN ARENA",
-      "security_id": "5926"
+      "security_id": "5926",
+      "future": null
     },
     {
       "symbol": "CARBORUNIV",
       "label": "CARBORUNDUM UNIVERSAL LTD",
-      "security_id": "595"
+      "security_id": "595",
+      "future": null
     },
     {
       "symbol": "ABSLAMC",
       "label": "ADIT BIRL SUN LIF AMC LTD",
-      "security_id": "6018"
+      "security_id": "6018",
+      "future": null
     },
     {
       "symbol": "ATGL",
       "label": "ADANI TOTAL GAS LIMITED",
-      "security_id": "6066"
+      "security_id": "6066",
+      "future": null
     },
     {
       "symbol": "ABREL",
       "label": "ADITYA BIRLA REAL EST LTD",
-      "security_id": "625"
+      "security_id": "625",
+      "future": null
     },
     {
       "symbol": "CESC",
       "label": "CESC LTD",
-      "security_id": "628"
+      "security_id": "628",
+      "future": null
     },
     {
       "symbol": "NATIONALUM",
       "label": "NATIONAL ALUMINIUM CO LTD",
-      "security_id": "6364"
+      "security_id": "6364",
+      "future": {
+        "label": "NATIONALUM JUN FUT",
+        "trading_symbol": "NATIONALUM-JUN2026-FUT",
+        "security_id": "62711",
+        "expiry": "2026-06-30",
+        "lot_size": 1875
+      }
     },
     {
       "symbol": "CHAMBLFERT",
       "label": "CHAMBAL FERTILIZERS LTD",
-      "security_id": "637"
+      "security_id": "637",
+      "future": null
     },
     {
       "symbol": "TECHNOE",
       "label": "TECHNO ELEC & ENG CO. LTD",
-      "security_id": "6445"
+      "security_id": "6445",
+      "future": null
     },
     {
       "symbol": "NYKAA",
       "label": "FSN E COMMERCE VENTURES",
-      "security_id": "6545"
+      "security_id": "6545",
+      "future": {
+        "label": "NYKAA JUN FUT",
+        "trading_symbol": "NYKAA-JUN2026-FUT",
+        "security_id": "62719",
+        "expiry": "2026-06-30",
+        "lot_size": 3125
+      }
     },
     {
       "symbol": "SONATSOFTW",
       "label": "SONATA SOFTWARE LTD",
-      "security_id": "6596"
+      "security_id": "6596",
+      "future": null
     },
     {
       "symbol": "POLICYBZR",
       "label": "PB FINTECH LIMITED",
-      "security_id": "6656"
+      "security_id": "6656",
+      "future": {
+        "label": "POLICYBZR JUN FUT",
+        "trading_symbol": "POLICYBZR-JUN2026-FUT",
+        "security_id": "62789",
+        "expiry": "2026-06-30",
+        "lot_size": 350
+      }
     },
     {
       "symbol": "PAYTM",
       "label": "ONE 97 COMMUNICATIONS LTD",
-      "security_id": "6705"
+      "security_id": "6705",
+      "future": {
+        "label": "PAYTM JUN FUT",
+        "trading_symbol": "PAYTM-JUN2026-FUT",
+        "security_id": "62745",
+        "expiry": "2026-06-30",
+        "lot_size": 725
+      }
     },
     {
       "symbol": "SAPPHIRE",
       "label": "SAPPHIRE FOODS INDIA LTD",
-      "security_id": "6718"
+      "security_id": "6718",
+      "future": null
     },
     {
       "symbol": "JINDALSTEL",
       "label": "JINDAL STEEL LIMITED",
-      "security_id": "6733"
+      "security_id": "6733",
+      "future": {
+        "label": "JINDALSTEL JUN FUT",
+        "trading_symbol": "JINDALSTEL-JUN2026-FUT",
+        "security_id": "62630",
+        "expiry": "2026-06-30",
+        "lot_size": 625
+      }
     },
     {
       "symbol": "EXIDEIND",
       "label": "EXIDE INDUSTRIES LTD",
-      "security_id": "676"
+      "security_id": "676",
+      "future": {
+        "label": "EXIDEIND JUN FUT",
+        "trading_symbol": "EXIDEIND-JUN2026-FUT",
+        "security_id": "62568",
+        "expiry": "2026-06-30",
+        "lot_size": 1800
+      }
     },
     {
       "symbol": "LATENTVIEW",
       "label": "LATENT VIEW ANALYTICS LTD",
-      "security_id": "6818"
+      "security_id": "6818",
+      "future": null
     },
     {
       "symbol": "CHOLAFIN",
       "label": "CHOLAMANDALAM IN & FIN CO",
-      "security_id": "685"
+      "security_id": "685",
+      "future": {
+        "label": "CHOLAFIN JUN FUT",
+        "trading_symbol": "CHOLAFIN-JUN2026-FUT",
+        "security_id": "62406",
+        "expiry": "2026-06-30",
+        "lot_size": 625
+      }
     },
     {
       "symbol": "CIPLA",
       "label": "CIPLA LTD",
-      "security_id": "694"
+      "security_id": "694",
+      "future": {
+        "label": "CIPLA JUN FUT",
+        "trading_symbol": "CIPLA-JUN2026-FUT",
+        "security_id": "62407",
+        "expiry": "2026-06-30",
+        "lot_size": 375
+      }
     },
     {
       "symbol": "BSOFT",
       "label": "BIRLASOFT LIMITED",
-      "security_id": "6994"
+      "security_id": "6994",
+      "future": null
     },
     {
       "symbol": "AARTIIND",
       "label": "AARTI INDUSTRIES LTD",
-      "security_id": "7"
+      "security_id": "7",
+      "future": null
     },
     {
       "symbol": "STARHEALTH",
       "label": "STAR HEALTH & AL INS CO L",
-      "security_id": "7083"
+      "security_id": "7083",
+      "future": null
     },
     {
       "symbol": "TEGA",
       "label": "TEGA INDUSTRIES LIMITED",
-      "security_id": "7105"
+      "security_id": "7105",
+      "future": null
     },
     {
       "symbol": "ANANDRATHI",
       "label": "ANAND RATHI WEALTH LTD",
-      "security_id": "7145"
+      "security_id": "7145",
+      "future": null
     },
     {
       "symbol": "MAPMYINDIA",
       "label": "C.E. INFO SYSTEMS LIMITED",
-      "security_id": "7227"
+      "security_id": "7227",
+      "future": null
     },
     {
       "symbol": "HCLTECH",
       "label": "HCL TECHNOLOGIES LTD",
-      "security_id": "7229"
+      "security_id": "7229",
+      "future": {
+        "label": "HCLTECH JUN FUT",
+        "trading_symbol": "HCLTECH-JUN2026-FUT",
+        "security_id": "62591",
+        "expiry": "2026-06-30",
+        "lot_size": 350
+      }
     },
     {
       "symbol": "DATAPATTNS",
       "label": "DATA PATTERNS INDIA LTD",
-      "security_id": "7358"
+      "security_id": "7358",
+      "future": null
     },
     {
       "symbol": "COROMANDEL",
       "label": "COROMANDEL INTERNTL. LTD",
-      "security_id": "739"
+      "security_id": "739",
+      "future": null
     },
     {
       "symbol": "GLENMARK",
       "label": "GLENMARK PHARMACEUTICALS",
-      "security_id": "7406"
+      "security_id": "7406",
+      "future": {
+        "label": "GLENMARK JUN FUT",
+        "trading_symbol": "GLENMARK-JUN2026-FUT",
+        "security_id": "62577",
+        "expiry": "2026-06-30",
+        "lot_size": 375
+      }
     },
     {
       "symbol": "WOCKPHARMA",
       "label": "WOCKHARDT LIMITED",
-      "security_id": "7506"
+      "security_id": "7506",
+      "future": null
     },
     {
       "symbol": "ZENTEC",
       "label": "ZEN TECHNOLOGIES LIMITED",
-      "security_id": "7508"
+      "security_id": "7508",
+      "future": null
     },
     {
       "symbol": "ABLBL",
       "label": "ADITYA BIRLA LIFES BRAN L",
-      "security_id": "756843"
+      "security_id": "756843",
+      "future": null
     },
     {
       "symbol": "ENRIN",
       "label": "SIEMENS ENERGY INDIA LTD",
-      "security_id": "756871"
+      "security_id": "756871",
+      "future": null
     },
     {
       "symbol": "CRISIL",
       "label": "CRISIL LTD",
-      "security_id": "757"
+      "security_id": "757",
+      "future": null
     },
     {
       "symbol": "THELEELA",
       "label": "LEELA PALACES HOTEL LTD",
-      "security_id": "757014"
+      "security_id": "757014",
+      "future": null
     },
     {
       "symbol": "BELRISE",
       "label": "BELRISE INDUSTRIES LTD",
-      "security_id": "757102"
+      "security_id": "757102",
+      "future": null
     },
     {
       "symbol": "AEGISVOPAK",
       "label": "AEGIS VOPAK TERMINALS LTD",
-      "security_id": "757336"
+      "security_id": "757336",
+      "future": null
     },
     {
       "symbol": "TRAVELFOOD",
       "label": "TRAVEL FOOD SERVICES LTD",
-      "security_id": "757545"
+      "security_id": "757545",
+      "future": null
     },
     {
       "symbol": "ATHERENERG",
       "label": "ATHER ENERGY LIMITED",
-      "security_id": "757645"
+      "security_id": "757645",
+      "future": null
     },
     {
       "symbol": "HDBFS",
       "label": "HDB FINANCIAL SERVICES L",
-      "security_id": "757772"
+      "security_id": "757772",
+      "future": null
     },
     {
       "symbol": "ANTHEM",
       "label": "ANTHEM BIOSCIENCES LTD",
-      "security_id": "757885"
+      "security_id": "757885",
+      "future": null
     },
     {
       "symbol": "JSWCEMENT",
       "label": "JSW CEMENT LIMITED",
-      "security_id": "758460"
+      "security_id": "758460",
+      "future": null
     },
     {
       "symbol": "CPPLUS",
       "label": "ADITYA INFOTECH LIMITED",
-      "security_id": "758858"
+      "security_id": "758858",
+      "future": null
     },
     {
       "symbol": "URBANCO",
       "label": "URBAN COMPANY LIMITED",
-      "security_id": "759084"
+      "security_id": "759084",
+      "future": null
     },
     {
       "symbol": "JAINREC",
       "label": "JAIN RESOURCE RECYCLING L",
-      "security_id": "759244"
+      "security_id": "759244",
+      "future": null
     },
     {
       "symbol": "TATACAP",
       "label": "TATA CAPITAL LIMITED",
-      "security_id": "759265"
+      "security_id": "759265",
+      "future": null
     },
     {
       "symbol": "CANHLIFE",
       "label": "CANARA HSBC LIFE INS CO L",
-      "security_id": "759477"
+      "security_id": "759477",
+      "future": null
     },
     {
       "symbol": "PIRAMALFIN",
       "label": "PIRAMAL FINANCE LIMITED",
-      "security_id": "759551"
+      "security_id": "759551",
+      "future": null
     },
     {
       "symbol": "LENSKART",
       "label": "LENSKART SOLUTIONS LTD",
-      "security_id": "759605"
+      "security_id": "759605",
+      "future": null
     },
     {
       "symbol": "PWL",
       "label": "PHYSICSWALLAH LIMITED",
-      "security_id": "759723"
+      "security_id": "759723",
+      "future": null
     },
     {
       "symbol": "EMMVEE",
       "label": "EMMVEE PHOTOVOLTAIC PWR L",
-      "security_id": "759728"
+      "security_id": "759728",
+      "future": null
     },
     {
       "symbol": "TMCV",
       "label": "TATA MOTORS LIMITED",
-      "security_id": "759782"
+      "security_id": "759782",
+      "future": null
     },
     {
       "symbol": "GROWW",
       "label": "BILLIONBRAINS GARAGE VN L",
-      "security_id": "759806"
+      "security_id": "759806",
+      "future": null
     },
     {
       "symbol": "PINELABS",
       "label": "PINE LABS LIMITED",
-      "security_id": "759820"
+      "security_id": "759820",
+      "future": null
     },
     {
       "symbol": "TENNIND",
       "label": "TENNECO CLEAN AIR INDIA L",
-      "security_id": "759880"
+      "security_id": "759880",
+      "future": null
     },
     {
       "symbol": "CGPOWER",
       "label": "CG POWER AND IND SOL LTD",
-      "security_id": "760"
+      "security_id": "760",
+      "future": {
+        "label": "CGPOWER JUN FUT",
+        "trading_symbol": "CGPOWER-JUN2026-FUT",
+        "security_id": "62403",
+        "expiry": "2026-06-30",
+        "lot_size": 850
+      }
     },
     {
       "symbol": "LGEINDIA",
       "label": "LG ELECTRONICS INDIA LTD",
-      "security_id": "760213"
+      "security_id": "760213",
+      "future": null
     },
     {
       "symbol": "MEESHO",
       "label": "MEESHO LIMITED",
-      "security_id": "760229"
+      "security_id": "760229",
+      "future": null
     },
     {
       "symbol": "ICICIAMC",
       "label": "ICICI PRUDENTIAL AMC LTD",
-      "security_id": "760407"
+      "security_id": "760407",
+      "future": null
     },
     {
       "symbol": "DABUR",
       "label": "DABUR INDIA LTD",
-      "security_id": "772"
+      "security_id": "772",
+      "future": {
+        "label": "DABUR JUN FUT",
+        "trading_symbol": "DABUR-JUN2026-FUT",
+        "security_id": "62555",
+        "expiry": "2026-06-30",
+        "lot_size": 1250
+      }
     },
     {
       "symbol": "INOXWIND",
       "label": "INOX WIND LIMITED",
-      "security_id": "7852"
+      "security_id": "7852",
+      "future": {
+        "label": "INOXWIND JUN FUT",
+        "trading_symbol": "INOXWIND-JUN2026-FUT",
+        "security_id": "62621",
+        "expiry": "2026-06-30",
+        "lot_size": 3575
+      }
     },
     {
       "symbol": "ZYDUSLIFE",
       "label": "ZYDUS LIFESCIENCES LTD",
-      "security_id": "7929"
+      "security_id": "7929",
+      "future": {
+        "label": "ZYDUSLIFE JUN FUT",
+        "trading_symbol": "ZYDUSLIFE-JUN2026-FUT",
+        "security_id": "62878",
+        "expiry": "2026-06-30",
+        "lot_size": 900
+      }
     },
     {
       "symbol": "DALBHARAT",
       "label": "DALMIA BHARAT LIMITED",
-      "security_id": "8075"
+      "security_id": "8075",
+      "future": {
+        "label": "DALBHARAT JUN FUT",
+        "trading_symbol": "DALBHARAT-JUN2026-FUT",
+        "security_id": "62556",
+        "expiry": "2026-06-30",
+        "lot_size": 325
+      }
     },
     {
       "symbol": "DCMSHRIRAM",
       "label": "DCM SHRIRAM LIMITED",
-      "security_id": "811"
+      "security_id": "811",
+      "future": null
     },
     {
       "symbol": "AWL",
       "label": "AWL AGRI BUSINESS LIMITED",
-      "security_id": "8110"
+      "security_id": "8110",
+      "future": null
     },
     {
       "symbol": "AJANTPHARM",
       "label": "AJANTA PHARMA LIMITED",
-      "security_id": "8124"
+      "security_id": "8124",
+      "future": null
     },
     {
       "symbol": "DEEPAKFERT",
       "label": "DEEPAK FERTILIZERS & PETR",
-      "security_id": "827"
+      "security_id": "827",
+      "future": null
     },
     {
       "symbol": "BLUESTARCO",
       "label": "BLUE STAR LIMITED",
-      "security_id": "8311"
+      "security_id": "8311",
+      "future": {
+        "label": "BLUESTARCO JUN FUT",
+        "trading_symbol": "BLUESTARCO-JUN2026-FUT",
+        "security_id": "62387",
+        "expiry": "2026-06-30",
+        "lot_size": 325
+      }
     },
     {
       "symbol": "TVSMOTOR",
       "label": "TVS MOTOR COMPANY  LTD",
-      "security_id": "8479"
+      "security_id": "8479",
+      "future": {
+        "label": "TVSMOTOR JUN FUT",
+        "trading_symbol": "TVSMOTOR-JUN2026-FUT",
+        "security_id": "62860",
+        "expiry": "2026-06-30",
+        "lot_size": 175
+      }
     },
     {
       "symbol": "CHALET",
       "label": "CHALET HOTELS LIMITED",
-      "security_id": "8546"
+      "security_id": "8546",
+      "future": null
     },
     {
       "symbol": "NLCINDIA",
       "label": "NLC INDIA LIMITED",
-      "security_id": "8585"
+      "security_id": "8585",
+      "future": null
     },
     {
       "symbol": "MSUMI",
       "label": "MOTHERSON SUMI WRNG IND L",
-      "security_id": "8596"
+      "security_id": "8596",
+      "future": null
     },
     {
       "symbol": "DRREDDY",
       "label": "DR. REDDY S LABORATORIES",
-      "security_id": "881"
+      "security_id": "881",
+      "future": {
+        "label": "DRREDDY JUN FUT",
+        "trading_symbol": "DRREDDY-JUN2026-FUT",
+        "security_id": "62565",
+        "expiry": "2026-06-30",
+        "lot_size": 625
+      }
     },
     {
       "symbol": "USHAMART",
       "label": "USHA MARTIN LTD.",
-      "security_id": "8840"
+      "security_id": "8840",
+      "future": null
     },
     {
       "symbol": "CHOICEIN",
       "label": "CHOICE INTERNATIONAL LTD",
-      "security_id": "8866"
+      "security_id": "8866",
+      "future": null
     },
     {
       "symbol": "TTML",
       "label": "TATA TELESERV(MAHARASTRA)",
-      "security_id": "8954"
+      "security_id": "8954",
+      "future": null
     },
     {
       "symbol": "EICHERMOT",
       "label": "EICHER MOTORS LTD",
-      "security_id": "910"
+      "security_id": "910",
+      "future": {
+        "label": "EICHERMOT JUN FUT",
+        "trading_symbol": "EICHERMOT-JUN2026-FUT",
+        "security_id": "62566",
+        "expiry": "2026-06-30",
+        "lot_size": 100
+      }
     },
     {
       "symbol": "EIDPARRY",
       "label": "EID PARRY INDIA LTD",
-      "security_id": "916"
+      "security_id": "916",
+      "future": null
     },
     {
       "symbol": "EIHOTEL",
       "label": "EIH LIMITED",
-      "security_id": "919"
+      "security_id": "919",
+      "future": null
     },
     {
       "symbol": "IOB",
       "label": "INDIAN OVERSEAS BANK",
-      "security_id": "9348"
+      "security_id": "9348",
+      "future": null
     },
     {
       "symbol": "ELGIEQUIP",
       "label": "ELGI EQUIPMENTS LTD",
-      "security_id": "937"
+      "security_id": "937",
+      "future": null
     },
     {
       "symbol": "RAINBOW",
       "label": "RAINBOW CHILDRENS MED LTD",
-      "security_id": "9408"
+      "security_id": "9408",
+      "future": null
     },
     {
       "symbol": "LICI",
       "label": "LIFE INSURA CORP OF INDIA",
-      "security_id": "9480"
+      "security_id": "9480",
+      "future": {
+        "label": "LICI JUN FUT",
+        "trading_symbol": "LICI-JUN2026-FUT",
+        "security_id": "62663",
+        "expiry": "2026-06-30",
+        "lot_size": 1400
+      }
     },
     {
       "symbol": "RVNL",
       "label": "RAIL VIKAS NIGAM LIMITED",
-      "security_id": "9552"
+      "security_id": "9552",
+      "future": {
+        "label": "RVNL JUN FUT",
+        "trading_symbol": "RVNL-JUN2026-FUT",
+        "security_id": "62803",
+        "expiry": "2026-06-30",
+        "lot_size": 1525
+      }
     },
     {
       "symbol": "ESCORTS",
       "label": "ESCORTS KUBOTA LIMITED",
-      "security_id": "958"
+      "security_id": "958",
+      "future": null
     },
     {
       "symbol": "POLYCAB",
       "label": "POLYCAB INDIA LIMITED",
-      "security_id": "9590"
+      "security_id": "9590",
+      "future": {
+        "label": "POLYCAB JUN FUT",
+        "trading_symbol": "POLYCAB-JUN2026-FUT",
+        "security_id": "62790",
+        "expiry": "2026-06-30",
+        "lot_size": 125
+      }
     },
     {
       "symbol": "DELHIVERY",
       "label": "DELHIVERY LIMITED",
-      "security_id": "9599"
+      "security_id": "9599",
+      "future": {
+        "label": "DELHIVERY JUN FUT",
+        "trading_symbol": "DELHIVERY-JUN2026-FUT",
+        "security_id": "62557",
+        "expiry": "2026-06-30",
+        "lot_size": 2075
+      }
     },
     {
       "symbol": "SPLPETRO",
       "label": "SUPREME PETROCHEM LIMITED",
-      "security_id": "9617"
+      "security_id": "9617",
+      "future": null
     },
     {
       "symbol": "KPITTECH",
       "label": "KPIT TECHNOLOGIES LIMITED",
-      "security_id": "9683"
+      "security_id": "9683",
+      "future": {
+        "label": "KPITTECH JUN FUT",
+        "trading_symbol": "KPITTECH-JUN2026-FUT",
+        "security_id": "62660",
+        "expiry": "2026-06-30",
+        "lot_size": 425
+      }
     },
     {
       "symbol": "TRIDENT",
       "label": "TRIDENT LIMITED",
-      "security_id": "9685"
+      "security_id": "9685",
+      "future": null
     },
     {
       "symbol": "PARADEEP",
       "label": "PARADEEP PHOSPHATES LTD",
-      "security_id": "9741"
+      "security_id": "9741",
+      "future": null
     },
     {
       "symbol": "HAVELLS",
       "label": "HAVELLS INDIA LIMITED",
-      "security_id": "9819"
+      "security_id": "9819",
+      "future": {
+        "label": "HAVELLS JUN FUT",
+        "trading_symbol": "HAVELLS-JUN2026-FUT",
+        "security_id": "62590",
+        "expiry": "2026-06-30",
+        "lot_size": 500
+      }
     }
   ]
 }

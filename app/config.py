@@ -24,6 +24,7 @@ class Settings(BaseSettings):
     stock_execution_mode: str = "cash"
     stock_future_lots: int = 1
     stock_option_lots: int = 1
+    heuristic_advance_timeframe_minutes: int = 3
     nifty_expiry_preference: str = "current-weekly"
     nifty_trailing_stop_enabled: bool = True
     nifty_heuristic_early_exit_enabled: bool = True
@@ -39,6 +40,7 @@ class Settings(BaseSettings):
     intelligent_pyramiding_enabled: bool = False
     stock_percent_pyramiding_enabled: bool = False
     stock_percent_pyramiding_step: float = 1.0
+    stock_cost_sl_after_pyramid_enabled: bool = False
     nifty_point_pyramiding_enabled: bool = False
     nifty_point_pyramiding_points: float = 50.0
     nifty_trade_bias: str = "both"

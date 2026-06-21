@@ -14,7 +14,8 @@ from fastapi.testclient import TestClient
 
 import app.main as main_module
 from app.config import get_settings
-from app.schemas import Candle, InstrumentMode, InstrumentState, LiquidityLedgerEntry, LiveFeedState, OperatingMode, PendingSetup, PreviousDayLevels, SimulatedTrade, StrategyContext, TradeAction, TradeDecision
+from app.schemas import Candle, InstrumentMode, InstrumentState, LiquidityLedgerEntry, LiveFeedState, OperatingMode, PendingSetup, PreviousDayLevels, PyramidLeg, SimulatedTrade, StrategyContext, TradeAction, TradeDecision
+from app.services.advanced_indicator_engine import AdvancedIndicatorEngine
 from app.services.credential_store import CredentialStore
 from app.services.dhan_execution import BrokerOrderResult
 from app.services.dhan_history import DhanChartEmptyDataError, DhanChartError, DhanChartRateLimitError, DhanChartService, DhanSessionBundle
@@ -265,6 +266,7 @@ class AppIntegrationTests(unittest.TestCase):
                 "intelligent_pyramiding_enabled": "true",
                 "stock_percent_pyramiding_enabled": "true",
                 "stock_percent_pyramiding_step": "1.5",
+                "stock_cost_sl_after_pyramid_enabled": "true",
                 "nifty_point_pyramiding_enabled": "true",
                 "nifty_point_pyramiding_points": "55",
                 "nifty_trade_bias": "long",
@@ -307,6 +309,7 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertTrue(summary["intelligent_pyramiding_enabled"])
         self.assertTrue(summary["stock_percent_pyramiding_enabled"])
         self.assertEqual(summary["stock_percent_pyramiding_step"], 1.5)
+        self.assertTrue(summary["stock_cost_sl_after_pyramid_enabled"])
         self.assertTrue(summary["nifty_point_pyramiding_enabled"])
         self.assertEqual(summary["nifty_point_pyramiding_points"], 55.0)
         self.assertEqual(summary["nifty_trade_bias"], "long")
@@ -342,7 +345,7 @@ class AppIntegrationTests(unittest.TestCase):
         _, _, access_token = self.temp_store.get_zerodha_credentials(get_settings())
         self.assertEqual(access_token, "kite-access-token")
 
-    def test_zerodha_root_callback_auto_generates_and_saves_access_token(self) -> None:
+    def test_zerodha_root_callback_does_not_block_dashboard_for_token_generation(self) -> None:
         self.temp_store.save(
             broker_provider="zerodha",
             zerodha_api_key="kite-key",
@@ -355,16 +358,12 @@ class AppIntegrationTests(unittest.TestCase):
         response = self.client.get("/?request_token=request-123&action=login&status=success", follow_redirects=False)
 
         self.assertEqual(response.status_code, 303)
-        self.assertEqual(response.headers["location"], "/?zerodha_login=success")
-        self.test_engine.zerodha_execution_service.generate_session.assert_called_once_with(
-            api_key="kite-key",
-            api_secret="kite-secret",
-            request_token="request-123",
-        )
+        self.assertIn("zerodha_login=error", response.headers["location"])
+        self.test_engine.zerodha_execution_service.generate_session.assert_not_called()
         _, _, access_token = self.temp_store.get_zerodha_credentials(get_settings())
-        self.assertEqual(access_token, "kite-access-token")
+        self.assertIsNone(access_token)
 
-    def test_zerodha_named_callback_auto_generates_and_saves_access_token(self) -> None:
+    def test_zerodha_named_callback_starts_background_token_generation(self) -> None:
         self.temp_store.save(
             broker_provider="zerodha",
             zerodha_api_key="kite-key",
@@ -377,9 +376,24 @@ class AppIntegrationTests(unittest.TestCase):
         response = self.client.get("/zerodha/callback?request_token=request-456", follow_redirects=False)
 
         self.assertEqual(response.status_code, 303)
-        self.assertEqual(response.headers["location"], "/?zerodha_login=success")
+        self.assertEqual(response.headers["location"], "/?zerodha_login=pending")
+        for _ in range(20):
+            _, _, access_token = self.temp_store.get_zerodha_credentials(get_settings())
+            if access_token == "kite-access-token-2":
+                break
+            time.sleep(0.05)
         _, _, access_token = self.temp_store.get_zerodha_credentials(get_settings())
         self.assertEqual(access_token, "kite-access-token-2")
+
+    def test_static_health_reports_frontend_assets(self) -> None:
+        response = self.client.get("/api/static-health")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload["assets"]["styles.css"]["exists"])
+        self.assertGreater(payload["assets"]["styles.css"]["size"], 0)
+        self.assertTrue(payload["assets"]["app.js"]["exists"])
+        self.assertGreater(payload["assets"]["app.js"]["size"], 0)
 
     def test_extract_bulk_stock_symbols_from_nse_style_table(self) -> None:
         raw_text = (
@@ -928,6 +942,32 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         state = response.json()["state"]
         self.assertTrue(state["execution"]["live_trading_enabled"])
+
+    def test_start_live_paper_trading_arms_demo_without_real_orders(self) -> None:
+        self.client.post(
+            "/api/settings/credentials",
+            data={"operating_mode": "heuristic", "client_id": "cid-123", "access_token": "tok-456"},
+        )
+        self.test_engine.live_feed_adapter = Mock()
+
+        response = self.client.post("/api/trading/start-paper")
+
+        self.assertEqual(response.status_code, 200)
+        state = response.json()["state"]
+        self.assertFalse(state["execution"]["live_trading_enabled"])
+        self.assertTrue(state["execution"]["live_paper_trading_enabled"])
+        self.assertEqual(state["execution"]["order_updates_status"], "paper")
+        self.assertFalse(self.test_engine._should_send_live_orders("live"))
+
+    def test_square_off_disarms_live_paper_trading(self) -> None:
+        self.test_engine.save_credentials(operating_mode="heuristic", client_id="cid-123", access_token="tok-456")
+        self.test_engine.live_feed_adapter = Mock()
+        self.test_engine.start_live_paper_trading()
+
+        state = self.test_engine.square_off_all_trades()
+
+        self.assertFalse(state.execution.live_paper_trading_enabled)
+        self.assertFalse(state.execution.live_trading_enabled)
 
     def test_start_live_trading_marks_zerodha_order_updates_as_kite_feed(self) -> None:
         self.test_engine.save_credentials(
@@ -1719,6 +1759,8 @@ class AppIntegrationTests(unittest.TestCase):
             target_option_price=850.0,
             invalidation_level=790.0,
             pnl=150.0,
+            broker_order_id="entry-1",
+            broker_status="TRADED",
         )
         self.test_engine.active_trade = trade
         self.test_engine.trade_history = [trade]
@@ -1732,6 +1774,20 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertEqual(order_kwargs["quantity"], 10)
         self.assertFalse(self.test_engine.live_trading_enabled)
         self.assertFalse(self.test_engine.execution_state.live_trading_enabled)
+        self.assertIs(self.test_engine.active_trade, trade)
+        self.assertEqual(trade.broker_pending_exit_quantity, 10)
+
+        self.test_engine.handle_order_update_packet(
+            {
+                "Data": {
+                    "OrderNo": "exit-1",
+                    "Status": "TRADED",
+                    "AvgTradedPrice": "815.0",
+                    "TradedQty": "10",
+                }
+            }
+        )
+
         self.assertIsNone(self.test_engine.active_trade)
         self.assertTrue(self.test_engine.trade_history[-1].exit_notes.startswith("Global MTM profit threshold hit"))
 
@@ -1926,6 +1982,85 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertEqual(trade.exit_price, 812.25)
         self.assertEqual(trade.exit_option_price, 812.25)
 
+    def test_live_exit_uses_only_broker_confirmed_quantity_when_add_is_pending(self) -> None:
+        trade = SimulatedTrade(
+            trade_id="trade-pending-add",
+            status="OPEN",
+            direction="LONG_STOCK",
+            instrument_mode="stock",
+            instrument_label="SBIN",
+            price_mode="cash",
+            trade_security_id="3045",
+            quote_exchange_segment="NSE_EQ",
+            option_type="CE",
+            strike=0,
+            symbol="SBIN EQ",
+            quantity=10,
+            base_quantity=10,
+            open_quantity=10,
+            entry_time=datetime.fromisoformat("2026-05-14T09:15:00"),
+            entry_price=800.0,
+            entry_spot_price=800.0,
+            entry_option_price=800.0,
+            current_price=805.0,
+            current_option_price=805.0,
+            stop_price=790.0,
+            stop_option_price=790.0,
+            target_price=820.0,
+            target_option_price=820.0,
+            broker_order_id="ENTRY1",
+            broker_status="TRADED",
+        )
+        trade.pyramid_count = 1
+        trade.pyramid_legs = [
+            PyramidLeg(
+                leg_id="pending-add-1",
+                add_number=1,
+                status="PENDING",
+                quantity=10,
+                open_quantity=0,
+                broker_pending_entry_quantity=10,
+                entry_time=datetime.fromisoformat("2026-05-14T09:20:00"),
+                entry_price=806.0,
+                entry_spot_price=806.0,
+                invalidation_level=798.0,
+                broker_order_id="ADD1",
+                broker_status="PENDING",
+            )
+        ]
+        self.test_engine.active_trade = trade
+        self.test_engine.trade_history = [trade]
+        self.test_engine.live_trading_enabled = True
+        self.test_engine.operating_mode = OperatingMode.heuristic
+        self.test_engine.live_feed_adapter = Mock()
+        self.temp_store.save(client_id="cid", access_token=self._make_dhan_token("cid"))
+        self.test_engine.execution_service.place_market_order = Mock(
+            return_value=BrokerOrderResult(ok=True, order_id="EXIT1", order_status="PENDING", message="accepted", raw={})
+        )
+
+        sent = self.test_engine._exit_live_trade(self._make_candle(10, 805, 806, 799, 800), "Exit signal")
+
+        self.assertTrue(sent)
+        self.assertEqual(self.test_engine.execution_service.place_market_order.call_args.kwargs["quantity"], 10)
+        self.assertIs(self.test_engine.active_trade, trade)
+        self.assertEqual(trade.open_quantity, 10)
+        self.assertEqual(trade.broker_pending_exit_quantity, 10)
+
+        self.test_engine.handle_order_update_packet(
+            {
+                "Data": {
+                    "OrderNo": "EXIT1",
+                    "Status": "TRADED",
+                    "AvgTradedPrice": "801.0",
+                    "TradedQty": "10",
+                }
+            }
+        )
+
+        self.assertIsNone(self.test_engine.active_trade)
+        self.assertEqual(self.test_engine.trade_history[-1].status, "CLOSED")
+        self.assertEqual(self.test_engine.trade_history[-1].exit_price, 801.0)
+
     def test_order_update_adapter_parses_newline_separated_json_packets(self) -> None:
         adapter = DhanOrderUpdateAdapter("cid", "tok")
         raw_message = (
@@ -2031,6 +2166,67 @@ class AppIntegrationTests(unittest.TestCase):
         state = step_response.json()
         self.assertEqual(state["operating_mode"], "heuristic")
         self.assertEqual(state["decision"]["decision_source"], "heuristic")
+
+    def test_heuristic_advance_mode_and_timeframe_are_saved(self) -> None:
+        save_response = self.client.post(
+            "/api/settings/credentials",
+            data={
+                "operating_mode": "heuristic-advance",
+                "heuristic_advance_timeframe_minutes": "3",
+            },
+        )
+
+        self.assertEqual(save_response.status_code, 200)
+        state = save_response.json()["state"]
+        self.assertEqual(state["operating_mode"], "heuristic-advance")
+        self.assertEqual(state["credentials"]["operating_mode"], "heuristic-advance")
+        self.assertEqual(state["credentials"]["heuristic_advance_timeframe_minutes"], 3)
+
+    def test_advanced_indicator_engine_enters_on_gmma_gc_with_obv_confirmation(self) -> None:
+        engine = AdvancedIndicatorEngine()
+        candles: list[Candle] = []
+        prices: list[float] = []
+        price = 150.0
+        for _ in range(90):
+            price -= 0.25
+            prices.append(price)
+        for _ in range(80):
+            price += 0.9
+            prices.append(price)
+        for index, close in enumerate(prices):
+            open_price = prices[index - 1] if index else close
+            candles.append(
+                Candle(
+                    timestamp=datetime(2026, 1, 1, 9, 15) + timedelta(minutes=3 * index),
+                    open=open_price,
+                    high=max(open_price, close) + 0.2,
+                    low=min(open_price, close) - 0.2,
+                    close=close,
+                    volume=1000 + index * 10,
+                )
+            )
+            decision = engine.decide(candles)
+            if decision.action != TradeAction.no_trade:
+                break
+
+        self.assertEqual(decision.action, TradeAction.enter_call)
+        self.assertEqual(decision.decision_source, "heuristic-advance")
+        self.assertEqual(decision.setup_type, "advanced_gmma_obv_long")
+        self.assertIsNotNone(decision.invalidation_level)
+
+    def test_live_trading_can_start_in_heuristic_advance_mode(self) -> None:
+        self.test_engine.save_credentials(
+            operating_mode="heuristic-advance",
+            client_id="cid-123",
+            access_token="tok-456",
+        )
+        self.test_engine.live_feed_adapter = Mock()
+
+        with patch.object(self.test_engine, "_start_order_updates", return_value=None):
+            state = self.test_engine.start_live_trading()
+
+        self.assertTrue(state.execution.live_trading_enabled)
+        self.assertEqual(state.operating_mode, OperatingMode.heuristic_advance)
 
     def test_full_ai_mode_stops_new_entries_when_ai_is_disabled(self) -> None:
         save_response = self.client.post(
@@ -4517,6 +4713,18 @@ class AppIntegrationTests(unittest.TestCase):
 
         self.assertEqual(place_order.call_args.kwargs["transaction_type"], "SELL")
         self.assertIsNotNone(self.test_engine.active_trade)
+        self.assertEqual(self.test_engine.active_trade.open_quantity, 0)
+        self.test_engine.handle_order_update_packet(
+            {
+                "Data": {
+                    "OrderNo": "entry-1",
+                    "Status": "TRADED",
+                    "AvgTradedPrice": "100.0",
+                    "TradedQty": "65",
+                }
+            }
+        )
+        self.assertEqual(self.test_engine.active_trade.open_quantity, 65)
 
         add_decision = TradeDecision(action=TradeAction.add_position, reason="Add after protected continuation.", add_quantity=999)
         with patch.object(
@@ -4528,9 +4736,21 @@ class AppIntegrationTests(unittest.TestCase):
 
         self.assertEqual(add_order.call_args.kwargs["transaction_type"], "SELL")
         self.assertEqual(add_order.call_args.kwargs["quantity"], 65)
+        self.assertEqual(self.test_engine.active_trade.quantity, 65)
+        self.assertEqual(self.test_engine.active_trade.open_quantity, 65)
+        self.assertEqual(self.test_engine.active_trade.pyramid_count, 1)
+        self.test_engine.handle_order_update_packet(
+            {
+                "Data": {
+                    "OrderNo": "add-1",
+                    "Status": "TRADED",
+                    "AvgTradedPrice": "99.0",
+                    "TradedQty": "65",
+                }
+            }
+        )
         self.assertEqual(self.test_engine.active_trade.quantity, 130)
         self.assertEqual(self.test_engine.active_trade.open_quantity, 130)
-        self.assertEqual(self.test_engine.active_trade.pyramid_count, 1)
 
         with patch.object(
             self.test_engine.execution_service,
@@ -4755,6 +4975,8 @@ class AppIntegrationTests(unittest.TestCase):
             target_option_price=40.0,
             invalidation_level=23400.0,
             target_spot_price=23800.0,
+            broker_order_id="entry-hard-stop",
+            broker_status="TRADED",
         )
         self.test_engine.active_trade = trade
         self.test_engine.trade_history = [trade]
@@ -4772,6 +4994,20 @@ class AppIntegrationTests(unittest.TestCase):
                 self.test_engine._handle_live_packet_now({"security_id": "13", "LTP": 23399.0, "LTT": "10:02:01", "volume": 1000})
 
         self.assertEqual(place_order.call_args.kwargs["transaction_type"], "BUY")
+        self.assertIs(self.test_engine.active_trade, trade)
+        self.assertEqual(trade.broker_pending_exit_quantity, 65)
+
+        self.test_engine.handle_order_update_packet(
+            {
+                "Data": {
+                    "OrderNo": "exit-hard-stop",
+                    "Status": "TRADED",
+                    "AvgTradedPrice": "104.0",
+                    "TradedQty": "65",
+                }
+            }
+        )
+
         self.assertIsNone(self.test_engine.active_trade)
         self.assertIn("Hard LTP stop triggered", self.test_engine.trade_history[-1].exit_notes or "")
 
@@ -6989,6 +7225,70 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertEqual(decision.action, TradeAction.add_position)
         self.assertEqual(decision.add_quantity, 25)
         self.assertIn("stock percentage pyramiding add 1/2", decision.reason.lower())
+
+    def test_stock_cost_sl_after_first_percent_pyramid_exits_at_entry_cost(self) -> None:
+        candles = [
+            self._make_candle(0, 100.0, 100.5, 99.5, 100.0),
+            self._make_candle(1, 100.0, 101.2, 100.6, 101.05),
+            self._make_candle(2, 101.05, 101.1, 99.95, 100.05),
+        ]
+        trade = self._build_trade(
+            entry_time=candles[0].timestamp,
+            entry_spot_price=100.0,
+            invalidation_level=98.0,
+            setup_type="bullish_reclaim_watch",
+        )
+        trade.instrument_mode = InstrumentMode.stock
+        trade.instrument_label = "SBIN"
+        trade.price_mode = "cash"
+        trade.trade_security_id = "3045"
+        trade.symbol = "SBIN"
+        trade.direction = "LONG_STOCK"
+        trade.base_quantity = 25
+        trade.quantity = 50
+        trade.open_quantity = 50
+        trade.pyramid_count = 1
+        trade.pyramid_legs = [
+            PyramidLeg(
+                leg_id="trade-1-add-1",
+                add_number=1,
+                status="OPEN",
+                quantity=25,
+                open_quantity=25,
+                entry_time=candles[1].timestamp,
+                entry_price=101.05,
+                entry_spot_price=101.05,
+                invalidation_level=99.8,
+            )
+        ]
+        context = self._build_context(candles, active_trade=trade).model_copy(
+            update={
+                "instrument": InstrumentState(
+                    mode=InstrumentMode.stock,
+                    label="SBIN",
+                    symbol="SBIN",
+                    security_id="3045",
+                    exchange_segment="NSE_EQ",
+                    instrument_type="EQUITY",
+                    supports_options=False,
+                    lot_size=1,
+                ),
+                "stock_cost_sl_after_pyramid_enabled": True,
+                "stock_percent_pyramiding_enabled": True,
+                "stock_percent_pyramiding_step": 1.0,
+                "stock_partial_profit_enabled": False,
+                "stock_trailing_stop_enabled": False,
+                "stock_heuristic_early_exit_enabled": False,
+            }
+        )
+        observation = self._build_observation(atr=2.0, day_type="gap-and-go")
+
+        with patch.object(self.test_engine.heuristic_engine, "build_candidates", return_value=[]):
+            decision = self.test_engine.heuristic_engine.manage_active_trade(context, observation, current_trade_price=100.05)
+
+        self.assertEqual(decision.action, TradeAction.exit)
+        self.assertEqual(decision.target_spot_price, 100.0)
+        self.assertIn("cost-sl after pyramiding", decision.reason.lower())
 
     def test_nifty_square_offs_near_next_100_point_round_shelf(self) -> None:
         candles = [
