@@ -522,6 +522,16 @@ class ReplayPnlSummaryState(BaseModel):
     daily: list[ReplayDailyPnlState] = Field(default_factory=list)
 
 
+class UniverseWarmupState(BaseModel):
+    symbols: list[str] = Field(default_factory=list)
+    total_symbols: int = 0
+    warmed_symbols: int = 0
+    failed_symbols: int = 0
+    status: str = "idle"
+    message: str = "No universe warmup has run yet."
+    last_warmed_at: datetime | None = None
+
+
 class DashboardState(BaseModel):
     state_revision: int = 0
     mode: str
@@ -560,6 +570,7 @@ class DashboardState(BaseModel):
     rulebook_job: RulebookJobState
     credentials: CredentialSummary
     stock_watchlist: list[StockWatchItem] = Field(default_factory=list)
+    universe_warmup: UniverseWarmupState = Field(default_factory=UniverseWarmupState)
 
 
 StrategyContext.model_rebuild()

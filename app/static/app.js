@@ -115,6 +115,7 @@ const elements = {
   niftyMechanicsPrevious: document.getElementById("niftyMechanicsPrevious"),
   marketStructureView: document.getElementById("marketStructureView"),
   pendingSetup: document.getElementById("pendingSetup"),
+  universeWarmupStatus: document.getElementById("universeWarmupStatus"),
   stockSearchResults: document.getElementById("stockSearchResults"),
   stockWatchlist: document.getElementById("stockWatchlist"),
   liquidityZones: document.getElementById("liquidityZones"),
@@ -725,7 +726,10 @@ async function saveCredentialSettings({ immediate = false, notify = false } = {}
     settingsUiState.liveCredentialDirtyFields.clear();
     syncLiveCredentialsFromSavedForm();
     persistBrowserSettingsFromForms();
-    if (data.state) {
+    if (data.credentials && runtimeUiState.dashboard) {
+      runtimeUiState.dashboard.credentials = data.credentials;
+      renderCredentialSettingsOnly(runtimeUiState.dashboard);
+    } else if (data.state) {
       renderState(data.state);
     }
     if (serialized === serializeCredentialPayload(buildCredentialPayload(form))) {
@@ -737,7 +741,6 @@ async function saveCredentialSettings({ immediate = false, notify = false } = {}
       setToast(data.message);
     }
   } catch (error) {
-    settingsUiState.saveQueued = true;
     setCredentialSaveStatus(error.message || "Unable to save settings.", "error");
     if (notify) {
       throw error;
@@ -1070,6 +1073,26 @@ function drawChart(state) {
   ctx.stroke();
 }
 
+function renderUniverseWarmup(state) {
+  if (!elements.universeWarmupStatus) {
+    return;
+  }
+  const warmup = state.universe_warmup || {};
+  const symbols = Array.isArray(warmup.symbols) ? warmup.symbols : [];
+  const total = warmup.total_symbols || symbols.length || 0;
+  const warmed = warmup.warmed_symbols || 0;
+  const failed = warmup.failed_symbols || 0;
+  const status = warmup.status || "idle";
+  const updated = warmup.last_warmed_at ? ` | ${formatIstDateTime(warmup.last_warmed_at)}` : "";
+  elements.universeWarmupStatus.textContent = `${status} | ${warmed}/${total} warmed | ${failed} failed${updated}. ${warmup.message || ""}`;
+
+  const form = document.getElementById("universeWarmupForm");
+  const textarea = form?.elements?.bulk_text;
+  if (textarea && !textarea.value.trim() && symbols.length) {
+    textarea.value = symbols.join("\n");
+  }
+}
+
 function renderState(state) {
   runtimeUiState.dashboard = state;
   runtimeUiState.stateRevision = state.state_revision || 0;
@@ -1265,6 +1288,7 @@ function renderState(state) {
   }
   renderStockSearchResults(state);
   renderStockWatchlist(state);
+  renderUniverseWarmup(state);
   renderReplayPnlSummary(state.replay_pnl_summary);
 
   const liquidityItems = [
@@ -1413,6 +1437,117 @@ function renderState(state) {
   drawChart(state);
 }
 
+function renderCredentialSettingsOnly(state) {
+  if (!state?.credentials) {
+    return;
+  }
+  elements.aiValue.textContent = state.credentials.full_ai_provider || "openai";
+  elements.executionBrokerValue.textContent = state.credentials.broker_provider || "dhan";
+  const syncHistoryBtn = document.getElementById("syncHistoryBtn");
+  if (syncHistoryBtn) {
+    const liveBroker = state.credentials.broker_provider || "dhan";
+    syncHistoryBtn.textContent = `Sync ${liveBroker === "zerodha" ? "Zerodha" : "Dhan"} 1m Context`;
+  }
+  const resolvedClientId = state.credentials.resolved_client_id || state.credentials.client_id || "";
+  elements.savedClientIdValue.textContent = resolvedClientId || "Not saved";
+  elements.savedDhanCredentialMessage.textContent = state.credentials.dhan_credential_message || "No credential warnings.";
+  elements.savedDhanTokenValue.textContent = state.credentials.dhan_access_token_saved ? "Saved locally" : "Not saved";
+  elements.savedBrokerProviderValue.textContent = state.credentials.broker_provider || "dhan";
+  elements.savedZerodhaApiKeyValue.textContent = state.credentials.zerodha_api_key || "Not saved";
+  elements.savedZerodhaApiSecretValue.textContent = state.credentials.zerodha_api_secret_saved ? "Saved locally" : "Not saved";
+  elements.savedZerodhaAccessTokenValue.textContent = state.credentials.zerodha_access_token_saved ? "Saved locally" : "Not saved";
+  elements.savedOpenAIApiKeyValue.textContent = state.credentials.openai_api_key_saved ? "Saved locally" : "Not saved";
+  elements.savedOpenAIModelValue.textContent = state.credentials.openai_model || "gpt-5.4-mini";
+  elements.savedDeepSeekApiKeyValue.textContent = state.credentials.deepseek_api_key_saved ? "Saved locally" : "Not saved";
+  elements.savedDeepSeekModelValue.textContent = state.credentials.deepseek_model || "deepseek-v4-flash";
+  elements.savedFullAIProviderValue.textContent = state.credentials.full_ai_provider || "openai";
+  elements.savedOperatingModeValue.textContent = state.credentials.operating_mode || "full-ai";
+  elements.savedHeuristicAdvanceTimeframeValue.textContent = `${state.credentials.heuristic_advance_timeframe_minutes || 3} min`;
+  elements.savedNiftyLotsValue.textContent = state.credentials.nifty_order_lots || 1;
+  elements.savedStockCapitalValue.textContent = money(state.credentials.stock_trade_capital);
+  elements.savedStockExecutionModeValue.textContent = state.credentials.stock_execution_mode || "cash";
+  elements.savedStockFutureLotsValue.textContent = state.credentials.stock_future_lots || 1;
+  elements.savedStockOptionLotsValue.textContent = state.credentials.stock_option_lots || 1;
+  elements.savedExpiryPreferenceValue.textContent = state.credentials.nifty_expiry_preference || "current-weekly";
+  elements.savedNiftyOptionTradeModeValue.textContent = state.credentials.nifty_option_trade_mode || "selling";
+  elements.savedNiftyTradeBiasValue.textContent = state.credentials.nifty_trade_bias || "both";
+  elements.savedStockPartialProfitValue.textContent = state.credentials.stock_partial_profit_enabled ? "Enabled" : "Disabled";
+  elements.savedStockTrailingStopValue.textContent = state.credentials.stock_trailing_stop_enabled ? "Enabled" : "Disabled";
+  elements.savedStockHeuristicExitValue.textContent = state.credentials.stock_heuristic_early_exit_enabled ? "Enabled" : "Disabled";
+  elements.savedNiftyTrailingStopValue.textContent = state.credentials.nifty_trailing_stop_enabled ? "Enabled" : "Disabled";
+  elements.savedNiftyHeuristicExitValue.textContent = state.credentials.nifty_heuristic_early_exit_enabled ? "Enabled" : "Disabled";
+  elements.savedNiftyCostSlValue.textContent = state.credentials.nifty_cost_sl_enabled ? "Enabled" : "Disabled";
+  elements.savedNiftyCostSlPointsValue.textContent = money(state.credentials.nifty_cost_sl_points);
+  elements.savedNiftyMinSlPointsValue.textContent = money(state.credentials.nifty_min_sl_points);
+  elements.savedNiftyMaxSlPointsValue.textContent = money(state.credentials.nifty_max_sl_points);
+  elements.savedNiftyTargetValue.textContent = state.credentials.nifty_target_enabled ? "Enabled" : "Disabled";
+  elements.savedNiftyTargetPointsValue.textContent = money(state.credentials.nifty_target_points);
+  elements.savedNiftyDailyMaxLossValue.textContent = state.credentials.nifty_daily_max_loss_enabled ? "Enabled" : "Disabled";
+  elements.savedNiftyDailyMaxLossAmountValue.textContent = money(state.credentials.nifty_daily_max_loss);
+  elements.savedGlobalMtmSquareOffValue.textContent = state.credentials.global_mtm_square_off_enabled ? "Enabled" : "Disabled";
+  elements.savedGlobalMtmThresholdValue.textContent = money(state.credentials.global_mtm_square_off_threshold);
+  elements.savedPyramidingValue.textContent = state.credentials.pyramiding_enabled ? "Enabled" : "Disabled";
+  elements.savedIntelligentPyramidingValue.textContent = state.credentials.intelligent_pyramiding_enabled ? "Enabled" : "Disabled";
+  elements.savedStockPercentPyramidingValue.textContent = state.credentials.stock_percent_pyramiding_enabled ? "Enabled" : "Disabled";
+  elements.savedStockPercentPyramidingStepValue.textContent = `${money(state.credentials.stock_percent_pyramiding_step)}%`;
+  elements.savedStockCostAfterPyramidValue.textContent = state.credentials.stock_cost_sl_after_pyramid_enabled ? "Enabled" : "Disabled";
+  elements.savedNiftyPointPyramidingValue.textContent = state.credentials.nifty_point_pyramiding_enabled ? "Enabled" : "Disabled";
+  elements.savedNiftyPointPyramidingPointsValue.textContent = money(state.credentials.nifty_point_pyramiding_points);
+  elements.savedPathValue.textContent = state.credentials.storage_path || "-";
+  elements.savedUpdatedValue.textContent = state.credentials.last_updated
+    ? new Date(state.credentials.last_updated).toLocaleString()
+    : "-";
+
+  const liveConnectForm = document.getElementById("liveConnectForm");
+  if (liveConnectForm && state.credentials.client_id && !liveConnectForm.elements.client_id.value) {
+    liveConnectForm.elements.client_id.value = state.credentials.client_id;
+  }
+  const credentialSaveForm = document.getElementById("credentialSaveForm");
+  if (credentialSaveForm) {
+    syncCredentialField(credentialSaveForm, "client_id", state.credentials.client_id || "");
+    syncCredentialField(credentialSaveForm, "broker_provider", state.credentials.broker_provider || "dhan");
+    syncCredentialField(credentialSaveForm, "zerodha_api_key", state.credentials.zerodha_api_key || "");
+    syncCredentialField(credentialSaveForm, "openai_model", state.credentials.openai_model || "");
+    syncCredentialField(credentialSaveForm, "deepseek_model", state.credentials.deepseek_model || "");
+    syncCredentialField(credentialSaveForm, "full_ai_provider", state.credentials.full_ai_provider || "");
+    syncCredentialField(credentialSaveForm, "operating_mode", state.credentials.operating_mode || "");
+    syncCredentialField(credentialSaveForm, "heuristic_advance_timeframe_minutes", String(state.credentials.heuristic_advance_timeframe_minutes || 3));
+    syncCredentialField(credentialSaveForm, "nifty_order_lots", String(state.credentials.nifty_order_lots || 1));
+    syncCredentialField(credentialSaveForm, "stock_trade_capital", String(state.credentials.stock_trade_capital || 25000));
+    syncCredentialField(credentialSaveForm, "stock_execution_mode", state.credentials.stock_execution_mode || "cash");
+    syncCredentialField(credentialSaveForm, "stock_future_lots", String(state.credentials.stock_future_lots || 1));
+    syncCredentialField(credentialSaveForm, "stock_option_lots", String(state.credentials.stock_option_lots || 1));
+    syncCredentialField(credentialSaveForm, "nifty_expiry_preference", state.credentials.nifty_expiry_preference || "current-weekly");
+    syncCredentialField(credentialSaveForm, "nifty_option_trade_mode", state.credentials.nifty_option_trade_mode || "selling");
+    syncCredentialField(credentialSaveForm, "stock_partial_profit_enabled", state.credentials.stock_partial_profit_enabled !== false);
+    syncCredentialField(credentialSaveForm, "stock_trailing_stop_enabled", state.credentials.stock_trailing_stop_enabled !== false);
+    syncCredentialField(credentialSaveForm, "stock_heuristic_early_exit_enabled", state.credentials.stock_heuristic_early_exit_enabled !== false);
+    syncCredentialField(credentialSaveForm, "nifty_trailing_stop_enabled", state.credentials.nifty_trailing_stop_enabled !== false);
+    syncCredentialField(credentialSaveForm, "nifty_heuristic_early_exit_enabled", state.credentials.nifty_heuristic_early_exit_enabled !== false);
+    syncCredentialField(credentialSaveForm, "nifty_cost_sl_enabled", state.credentials.nifty_cost_sl_enabled === true);
+    syncCredentialField(credentialSaveForm, "nifty_cost_sl_points", String(state.credentials.nifty_cost_sl_points ?? 35));
+    syncCredentialField(credentialSaveForm, "nifty_min_sl_points", String(state.credentials.nifty_min_sl_points ?? 40));
+    syncCredentialField(credentialSaveForm, "nifty_max_sl_points", String(state.credentials.nifty_max_sl_points ?? 60));
+    syncCredentialField(credentialSaveForm, "nifty_target_enabled", state.credentials.nifty_target_enabled === true);
+    syncCredentialField(credentialSaveForm, "nifty_target_points", String(state.credentials.nifty_target_points ?? 90));
+    syncCredentialField(credentialSaveForm, "nifty_daily_max_loss_enabled", state.credentials.nifty_daily_max_loss_enabled === true);
+    syncCredentialField(credentialSaveForm, "nifty_daily_max_loss", String(state.credentials.nifty_daily_max_loss ?? 100));
+    syncCredentialField(credentialSaveForm, "global_mtm_square_off_enabled", state.credentials.global_mtm_square_off_enabled === true);
+    syncCredentialField(credentialSaveForm, "global_mtm_square_off_threshold", String(state.credentials.global_mtm_square_off_threshold ?? 0));
+    syncCredentialField(credentialSaveForm, "pyramiding_enabled", state.credentials.pyramiding_enabled === true);
+    syncCredentialField(credentialSaveForm, "intelligent_pyramiding_enabled", state.credentials.intelligent_pyramiding_enabled === true);
+    syncCredentialField(credentialSaveForm, "stock_percent_pyramiding_enabled", state.credentials.stock_percent_pyramiding_enabled === true);
+    syncCredentialField(credentialSaveForm, "stock_percent_pyramiding_step", String(state.credentials.stock_percent_pyramiding_step ?? 1));
+    syncCredentialField(credentialSaveForm, "stock_cost_sl_after_pyramid_enabled", state.credentials.stock_cost_sl_after_pyramid_enabled === true);
+    syncCredentialField(credentialSaveForm, "nifty_point_pyramiding_enabled", state.credentials.nifty_point_pyramiding_enabled === true);
+    syncCredentialField(credentialSaveForm, "nifty_point_pyramiding_points", String(state.credentials.nifty_point_pyramiding_points ?? 50));
+    syncCredentialField(credentialSaveForm, "nifty_trade_bias", state.credentials.nifty_trade_bias || "both");
+  }
+  applyBrokerVisibility();
+  syncLiveCredentialsFromSavedForm();
+  persistBrowserSettingsFromForms();
+}
+
 async function refreshState() {
   if (runtimeUiState.stateRefreshInFlight) {
     return;
@@ -1457,6 +1592,29 @@ async function addBulkStocks(bulkText, tradeBias = "both") {
   formData.append("bulk_text", bulkText);
   formData.append("trade_bias", tradeBias);
   await postForm("/api/stocks/watchlist/bulk-add", formData);
+}
+
+async function saveUniverseWarmupList(bulkText) {
+  const formData = new FormData();
+  formData.append("bulk_text", bulkText);
+  const data = await fetchJson("/api/universe/warmup/save", { method: "POST", body: formData });
+  if (runtimeUiState.dashboard && data.universe_warmup) {
+    runtimeUiState.dashboard.universe_warmup = data.universe_warmup;
+    renderUniverseWarmup(runtimeUiState.dashboard);
+  }
+  setLastAction("success", "Universe saved", data.message || "Universe warmup list saved.");
+  setToast(data.message || "Universe warmup list saved.");
+}
+
+async function startUniverseWarmup() {
+  const credentials = currentDhanCredentials();
+  const formData = new FormData();
+  formData.append("client_id", credentials.client_id);
+  formData.append("access_token", credentials.access_token);
+  await postForm("/api/universe/warmup/start", formData, {
+    timeoutMs: 120000,
+    pendingTitle: "Universe warmup started",
+  });
 }
 
 async function selectStock(symbol) {
@@ -1506,13 +1664,15 @@ async function runStockAction(actionName, symbol, handler) {
   }
 }
 
-async function postForm(url, formData) {
-  const data = await fetchJson(url, { method: "POST", body: formData });
+async function postForm(url, formData, options = {}) {
+  const data = await fetchJson(url, { method: "POST", body: formData, timeoutMs: options.timeoutMs });
   if (data.state) {
     renderState(data.state);
   }
   if (data.message) {
-    if (data.job && data.job.status === "running") {
+    if (options.pendingTitle) {
+      setLastAction("pending", options.pendingTitle, data.message);
+    } else if (data.job && data.job.status === "running") {
       setLastAction("pending", "Rulebook learning", data.job.message || data.message);
     } else {
       setLastAction("success", "Request completed", data.message);
@@ -1596,9 +1756,30 @@ document.getElementById("historicalRangeReplayForm").addEventListener("submit", 
     formData.append("replay_end_date", form.elements.replay_end_date.value || "");
     formData.append("decision_duration_minutes", replayForm.elements.decision_duration_minutes.value || "5");
     formData.append("stock_replay_scope", replayForm.elements.stock_replay_scope?.value || "all");
-    await postForm("/api/simulation/historical-range/start", formData);
+    await postForm("/api/simulation/historical-range/start", formData, {
+      timeoutMs: 120000,
+      pendingTitle: "Bulk replay started",
+    });
   });
 });
+
+const universeWarmupForm = document.getElementById("universeWarmupForm");
+if (universeWarmupForm) {
+  universeWarmupForm.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    runAction(async () => {
+      await saveUniverseWarmupList(form.elements.bulk_text.value || "");
+    });
+  });
+}
+
+const warmUniverseBtn = document.getElementById("warmUniverseBtn");
+if (warmUniverseBtn) {
+  warmUniverseBtn.addEventListener("click", () => runAction(async () => {
+    await startUniverseWarmup();
+  }));
+}
 
 document.getElementById("instrumentModeForm").addEventListener("submit", (event) => {
   event.preventDefault();

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import json
 import math
 import queue
 import re
@@ -8,6 +9,7 @@ import threading
 import uuid
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
+from pathlib import Path
 
 from app.config import Settings
 from app.schemas import (
@@ -35,6 +37,7 @@ from app.schemas import (
     StrategyContext,
     TradeAction,
     TradeDecision,
+    UniverseWarmupState,
     Zone,
 )
 from app.services.ai_service import AIDecisionService
@@ -131,7 +134,7 @@ class SimulationEngine:
         self._state_revision = 0
         self._cached_state_revision = -1
         self._cached_state: DashboardState | None = None
-        self._live_packet_queue: queue.Queue[str | None] = queue.Queue()
+        self._live_packet_queue: queue.Queue[str | None] = queue.Queue(maxsize=2000)
         self._pending_live_packets: dict[str, dict] = {}
         self._queued_live_packet_keys: set[str] = set()
         self._replay_simulation_depth = 0
@@ -141,7 +144,8 @@ class SimulationEngine:
             daemon=True,
         )
         self._live_packet_worker.start()
-        self._live_evaluation_queue: queue.Queue[tuple[str | None, int] | None] = queue.Queue()
+        self._live_evaluation_queue: queue.Queue[tuple[str | None, int] | None] = queue.Queue(maxsize=1000)
+        self._queued_live_evaluation_keys: set[tuple[str | None, int]] = set()
         self._live_evaluation_worker = threading.Thread(
             target=self._run_live_evaluation_worker,
             name="live-evaluation-worker",
@@ -156,6 +160,7 @@ class SimulationEngine:
         )
         self._order_update_worker.start()
         self._watchlist_subscription_refresh_event = threading.Event()
+        self._watchlist_subscription_debounce_seconds = 1.0
         self._watchlist_subscription_worker = threading.Thread(
             target=self._run_watchlist_subscription_worker,
             name="watchlist-subscription-worker",
@@ -171,6 +176,12 @@ class SimulationEngine:
         self.stock_watchlist: dict[str, InstrumentSpec] = {}
         self.stock_watch_meta: dict[str, dict] = {}
         self.stock_sessions: dict[str, StockRuntimeSession] = {}
+        self.universe_warmup_path = Path("app/data/universe_warmup_cache.json")
+        self.universe_warmup_symbols: list[str] = self._load_universe_warmup_symbols()
+        self.universe_warmup_state = UniverseWarmupState(
+            symbols=list(self.universe_warmup_symbols),
+            total_symbols=len(self.universe_warmup_symbols),
+        )
         self.selected_stock_symbol: str | None = None
         self._bulk_replay_trade_history: list[SimulatedTrade] = []
         self._runtime_dhan_client_id = ""
@@ -978,6 +989,167 @@ class SimulationEngine:
         if self.stock_watchlist["SBIN"].security_id:
             self._stock_symbol_by_security_id[self.stock_watchlist["SBIN"].security_id] = "SBIN"
 
+    def _load_universe_warmup_symbols(self) -> list[str]:
+        try:
+            if not self.universe_warmup_path.exists():
+                return []
+            payload = json.loads(self.universe_warmup_path.read_text(encoding="utf-8"))
+        except Exception:
+            return []
+        raw_symbols = payload.get("symbols") if isinstance(payload, dict) else None
+        if not isinstance(raw_symbols, list):
+            return []
+        return list(dict.fromkeys(str(symbol).strip().upper() for symbol in raw_symbols if str(symbol).strip()))
+
+    def _save_universe_warmup_symbols(self) -> None:
+        self.universe_warmup_path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {"symbols": self.universe_warmup_symbols, "updated_at": datetime.now().isoformat()}
+        self.universe_warmup_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+    def save_universe_warmup_list(self, raw_text: str) -> UniverseWarmupState:
+        symbols, skipped = self.extract_bulk_stock_symbols(raw_text)
+        if not symbols:
+            raise ValueError("No valid universe symbols were found in the pasted text.")
+        with self.lock:
+            self.universe_warmup_symbols = symbols
+            self._save_universe_warmup_symbols()
+            message = f"Saved {len(symbols)} universe symbol(s) for warmup."
+            if skipped:
+                message += f" Skipped {len(skipped)} invalid/unknown symbol(s)."
+            self.universe_warmup_state = UniverseWarmupState(
+                symbols=list(symbols),
+                total_symbols=len(symbols),
+                status="saved",
+                message=message,
+            )
+            self.rulebook_service.learning_log.insert(0, message)
+            self._mark_state_dirty_locked()
+            return self.universe_warmup_state.model_copy(deep=True)
+
+    def start_universe_warmup_async(self, client_id: str | None = None, access_token: str | None = None) -> OperationJobState:
+        provider, client, token = self._history_provider_credentials(client_id, access_token)
+        provider_label = self._history_broker_label(provider)
+        with self.lock:
+            self._ensure_no_running_operation_locked()
+            symbols = list(self.universe_warmup_symbols)
+            if not symbols:
+                raise ValueError("Save a Universe Warmup list before warming history.")
+            job_id = uuid.uuid4().hex
+            started_at = datetime.now()
+            self._operation_job_token = job_id
+            self._set_operation_job_locked(
+                job_id=job_id,
+                job_type="universe-warmup",
+                status="running",
+                message=f"Universe warmup started for {len(symbols)} symbol(s) using {provider_label} history.",
+                started_at=started_at,
+            )
+            self.universe_warmup_state = UniverseWarmupState(
+                symbols=list(symbols),
+                total_symbols=len(symbols),
+                status="running",
+                message=f"Universe warmup running for {len(symbols)} symbol(s).",
+            )
+            self._mark_state_dirty_locked()
+            operation_job = self.operation_job.model_copy(deep=True)
+        worker = threading.Thread(
+            target=self._run_operation_job,
+            kwargs={
+                "job_id": job_id,
+                "job_type": "universe-warmup",
+                "target": lambda: self._warm_universe_now(symbols, client_id=client, access_token=token, provider=provider),
+                "success_message": f"Universe warmup completed for {len(symbols)} symbol(s).",
+                "error_prefix": f"Universe warmup failed",
+            },
+            name="universe-warmup-job",
+            daemon=True,
+        )
+        worker.start()
+        return operation_job
+
+    def _warm_universe_now(self, symbols: list[str], *, client_id: str, access_token: str, provider: str) -> None:
+        warmed = 0
+        failed: list[str] = []
+
+        def fetch(symbol: str):
+            resolved = self.stock_universe.resolve(symbol)
+            spec = build_stock_instrument(
+                resolved.symbol,
+                resolved.security_id,
+                label=resolved.label,
+                exchange_segment=resolved.exchange_segment,
+                instrument_type=resolved.instrument_type,
+            )
+            bundle = self._fetch_market_context_for_spec(
+                provider,
+                client_id,
+                access_token,
+                spec,
+                prefer_last_closed_session_before_open=True,
+            )
+            return spec, bundle
+
+        with ThreadPoolExecutor(max_workers=self._max_stock_sync_workers(len(symbols))) as executor:
+            future_by_symbol = {executor.submit(fetch, symbol): symbol for symbol in symbols}
+            for future in as_completed(future_by_symbol):
+                symbol = future_by_symbol[future]
+                try:
+                    spec, bundle = future.result()
+                    self._apply_universe_warmup_bundle(spec.symbol, spec, bundle, provider=provider)
+                    warmed += 1
+                except Exception as exc:
+                    failed.append(symbol)
+                    with self.lock:
+                        self.rulebook_service.learning_log.insert(0, f"Universe warmup failed for {symbol}: {exc}")
+                with self.lock:
+                    self.universe_warmup_state = UniverseWarmupState(
+                        symbols=list(self.universe_warmup_symbols),
+                        total_symbols=len(symbols),
+                        warmed_symbols=warmed,
+                        failed_symbols=len(failed),
+                        status="running",
+                        message=f"Universe warmup progress: {warmed}/{len(symbols)} warmed, {len(failed)} failed.",
+                        last_warmed_at=datetime.now(),
+                    )
+                    self._mark_state_dirty_locked()
+        with self.lock:
+            self.universe_warmup_state = UniverseWarmupState(
+                symbols=list(self.universe_warmup_symbols),
+                total_symbols=len(symbols),
+                warmed_symbols=warmed,
+                failed_symbols=len(failed),
+                status="ready" if warmed else "error",
+                message=f"Universe warmup completed: {warmed}/{len(symbols)} warmed, {len(failed)} failed.",
+                last_warmed_at=datetime.now(),
+            )
+            self.rulebook_service.learning_log.insert(0, self.universe_warmup_state.message)
+            self._mark_state_dirty_locked()
+
+    def _apply_universe_warmup_bundle(self, symbol: str, spec: InstrumentSpec, bundle, *, provider: str) -> None:
+        session = self._build_stock_runtime_session(spec)
+        session.candles = list(bundle.previous_day_candles) + list(bundle.intraday_candles)
+        session.current_index = len(session.candles) - 1
+        session.live_current_candle = bundle.live_open_candle
+        session.data_sync = DataSyncState(
+            status="ready",
+            source=self._history_source_label(provider),
+            message=(
+                f"Warmed universe history for {spec.label}: {len(bundle.previous_day_candles)} previous-day "
+                f"and {len(bundle.intraday_candles)} intraday candles."
+            ),
+            last_synced_at=datetime.now(),
+            replay_session_day=bundle.replay_session_day,
+            previous_context_day=bundle.previous_context_day,
+            previous_day_candles=len(bundle.previous_day_candles),
+            intraday_candles=len(bundle.intraday_candles),
+            total_loaded=len(bundle.previous_day_candles) + len(bundle.intraday_candles),
+            has_live_open_candle=bundle.live_open_candle is not None,
+        )
+        with self.lock:
+            self.stock_sessions[symbol] = session
+            if spec.security_id:
+                self._stock_symbol_by_security_id[spec.security_id] = symbol
+
     def _has_saved_stock_watchlist_preferences(self) -> bool:
         payload = self.credential_store.load()
         return any(
@@ -1188,7 +1360,8 @@ class SimulationEngine:
             meta.setdefault("trade_bias", "both")
         if not spec.security_id:
             meta["history_status"] = "resolving"
-        self.stock_sessions.setdefault(spec.symbol, self._build_stock_runtime_session(spec))
+        session = self.stock_sessions.setdefault(spec.symbol, self._build_stock_runtime_session(spec))
+        session.spec = spec
         if make_selected or self.selected_stock_symbol is None:
             self.selected_stock_symbol = spec.symbol
         return spec
@@ -1240,22 +1413,33 @@ class SimulationEngine:
         seen: set[str] = set()
         added: list[str] = []
         skipped: list[str] = []
+
+        def add_candidate(candidate: str) -> None:
+            candidate = candidate.strip().upper()
+            if not candidate or candidate in seen:
+                return
+            seen.add(candidate)
+            try:
+                self.stock_universe.preview(candidate)
+            except ValueError:
+                skipped.append(candidate)
+                return
+            added.append(candidate)
+
         for raw_line in (raw_text or "").splitlines():
             line = raw_line.strip()
             if not line:
                 continue
             if line.lower().startswith("symbol"):
                 continue
-            candidate = re.split(r"\t+|\s{2,}|,", line, maxsplit=1)[0].strip().upper()
-            if not candidate or candidate in seen:
+            if "\t" in line or re.search(r"\s{2,}", line):
+                add_candidate(re.split(r"\t+|\s{2,}", line, maxsplit=1)[0])
                 continue
-            seen.add(candidate)
-            try:
-                self.stock_universe.preview(candidate)
-            except ValueError:
-                skipped.append(candidate)
+            if "," in line:
+                for token in line.split(","):
+                    add_candidate(token)
                 continue
-            added.append(candidate)
+            add_candidate(line)
         return added, skipped
 
     def add_bulk_stocks_to_watchlist(
@@ -2031,23 +2215,38 @@ class SimulationEngine:
         plan = self._build_watchlist_subscription_plan()
         if plan is None:
             return
-        adapter, current, desired = plan
+        adapter, current, desired, desired_symbols = plan
         changed = False
-        for security_id, subscription in current.items():
-            if security_id not in desired:
-                adapter.unsubscribe_symbols([subscription])
-                with self.lock:
-                    if self.live_feed_adapter is adapter:
-                        self._stock_quote_subscriptions.pop(security_id, None)
-                        changed = True
-        for security_id, subscription in desired.items():
-            if security_id in current:
-                continue
-            adapter.subscribe_symbols([subscription])
+        removals = [
+            subscription
+            for security_id, subscription in current.items()
+            if security_id not in desired
+        ]
+        additions = [
+            subscription
+            for security_id, subscription in desired.items()
+            if security_id not in current
+        ]
+        if removals:
+            adapter.unsubscribe_symbols(removals)
             with self.lock:
                 if self.live_feed_adapter is adapter:
-                    self._stock_quote_subscriptions[security_id] = subscription
-                    changed = True
+                    for security_id in list(current):
+                        if security_id not in desired:
+                            self._stock_quote_subscriptions.pop(security_id, None)
+                            self._stock_symbol_by_security_id.pop(security_id, None)
+                            changed = True
+        if additions:
+            adapter.subscribe_symbols(additions)
+            with self.lock:
+                if self.live_feed_adapter is adapter:
+                    for security_id, subscription in desired.items():
+                        if security_id not in current:
+                            self._stock_quote_subscriptions[security_id] = subscription
+                            symbol = desired_symbols.get(security_id)
+                            if symbol:
+                                self._stock_symbol_by_security_id[security_id] = symbol
+                            changed = True
         if changed:
             with self.lock:
                 self._mark_state_dirty_locked()
@@ -2061,6 +2260,7 @@ class SimulationEngine:
             specs = list(self.stock_watchlist.values())
             current = dict(self._stock_quote_subscriptions)
         desired: dict[str, tuple] = {}
+        desired_symbols: dict[str, str] = {}
         errors: list[str] = []
         for spec in specs:
             feed_security_id = self._live_feed_security_id_for_spec(spec, broker)
@@ -2071,6 +2271,7 @@ class SimulationEngine:
                     desired[feed_security_id] = self._zerodha_quote_subscription_for_spec(spec)
                 elif spec.security_id:
                     desired[spec.security_id] = resolve_quote_subscription(spec.security_id, spec.exchange_segment)
+                desired_symbols[feed_security_id] = spec.symbol
             except Exception as exc:
                 errors.append(f"{spec.symbol}: {exc}")
         if errors:
@@ -2080,7 +2281,7 @@ class SimulationEngine:
                     f"Watchlist subscription skipped {len(errors)} symbol(s): {'; '.join(errors[:3])}",
                 )
                 self._mark_state_dirty_locked()
-        return adapter, current, desired
+        return adapter, current, desired, desired_symbols
 
     def _schedule_watchlist_subscription_refresh(self) -> None:
         self._watchlist_subscription_refresh_event.set()
@@ -2089,7 +2290,12 @@ class SimulationEngine:
         while True:
             self._watchlist_subscription_refresh_event.wait()
             self._watchlist_subscription_refresh_event.clear()
+            threading.Event().wait(self._watchlist_subscription_debounce_seconds)
             while True:
+                if self._watchlist_subscription_refresh_event.is_set():
+                    self._watchlist_subscription_refresh_event.clear()
+                    threading.Event().wait(self._watchlist_subscription_debounce_seconds)
+                    continue
                 try:
                     self._sync_watchlist_subscriptions()
                 except Exception as exc:
@@ -3122,7 +3328,8 @@ class SimulationEngine:
         replay_end_date: str,
         replay_decision_duration_minutes: int = 1,
         stock_replay_scope: str | None = "all",
-    ) -> DashboardState:
+        return_state: bool = True,
+    ) -> DashboardState | OperationJobState:
         provider, client, token = self._history_provider_credentials(client_id, access_token)
         provider_label = self._history_broker_label(provider)
         source_label = self._history_source_label(provider)
@@ -3169,6 +3376,7 @@ class SimulationEngine:
                 has_live_open_candle=False,
             )
             self._mark_state_dirty_locked()
+            operation_job = self.operation_job.model_copy(deep=True)
         worker = threading.Thread(
             target=self._run_operation_job,
             kwargs={
@@ -3191,7 +3399,9 @@ class SimulationEngine:
             daemon=True,
         )
         worker.start()
-        return self.get_state()
+        if return_state:
+            return self.get_state()
+        return operation_job
 
     def sync_dhan_context(self, client_id: str | None = None, access_token: str | None = None) -> DashboardState:
         provider, client, token = self._history_provider_credentials(client_id, access_token)
@@ -4067,7 +4277,8 @@ class SimulationEngine:
         nifty_option_trade_mode: str | None = None,
         global_mtm_square_off_enabled: bool | None = None,
         global_mtm_square_off_threshold: float | None = None,
-    ) -> DashboardState:
+        return_state: bool = True,
+    ) -> DashboardState | CredentialSummary:
         with self.lock:
             self.credential_store.save(
                 client_id=client_id,
@@ -4126,7 +4337,9 @@ class SimulationEngine:
                 ),
             )
             self._mark_state_dirty_locked()
-            return self.get_state()
+            if return_state:
+                return self.get_state()
+            return self._credential_summary_cache
 
     def _configure_ai_service(self) -> None:
         provider = self.credential_store.get_full_ai_provider(self.settings)
@@ -4329,6 +4542,7 @@ class SimulationEngine:
             operation_job = self.operation_job.model_copy(deep=True)
             replay_pnl_summary = self.replay_pnl_summary.model_copy(deep=True)
             rulebook_job = self.rulebook_job.model_copy(deep=True)
+            universe_warmup = self.universe_warmup_state.model_copy(deep=True)
             learning_log = list(self.rulebook_service.learning_log[:10])
             rulebook = self.rulebook_service.get_rulebook()
             stock_watchlist = self._build_stock_watchlist_state_locked()
@@ -4462,6 +4676,7 @@ class SimulationEngine:
             rulebook_job=rulebook_job,
             credentials=self.get_credential_summary(),
             stock_watchlist=stock_watchlist,
+            universe_warmup=universe_warmup,
         )
         with self.lock:
             if self._state_revision == state_revision:
@@ -4503,7 +4718,27 @@ class SimulationEngine:
             if packet_key in self._queued_live_packet_keys:
                 return
             self._queued_live_packet_keys.add(packet_key)
-        self._live_packet_queue.put(packet_key)
+        self._put_live_packet_key(packet_key)
+
+    def _put_live_packet_key(self, packet_key: str) -> None:
+        try:
+            self._live_packet_queue.put_nowait(packet_key)
+            return
+        except queue.Full:
+            pass
+        try:
+            dropped_key = self._live_packet_queue.get_nowait()
+            with self.lock:
+                if dropped_key is not None:
+                    self._queued_live_packet_keys.discard(dropped_key)
+                    self._pending_live_packets.pop(dropped_key, None)
+        except queue.Empty:
+            pass
+        try:
+            self._live_packet_queue.put_nowait(packet_key)
+        except queue.Full:
+            with self.lock:
+                self._queued_live_packet_keys.discard(packet_key)
 
     def _run_live_packet_worker(self) -> None:
         while True:
@@ -4527,6 +4762,8 @@ class SimulationEngine:
                 return
             symbol, evaluation_index = task
             try:
+                with self.lock:
+                    self._queued_live_evaluation_keys.discard((symbol, evaluation_index))
                 if symbol is None:
                     self._evaluate_index(evaluation_index, source="live")
                     continue
@@ -4540,10 +4777,30 @@ class SimulationEngine:
                 self.handle_live_status("error", str(exc))
 
     def _queue_live_evaluation(self, symbol: str | None, evaluation_index: int) -> None:
+        key = (symbol, evaluation_index)
         with self.lock:
             if self._replay_simulation_active_locked():
                 return
-        self._live_evaluation_queue.put((symbol, evaluation_index))
+            if key in self._queued_live_evaluation_keys:
+                return
+            self._queued_live_evaluation_keys.add(key)
+        try:
+            self._live_evaluation_queue.put_nowait(key)
+            return
+        except queue.Full:
+            pass
+        try:
+            dropped = self._live_evaluation_queue.get_nowait()
+            with self.lock:
+                if dropped is not None:
+                    self._queued_live_evaluation_keys.discard(dropped)
+        except queue.Empty:
+            pass
+        try:
+            self._live_evaluation_queue.put_nowait(key)
+        except queue.Full:
+            with self.lock:
+                self._queued_live_evaluation_keys.discard(key)
 
     def _handle_live_packet_now(self, packet: dict) -> None:
         evaluation_index = None
@@ -4894,6 +5151,8 @@ class SimulationEngine:
             return
 
     def _clear_live_evaluation_queue(self) -> None:
+        with self.lock:
+            self._queued_live_evaluation_keys.clear()
         try:
             while True:
                 self._live_evaluation_queue.get_nowait()
@@ -4905,6 +5164,7 @@ class SimulationEngine:
             self._replay_simulation_depth += 1
             self._pending_live_packets.clear()
             self._queued_live_packet_keys.clear()
+            self._queued_live_evaluation_keys.clear()
         self._clear_live_packet_queue()
         self._clear_live_evaluation_queue()
 

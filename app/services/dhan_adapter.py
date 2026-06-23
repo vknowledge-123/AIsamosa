@@ -42,8 +42,8 @@ class DhanMarketFeedAdapter:
         access_token: str,
         instruments: list[tuple[Any, str, Any]],
         reconnect_delay: float = 3.0,
-        max_reconnect_delay: float = 30.0,
-        rate_limit_delay: float = 45.0,
+        max_reconnect_delay: float = 300.0,
+        rate_limit_delay: float = 60.0,
     ) -> None:
         self.client_id = client_id
         self.access_token = access_token
@@ -117,9 +117,12 @@ class DhanMarketFeedAdapter:
             self._call_feed_method(unsubscribe, instruments)
 
     def _call_feed_method(self, method: Callable[[list[tuple[Any, str, Any]]], Any], instruments: list[tuple[Any, str, Any]]) -> None:
+        if not instruments:
+            return
         try:
             result = method(instruments)
-        except Exception:
+        except Exception as exc:
+            self._notify_status("connected", f"Dhan live feed subscription warning: {exc}")
             return
         if not inspect.isawaitable(result):
             return
@@ -378,7 +381,8 @@ def _retry_delay_seconds(
     message: str,
 ) -> float:
     if "http 429" in message or "too many requests" in message:
-        return min(max_delay, max(rate_limit_delay, base_delay * max(1, retry_attempt)))
+        rate_delay = rate_limit_delay * (2 ** max(0, retry_attempt - 1))
+        return min(max_delay, max(rate_limit_delay, rate_delay, base_delay * max(1, retry_attempt)))
     exponential_delay = base_delay * (2 ** max(0, retry_attempt - 1))
     return min(max_delay, exponential_delay)
 

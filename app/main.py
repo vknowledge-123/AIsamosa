@@ -196,6 +196,33 @@ async def bulk_add_stocks_to_watchlist(
     }
 
 
+@app.post("/api/universe/warmup/save")
+async def save_universe_warmup_list(bulk_text: str = Form(...)):
+    try:
+        warmup = await run_in_threadpool(engine.save_universe_warmup_list, bulk_text)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {
+        "message": warmup.message,
+        "universe_warmup": warmup.model_dump(mode="json"),
+    }
+
+
+@app.post("/api/universe/warmup/start")
+async def start_universe_warmup(
+    client_id: str = Form(default=""),
+    access_token: str = Form(default=""),
+):
+    try:
+        job = await run_in_threadpool(engine.start_universe_warmup_async, client_id, access_token)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {
+        "message": job.message,
+        "job": job.model_dump(mode="json"),
+    }
+
+
 @app.post("/api/stocks/watchlist/select")
 async def select_stock(symbol: str = Form(...)):
     try:
@@ -371,6 +398,7 @@ async def start_simulate_historical_range(
             replay_end_date=replay_end_date,
             replay_decision_duration_minutes=decision_duration_minutes,
             stock_replay_scope=stock_replay_scope,
+            return_state=False,
         )
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -379,7 +407,7 @@ async def start_simulate_historical_range(
             f"Started background historical range replay from {replay_start_date} to {replay_end_date} "
             f"using {decision_duration_minutes}-minute replay decisions."
         ),
-        "state": state,
+        "job": state.model_dump(mode="json"),
     }
 
 
@@ -594,5 +622,9 @@ async def save_credentials(
         nifty_option_trade_mode=nifty_option_trade_mode,
         global_mtm_square_off_enabled=global_mtm_enabled,
         global_mtm_square_off_threshold=global_mtm_square_off_threshold,
+        return_state=False,
     )
-    return {"message": "Dhan, AI, sizing, expiry, and trading-mode settings saved locally for reuse.", "state": state}
+    return {
+        "message": "Broker, AI, sizing, expiry, and trading-mode settings saved locally for reuse.",
+        "credentials": state,
+    }

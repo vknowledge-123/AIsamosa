@@ -18,6 +18,7 @@ from app.schemas import Candle, InstrumentMode, InstrumentState, LiquidityLedger
 from app.services.advanced_indicator_engine import AdvancedIndicatorEngine
 from app.services.credential_store import CredentialStore
 from app.services.dhan_execution import BrokerOrderResult
+from app.services.dhan_adapter import _retry_delay_seconds
 from app.services.dhan_history import DhanChartEmptyDataError, DhanChartError, DhanChartRateLimitError, DhanChartService, DhanSessionBundle
 from app.services.dhan_order_updates import DhanOrderUpdateAdapter
 from app.services.dhan_options import DhanOptionQuoteError, OptionContract, OptionQuote
@@ -37,6 +38,8 @@ class AppIntegrationTests(unittest.TestCase):
         with patch("app.services.simulation.CredentialStore", return_value=self.temp_store):
             self.test_engine = SimulationEngine(get_settings())
         self.test_engine.credential_store = self.temp_store
+        self.test_engine.universe_warmup_path = Path(self.tempdir.name) / "universe_warmup_cache.json"
+        self.test_engine.universe_warmup_symbols = []
         self.test_engine.ai_service.enabled = False
         self.test_engine.live_feed = self.test_engine._build_live_feed_state()
         main_module.engine = self.test_engine
@@ -279,6 +282,10 @@ class AppIntegrationTests(unittest.TestCase):
         )
 
         self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertIn("credentials", payload)
+        self.assertNotIn("state", payload)
+        self.assertEqual(payload["credentials"]["operating_mode"], "heuristic")
         summary = self.client.get("/api/settings/credentials").json()
         self.assertEqual(summary["client_id"], "cid-123")
         self.assertTrue(summary["dhan_access_token_saved"])
@@ -408,6 +415,41 @@ class AppIntegrationTests(unittest.TestCase):
 
         self.assertEqual(added, ["AMBER", "GLAND", "SJVN"])
         self.assertEqual(skipped, ["NIFTY 500"])
+
+    def test_extract_bulk_stock_symbols_accepts_comma_separated_universe(self) -> None:
+        added, skipped = self.test_engine.extract_bulk_stock_symbols("AMBER, GLAND, SJVN")
+
+        self.assertEqual(added, ["AMBER", "GLAND", "SJVN"])
+        self.assertEqual(skipped, [])
+
+    def test_save_universe_warmup_list_persists_without_watchlist_add(self) -> None:
+        response = self.client.post(
+            "/api/universe/warmup/save",
+            data={"bulk_text": "AMBER\nGLAND\nSJVN"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["universe_warmup"]["symbols"], ["AMBER", "GLAND", "SJVN"])
+        self.assertEqual(payload["universe_warmup"]["total_symbols"], 3)
+        self.assertEqual(json.loads(self.test_engine.universe_warmup_path.read_text())["symbols"], ["AMBER", "GLAND", "SJVN"])
+        self.assertNotIn("AMBER", self.test_engine.stock_watchlist)
+        self.assertNotIn("GLAND", self.test_engine.stock_watchlist)
+
+    def test_start_universe_warmup_returns_lightweight_job(self) -> None:
+        self.test_engine.save_universe_warmup_list("AMBER\nGLAND\n")
+
+        with patch.object(self.test_engine, "_run_operation_job", return_value=None):
+            response = self.client.post(
+                "/api/universe/warmup/start",
+                data={"client_id": "cid-123", "access_token": "tok-456"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertIn("job", payload)
+        self.assertEqual(payload["job"]["job_type"], "universe-warmup")
+        self.assertNotIn("state", payload)
 
     def test_bulk_add_stock_watchlist_api_extracts_and_adds_symbols(self) -> None:
         with patch.object(self.test_engine, "_auto_prepare_watchlist_symbols_async", return_value=None):
@@ -958,6 +1000,26 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertTrue(state["execution"]["live_paper_trading_enabled"])
         self.assertEqual(state["execution"]["order_updates_status"], "paper")
         self.assertFalse(self.test_engine._should_send_live_orders("live"))
+
+    def test_start_historical_range_replay_returns_lightweight_job(self) -> None:
+        with patch.object(self.test_engine, "_run_operation_job", return_value=None):
+            response = self.client.post(
+                "/api/simulation/historical-range/start",
+                data={
+                    "client_id": "cid-123",
+                    "access_token": "tok-456",
+                    "replay_start_date": "2026-03-02",
+                    "replay_end_date": "2026-03-03",
+                    "decision_duration_minutes": "5",
+                    "stock_replay_scope": "all",
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertIn("job", payload)
+        self.assertEqual(payload["job"]["job_type"], "simulate-historical-range")
+        self.assertNotIn("state", payload)
 
     def test_square_off_disarms_live_paper_trading(self) -> None:
         self.test_engine.save_credentials(operating_mode="heuristic", client_id="cid-123", access_token="tok-456")
@@ -2177,10 +2239,9 @@ class AppIntegrationTests(unittest.TestCase):
         )
 
         self.assertEqual(save_response.status_code, 200)
-        state = save_response.json()["state"]
-        self.assertEqual(state["operating_mode"], "heuristic-advance")
-        self.assertEqual(state["credentials"]["operating_mode"], "heuristic-advance")
-        self.assertEqual(state["credentials"]["heuristic_advance_timeframe_minutes"], 3)
+        credentials = save_response.json()["credentials"]
+        self.assertEqual(credentials["operating_mode"], "heuristic-advance")
+        self.assertEqual(credentials["heuristic_advance_timeframe_minutes"], 3)
 
     def test_advanced_indicator_engine_enters_on_gmma_gc_with_obv_confirmation(self) -> None:
         engine = AdvancedIndicatorEngine()
@@ -2214,6 +2275,62 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertEqual(decision.setup_type, "advanced_gmma_obv_long")
         self.assertIsNotNone(decision.invalidation_level)
 
+    def test_advanced_indicator_engine_enters_on_previous_day_late_carry_forward_cross(self) -> None:
+        engine = AdvancedIndicatorEngine()
+        candles: list[Candle] = []
+        price = 150.0
+        previous_start = datetime(2026, 1, 1, 9, 15)
+        for index in range(105):
+            open_price = price
+            price -= 0.25
+            close = price
+            candles.append(
+                Candle(
+                    timestamp=previous_start + timedelta(minutes=3 * index),
+                    open=open_price,
+                    high=max(open_price, close) + 0.2,
+                    low=min(open_price, close) - 0.2,
+                    close=close,
+                    volume=1000 + index * 10,
+                )
+            )
+        for offset in range(20):
+            index = 105 + offset
+            open_price = price
+            price += 0.8
+            close = price
+            candles.append(
+                Candle(
+                    timestamp=previous_start + timedelta(minutes=3 * index),
+                    open=open_price,
+                    high=max(open_price, close) + 0.2,
+                    low=min(open_price, close) - 0.2,
+                    close=close,
+                    volume=2500 + index * 20,
+                )
+            )
+
+        today_start = datetime(2026, 1, 2, 9, 15)
+        open_price = price + 0.1
+        price += 0.5
+        candles.append(
+            Candle(
+                timestamp=today_start,
+                open=open_price,
+                high=max(open_price, price) + 0.3,
+                low=min(open_price, price) - 0.2,
+                close=price,
+                volume=8000,
+            )
+        )
+
+        decision = engine.decide(candles)
+
+        self.assertEqual(decision.action, TradeAction.enter_call)
+        self.assertEqual(decision.decision_source, "heuristic-advance")
+        self.assertEqual(decision.setup_type, "carry_forward_gmma_obv_long")
+        self.assertIn("previous trading day near close", decision.reason)
+
     def test_live_trading_can_start_in_heuristic_advance_mode(self) -> None:
         self.test_engine.save_credentials(
             operating_mode="heuristic-advance",
@@ -2227,6 +2344,57 @@ class AppIntegrationTests(unittest.TestCase):
 
         self.assertTrue(state.execution.live_trading_enabled)
         self.assertEqual(state.operating_mode, OperatingMode.heuristic_advance)
+
+    def test_dhan_websocket_429_backoff_is_conservative(self) -> None:
+        self.assertEqual(
+            _retry_delay_seconds(
+                retry_attempt=1,
+                base_delay=3,
+                max_delay=300,
+                rate_limit_delay=60,
+                message="http 429 too many requests",
+            ),
+            60,
+        )
+        self.assertEqual(
+            _retry_delay_seconds(
+                retry_attempt=3,
+                base_delay=3,
+                max_delay=300,
+                rate_limit_delay=60,
+                message="http 429 too many requests",
+            ),
+            240,
+        )
+
+    def test_watchlist_subscription_refresh_batches_dhan_updates(self) -> None:
+        self.test_engine.set_instrument_mode("stock")
+        first = build_stock_instrument("SBIN", "3045", label="STATE BANK OF INDIA")
+        second = build_stock_instrument("TCS", "11536", label="TATA CONSULTANCY SERV LT")
+        adapter = Mock()
+        adapter.subscribe_symbols = Mock()
+        adapter.unsubscribe_symbols = Mock()
+        with self.test_engine.lock:
+            self.test_engine.live_feed_adapter = adapter
+            self.test_engine.stock_watchlist = {"SBIN": first, "TCS": second}
+            self.test_engine.instrument_mode = InstrumentMode.stock
+            self.test_engine._stock_quote_subscriptions = {}
+
+        with patch("app.services.simulation.resolve_quote_subscription", side_effect=lambda security_id, segment: ("NSE", security_id, "Quote")):
+            self.test_engine._sync_watchlist_subscriptions()
+
+        adapter.subscribe_symbols.assert_called_once()
+        subscribed = adapter.subscribe_symbols.call_args.args[0]
+        self.assertEqual(len(subscribed), 2)
+        self.assertEqual(self.test_engine._stock_symbol_by_security_id["3045"], "SBIN")
+        self.assertEqual(self.test_engine._stock_symbol_by_security_id["11536"], "TCS")
+
+    def test_live_evaluation_queue_skips_duplicate_symbol_candle(self) -> None:
+        with self.test_engine.lock:
+            self.test_engine._queued_live_evaluation_keys.add(("SBIN", 10))
+        self.test_engine._queue_live_evaluation("SBIN", 10)
+
+        self.assertEqual(self.test_engine._live_evaluation_queue.qsize(), 0)
 
     def test_full_ai_mode_stops_new_entries_when_ai_is_disabled(self) -> None:
         save_response = self.client.post(

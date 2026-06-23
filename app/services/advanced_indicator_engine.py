@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import time
 
 from app.schemas import Candle, TradeAction, TradeDecision
 
@@ -18,6 +19,13 @@ class AdvancedIndicatorState:
     obv_slow: float
 
 
+@dataclass(frozen=True)
+class CarryForwardSignal:
+    side: str
+    timestamp_label: str
+    close: float
+
+
 class AdvancedIndicatorEngine:
     short_lengths = (3, 5, 8, 10, 12, 15)
     long_lengths = (30, 35, 40, 45, 50, 60)
@@ -25,6 +33,9 @@ class AdvancedIndicatorEngine:
     obv_medium_len = 9
     obv_slow_len = 14
     minimum_candles = 65
+    carry_forward_start = time(15, 0)
+    carry_forward_end = time(15, 30)
+    carry_forward_max_session_candles = 20
 
     def decide(self, candles: list[Candle]) -> TradeDecision:
         if len(candles) < self.minimum_candles:
@@ -82,6 +93,37 @@ class AdvancedIndicatorEngine:
                 setup_type="advanced_gmma_obv_short",
                 rule_ids_used=["ADV-GMMA-DC", "ADV-OBV-BEAR", "ADV-STRUCTURE-SL"],
             )
+        carry_forward = self._carry_forward_signal(candles)
+        if carry_forward and self._carry_forward_confirmed(candles, state, carry_forward):
+            bullish = carry_forward.side == "long"
+            invalidation = self._defended_level(candles, bullish=bullish, atr=atr)
+            risk = max(
+                (latest.close - invalidation) if bullish else (invalidation - latest.close),
+                atr * 0.8,
+                latest.close * 0.004,
+            )
+            return TradeDecision(
+                action=TradeAction.enter_call if bullish else TradeAction.enter_put,
+                confidence=0.78,
+                reason=(
+                    f"Heuristic Advance carry-forward {'long' if bullish else 'short'} entry: "
+                    f"GMMA/OBV crossed on the previous trading day near close at {carry_forward.timestamp_label}, "
+                    "and today's opening action is confirming the same direction without waiting for a fresh crossover."
+                ),
+                decision_source="heuristic-advance",
+                option_type="CE" if bullish else "PE",
+                invalidation_level=round(invalidation, 2),
+                target_spot_price=round(latest.close + risk * 2.0, 2) if bullish else round(latest.close - risk * 2.0, 2),
+                first_target_price=round(latest.close + risk, 2) if bullish else round(latest.close - risk, 2),
+                market_state="carry_forward_gmma_obv_bullish" if bullish else "carry_forward_gmma_obv_bearish",
+                setup_score=78.0,
+                setup_type="carry_forward_gmma_obv_long" if bullish else "carry_forward_gmma_obv_short",
+                rule_ids_used=[
+                    "ADV-CARRY-FORWARD-LATE-DAY-CROSS",
+                    "ADV-OPEN-CONFIRMATION",
+                    "ADV-STRUCTURE-SL",
+                ],
+            )
         return TradeDecision(
             action=TradeAction.no_trade,
             confidence=0.35,
@@ -94,6 +136,67 @@ class AdvancedIndicatorEngine:
             setup_score=35.0,
             setup_type="advanced_no_entry",
         )
+
+    def _carry_forward_signal(self, candles: list[Candle]) -> CarryForwardSignal | None:
+        if len(candles) < self.minimum_candles + 1:
+            return None
+        latest_day = candles[-1].timestamp.date()
+        previous_days = sorted({candle.timestamp.date() for candle in candles if candle.timestamp.date() < latest_day})
+        if not previous_days:
+            return None
+        previous_day = previous_days[-1]
+        latest_signal: CarryForwardSignal | None = None
+        for index, candle in enumerate(candles):
+            if candle.timestamp.date() != previous_day:
+                continue
+            candle_time = candle.timestamp.time()
+            if candle_time < self.carry_forward_start or candle_time > self.carry_forward_end:
+                continue
+            prefix = candles[: index + 1]
+            if len(prefix) < self.minimum_candles:
+                continue
+            state = self.state(prefix)
+            if state.gmma_gc and state.gmma_bull_regime and state.obv_bull:
+                latest_signal = CarryForwardSignal(
+                    side="long",
+                    timestamp_label=candle.timestamp.strftime("%H:%M"),
+                    close=float(candle.close),
+                )
+            elif state.gmma_dc and state.gmma_bear_regime and state.obv_bear:
+                latest_signal = CarryForwardSignal(
+                    side="short",
+                    timestamp_label=candle.timestamp.strftime("%H:%M"),
+                    close=float(candle.close),
+                )
+        return latest_signal
+
+    def _carry_forward_confirmed(
+        self,
+        candles: list[Candle],
+        state: AdvancedIndicatorState,
+        signal: CarryForwardSignal,
+    ) -> bool:
+        latest_day = candles[-1].timestamp.date()
+        session = [candle for candle in candles if candle.timestamp.date() == latest_day]
+        if not session:
+            return False
+        if len(session) > self.carry_forward_max_session_candles:
+            return False
+        latest = session[-1]
+        first = session[0]
+        session_high = max(candle.high for candle in session)
+        session_low = min(candle.low for candle in session)
+        if signal.side == "long":
+            open_not_broken_badly = latest.close >= first.low
+            opening_confirmation = latest.close >= first.close or latest.close >= first.open or latest.close >= signal.close
+            trend_still_valid = state.obv_bull or state.gmma_bull_regime
+            not_late_chase = latest.close <= session_low + max((session_high - session_low) * 0.85, latest.close * 0.02)
+            return open_not_broken_badly and opening_confirmation and trend_still_valid and not_late_chase
+        open_not_broken_badly = latest.close <= first.high
+        opening_confirmation = latest.close <= first.close or latest.close <= first.open or latest.close <= signal.close
+        trend_still_valid = state.obv_bear or state.gmma_bear_regime
+        not_late_chase = latest.close >= session_high - max((session_high - session_low) * 0.85, latest.close * 0.02)
+        return open_not_broken_badly and opening_confirmation and trend_still_valid and not_late_chase
 
     def state(self, candles: list[Candle]) -> AdvancedIndicatorState:
         closes = [float(candle.close) for candle in candles]

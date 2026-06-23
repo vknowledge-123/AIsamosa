@@ -68,6 +68,19 @@
           <input type="text" name="query" placeholder="Search symbols like SBIN, TCS, RELIANCE" />
           <button type="submit">Search Stock Universe</button>
         </form>
+        <form id="universeWarmupForm" class="stack-form">
+          <label>Universe Warmup List</label>
+          <textarea
+            name="bulk_text"
+            rows="6"
+            placeholder="Paste NIFTY 500 or broad universe symbols here. This only warms data; it does not add stocks to long/short trading watchlists."
+          ></textarea>
+          <div class="button-row">
+            <button type="submit">Save Universe</button>
+            <button type="button" id="warmUniverseBtn" class="secondary-btn">Warm Universe History</button>
+          </div>
+          <p class="caption" id="universeWarmupStatus">No universe warmup has run yet.</p>
+        </form>
         <form id="stockLongBulkImportForm" class="stack-form stock-bulk-form" data-trade-bias="long">
           <label>Long Bulk Stock Paste</label>
           <textarea
