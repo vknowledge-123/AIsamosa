@@ -14,12 +14,12 @@ except Exception:  # pragma: no cover - optional runtime dependency path
     DhanContext = None
     MarketFeed = None
 
-try:  # pragma: no cover - depends on installed SDK version
+try:  # pragma: no cover - dhanhq 2.0.2 exports marketfeed / DhanFeed
     from dhanhq import marketfeed as legacy_marketfeed
 except Exception:  # pragma: no cover - optional runtime dependency path
     legacy_marketfeed = None
 
-try:  # pragma: no cover - depends on installed SDK version
+try:  # pragma: no cover - dhanhq 2.0.2 exports DhanFeed at package root
     from dhanhq import DhanFeed as LegacyDhanFeed
 except Exception:  # pragma: no cover - optional runtime dependency path
     LegacyDhanFeed = None
@@ -63,6 +63,7 @@ class DhanMarketFeedAdapter:
         self.instruments = list(instruments)
         self._retry_attempt = 0
         self._connected_notified = False
+        self._last_sdk_error: Exception | None = None
 
     def start(
         self,
@@ -97,7 +98,7 @@ class DhanMarketFeedAdapter:
             self.instruments = _merge_instruments(self.instruments, instruments)
         with self._feed_lock:
             feed = self._feed
-        if not feed:
+        if not feed or not self.connected:
             return
         subscribe = getattr(feed, "subscribe_symbols", None)
         if callable(subscribe):
@@ -110,7 +111,7 @@ class DhanMarketFeedAdapter:
             self.instruments = _remove_instruments(self.instruments, instruments)
         with self._feed_lock:
             feed = self._feed
-        if not feed:
+        if not feed or not self.connected:
             return
         unsubscribe = getattr(feed, "unsubscribe_symbols", None)
         if callable(unsubscribe):
@@ -120,23 +121,23 @@ class DhanMarketFeedAdapter:
         if not instruments:
             return
         try:
-            result = method(instruments)
+            for batch in _chunk_instruments(instruments, 100):
+                result = method(batch)
+                if inspect.isawaitable(result):
+                    loop = self._loop
+                    if loop is not None and loop.is_running():
+                        asyncio.run_coroutine_threadsafe(result, loop)
+                    else:
+                        try:
+                            asyncio.run(result)
+                        except RuntimeError:
+                            try:
+                                result.close()
+                            except Exception:
+                                pass
         except Exception as exc:
             self._notify_status("connected", f"Dhan live feed subscription warning: {exc}")
             return
-        if not inspect.isawaitable(result):
-            return
-        loop = self._loop
-        if loop is not None and loop.is_running():
-            asyncio.run_coroutine_threadsafe(result, loop)
-            return
-        try:
-            asyncio.run(result)
-        except RuntimeError:
-            try:
-                result.close()
-            except Exception:
-                pass
 
     def _notify_status(
         self,
@@ -156,25 +157,20 @@ class DhanMarketFeedAdapter:
             self._loop = loop
             try:
                 self._connected_notified = False
+                self._last_sdk_error = None
                 connect_status = "connecting" if self._retry_attempt == 0 else "reconnecting"
                 connect_message = "Connecting to Dhan market feed." if self._retry_attempt == 0 else "Reconnecting to Dhan market feed."
                 self._notify_status(connect_status, connect_message, self._retry_attempt)
                 feed = self._create_feed()
                 with self._feed_lock:
                     self._feed = feed
-                runner = getattr(feed, "run", None)
-                if callable(runner):
-                    runner()
-                    if not self._stop_event.is_set():
-                        raise RuntimeError("Dhan market feed loop exited unexpectedly.")
-                else:
-                    feed.run_forever()
-                    self._notify_connected()
-                    while not self._stop_event.is_set():
-                        packet = feed.get_data()
-                        if getattr(feed, "on_close", False):
-                            raise RuntimeError("Dhan market feed reported a server-side disconnection.")
-                        self._dispatch_sdk_message(packet)
+                feed.run_forever()
+                self._notify_connected()
+                while not self._stop_event.is_set():
+                    packet = feed.get_data()
+                    if getattr(feed, "on_close", False):
+                        raise RuntimeError("Dhan market feed reported a server-side disconnection.")
+                    self._dispatch_sdk_message(packet)
             except Exception as exc:
                 self.connected = False
                 if self._stop_event.is_set():
@@ -217,42 +213,22 @@ class DhanMarketFeedAdapter:
                 context,
                 instruments,
                 version="v2",
-                on_connect=self._handle_sdk_connect,
-                on_message=self._handle_sdk_message,
-                on_error=self._handle_sdk_error,
-                on_close=self._handle_sdk_close,
             )
         if LegacyDhanFeed is not None:
-            feed = LegacyDhanFeed(
+            return LegacyDhanFeed(
                 self.client_id,
                 self.access_token,
                 instruments,
                 version="v2",
             )
-            self._bind_feed_callbacks(feed)
-            return feed
         if legacy_marketfeed is not None:
-            feed = legacy_marketfeed.DhanFeed(
+            return legacy_marketfeed.DhanFeed(
                 self.client_id,
                 self.access_token,
                 instruments,
                 version="v2",
             )
-            self._bind_feed_callbacks(feed)
-            return feed
-        raise RuntimeError("dhanhq package is not available in this environment")
-
-    def _bind_feed_callbacks(self, feed: Any) -> None:
-        for attr_name, callback in (
-            ("on_connect", self._handle_sdk_connect),
-            ("on_message", self._handle_sdk_message),
-            ("on_error", self._handle_sdk_error),
-            ("on_close", self._handle_sdk_close),
-        ):
-            try:
-                setattr(feed, attr_name, callback)
-            except Exception:
-                continue
+        raise RuntimeError("dhanhq>=2.0.2,<2.3 with MarketFeed or DhanFeed is required for Dhan live feed.")
 
     def _notify_connected(self) -> None:
         if self._connected_notified:
@@ -261,9 +237,6 @@ class DhanMarketFeedAdapter:
         self._retry_attempt = 0
         self._connected_notified = True
         self._notify_status("connected", "Live feed connected.")
-
-    def _handle_sdk_connect(self, *_args) -> None:
-        self._notify_connected()
 
     def _handle_sdk_message(self, *_args) -> None:
         if not _args:
@@ -285,7 +258,29 @@ class DhanMarketFeedAdapter:
             return
         maybe_error = _args[-1]
         if isinstance(maybe_error, Exception):
+            message = str(maybe_error).strip() or maybe_error.__class__.__name__
+            lowered = message.lower()
+            if _should_stop_sdk_retry_loop(lowered):
+                self._last_sdk_error = maybe_error
+                self._request_sdk_loop_stop()
+                return
             self._notify_status("connected", f"Live feed warning: {maybe_error}")
+
+    def _request_sdk_loop_stop(self) -> None:
+        with self._feed_lock:
+            feed = self._feed
+        if not feed:
+            return
+        try:
+            setattr(feed, "_running", False)
+        except Exception:
+            pass
+        close_connection = getattr(feed, "close_connection", None)
+        if callable(close_connection):
+            try:
+                close_connection()
+            except Exception:
+                pass
 
     def _handle_sdk_close(self, *_args) -> None:
         return
@@ -365,7 +360,7 @@ def resolve_quote_subscription(security_id: str, exchange_segment: str) -> tuple
         return (getattr(legacy_marketfeed, segment_name), security_id, getattr(legacy_marketfeed, "Quote"))
     if LegacyDhanFeed is not None:
         return (getattr(LegacyDhanFeed, segment_name), security_id, getattr(LegacyDhanFeed, "Quote"))
-    raise RuntimeError("dhanhq package is not available in this environment")
+    raise RuntimeError("dhanhq>=2.0.2,<2.3 with MarketFeed or DhanFeed is required for Dhan live feed.")
 
 
 def _utcnow() -> datetime:
@@ -402,6 +397,14 @@ def _is_terminal_auth_error(message: str) -> bool:
     )
 
 
+def _should_stop_sdk_retry_loop(message: str) -> bool:
+    return (
+        "http 429" in message
+        or "too many requests" in message
+        or _is_terminal_auth_error(message)
+    )
+
+
 def _instrument_key(instrument: tuple[Any, str, Any]) -> tuple[str, str, str]:
     exchange, security_id, packet_type = instrument
     return (str(exchange), str(security_id), str(packet_type))
@@ -425,3 +428,12 @@ def _remove_instruments(
 ) -> list[tuple[Any, str, Any]]:
     removal_keys = {_instrument_key(instrument) for instrument in removals}
     return [instrument for instrument in current if _instrument_key(instrument) not in removal_keys]
+
+
+def _chunk_instruments(
+    instruments: list[tuple[Any, str, Any]],
+    size: int,
+) -> list[list[tuple[Any, str, Any]]]:
+    if size <= 0:
+        return [instruments]
+    return [instruments[index:index + size] for index in range(0, len(instruments), size)]

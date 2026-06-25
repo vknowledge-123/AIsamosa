@@ -219,6 +219,60 @@ class SimulationEngine:
         with self.lock:
             return self._state_revision
 
+    def get_state_summary(self) -> dict:
+        with self.lock:
+            reference_time = (
+                self.live_current_candle.timestamp
+                if self.live_current_candle is not None
+                else self.candles[self.current_index].timestamp
+                if self.candles and 0 <= self.current_index < len(self.candles)
+                else None
+            )
+            integrated_pnl = self._build_integrated_pnl_state_locked(reference_time)
+            selected_symbol = self.selected_stock_symbol or self.instrument_spec.symbol
+            active_session = self.stock_sessions.get(selected_symbol) if selected_symbol else None
+            active_trade = (
+                active_session.active_trade
+                if active_session is not None and self.instrument_mode == InstrumentMode.stock
+                else self.active_trade
+            )
+            return {
+                "state_revision": self._state_revision,
+                "instrument": {
+                    "mode": self.instrument_mode.value,
+                    "symbol": self.instrument_spec.symbol,
+                    "label": self.instrument_spec.label,
+                    "security_id": self.instrument_spec.security_id,
+                    "selected_stock_symbol": self.selected_stock_symbol,
+                },
+                "progress": {
+                    "current_index": self.current_index,
+                    "total_candles": len(self.candles),
+                    "latest_candle_time": reference_time.isoformat() if reference_time else None,
+                    "latest_close": (
+                        self.live_current_candle.close
+                        if self.live_current_candle is not None
+                        else self.candles[self.current_index].close
+                        if self.candles and 0 <= self.current_index < len(self.candles)
+                        else None
+                    ),
+                },
+                "live_feed": self.live_feed.model_dump(mode="json"),
+                "execution": self.execution_state.model_dump(mode="json"),
+                "data_sync": self.data_sync.model_dump(mode="json"),
+                "operation_job": self.operation_job.model_dump(mode="json"),
+                "integrated_pnl": integrated_pnl.model_dump(mode="json"),
+                "active_trade": {
+                    "status": active_trade.status if active_trade else None,
+                    "symbol": active_trade.symbol if active_trade else None,
+                    "direction": active_trade.direction if active_trade else None,
+                    "pnl": active_trade.pnl if active_trade else None,
+                    "open_quantity": active_trade.open_quantity if active_trade else None,
+                },
+                "stock_watchlist_count": len(self.stock_watchlist),
+                "universe_warmup": self.universe_warmup_state.model_dump(mode="json"),
+            }
+
     def wait_for_state_revision(self, after_revision: int, timeout: float = 15.0) -> int:
         with self._state_wait_condition:
             self._state_wait_condition.wait_for(lambda: self._state_revision > after_revision, timeout=timeout)

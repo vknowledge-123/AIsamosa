@@ -90,6 +90,11 @@ async def get_state(request: Request):
     return Response(content=state.model_dump_json(), media_type="application/json", headers={"ETag": etag})
 
 
+@app.get("/api/state/summary")
+async def get_state_summary():
+    return await run_in_threadpool(engine.get_state_summary)
+
+
 @app.get("/api/state/stream")
 async def stream_state(request: Request):
     async def event_stream():
@@ -100,7 +105,8 @@ async def stream_state(request: Request):
             revision = await run_in_threadpool(engine.wait_for_state_revision, last_revision, 15.0)
             if revision > last_revision:
                 last_revision = revision
-                yield f"event: state\ndata: {json.dumps({'revision': revision})}\n\n"
+                summary = await run_in_threadpool(engine.get_state_summary)
+                yield f"event: state\ndata: {json.dumps({'revision': revision, 'summary': summary})}\n\n"
             else:
                 yield ": keep-alive\n\n"
 

@@ -146,9 +146,11 @@ const stockUiState = {
 const runtimeUiState = {
   dashboard: null,
   stateRevision: 0,
+  summaryRevision: 0,
   stateRefreshInFlight: false,
   aiHealthRefreshInFlight: false,
   statePollTimer: null,
+  stateRefreshDebounceTimer: null,
   aiHealthPollTimer: null,
   stateEventSource: null,
   stateEventSourceRetryTimer: null,
@@ -791,6 +793,13 @@ function scheduleStatePoll() {
   }, nextStatePollMs());
 }
 
+function scheduleFullStateRefresh(delayMs = 750) {
+  window.clearTimeout(runtimeUiState.stateRefreshDebounceTimer);
+  runtimeUiState.stateRefreshDebounceTimer = window.setTimeout(() => {
+    refreshState().catch(() => {});
+  }, delayMs);
+}
+
 function ensureStateStream() {
   if (runtimeUiState.stateEventSource) {
     return;
@@ -800,8 +809,11 @@ function ensureStateStream() {
   eventSource.addEventListener("state", (event) => {
     try {
       const payload = JSON.parse(event.data || "{}");
-      if ((payload.revision || 0) > (runtimeUiState.stateRevision || 0)) {
-        refreshState().catch(() => {});
+      if ((payload.revision || 0) > (runtimeUiState.summaryRevision || 0)) {
+        if (payload.summary) {
+          renderStateSummary(payload.summary);
+        }
+        scheduleFullStateRefresh();
       }
     } catch (error) {
       console.error("Unable to parse state stream event", error);
@@ -1093,9 +1105,79 @@ function renderUniverseWarmup(state) {
   }
 }
 
+function renderStateSummary(summary) {
+  if (!summary) {
+    return;
+  }
+  runtimeUiState.summaryRevision = Math.max(runtimeUiState.summaryRevision || 0, summary.state_revision || 0);
+  if (runtimeUiState.dashboard) {
+    runtimeUiState.dashboard.live_feed = summary.live_feed || runtimeUiState.dashboard.live_feed;
+    runtimeUiState.dashboard.execution = summary.execution || runtimeUiState.dashboard.execution;
+    runtimeUiState.dashboard.data_sync = summary.data_sync || runtimeUiState.dashboard.data_sync;
+    runtimeUiState.dashboard.operation_job = summary.operation_job || runtimeUiState.dashboard.operation_job;
+    runtimeUiState.dashboard.integrated_pnl = summary.integrated_pnl || runtimeUiState.dashboard.integrated_pnl;
+    runtimeUiState.dashboard.universe_warmup = summary.universe_warmup || runtimeUiState.dashboard.universe_warmup;
+  }
+
+  const liveFeed = summary.live_feed || {};
+  elements.liveStatusValue.textContent = liveFeed.status || "-";
+  elements.liveSecurityValue.textContent = liveFeed.security_id || "-";
+  elements.liveLtpValue.textContent = money(liveFeed.last_ltp);
+  elements.liveTicksValue.textContent = liveFeed.ticks_received || 0;
+  elements.liveErrorValue.textContent = liveFeed.status_message || liveFeed.error || "None";
+
+  const progress = summary.progress || {};
+  if (typeof progress.current_index === "number" && typeof progress.total_candles === "number") {
+    elements.progressValue.textContent = `${progress.current_index + 1} / ${progress.total_candles}`;
+  }
+  if (progress.latest_candle_time) {
+    elements.latestCandleStamp.textContent = new Date(progress.latest_candle_time).toLocaleString();
+  }
+  if (progress.latest_close !== undefined) {
+    elements.spotCloseValue.textContent = money(progress.latest_close);
+  }
+
+  const integratedPnl = summary.integrated_pnl || {};
+  elements.integratedPnlValue.textContent = money(integratedPnl.total_pnl);
+  elements.integratedPnlDetail.textContent = `Realized ${money(integratedPnl.realized_pnl)} | Open ${money(integratedPnl.unrealized_pnl)}`;
+  elements.integratedPnlMaxValue.textContent = money(integratedPnl.max_total_pnl);
+  elements.integratedPnlMaxTime.textContent = formatIstDateTime(integratedPnl.max_total_pnl_at);
+  elements.integratedPnlMinValue.textContent = money(integratedPnl.min_total_pnl);
+  elements.integratedPnlMinTime.textContent = formatIstDateTime(integratedPnl.min_total_pnl_at);
+
+  const execution = summary.execution || {};
+  elements.executionEnabledValue.textContent = execution.live_trading_enabled
+    ? "armed"
+    : (execution.live_paper_trading_enabled ? "demo armed" : "disabled");
+  const orderUpdateStatus = execution.order_updates_status || "disconnected";
+  const orderUpdateLabel = orderUpdateStatus === "kite-feed" ? "Kite feed" : orderUpdateStatus;
+  elements.executionStatusValue.innerHTML = `Order Updates: ${orderUpdateLabel} | Last Update ${formatIstDateTime(execution.last_order_update_at)}${execution.last_order_message ? `<br>${execution.last_order_message}` : ""}${execution.order_updates_message ? `<br>${execution.order_updates_message}` : ""}`;
+  elements.executionErrorValue.textContent = execution.last_order_error
+    ? `Last order error${execution.last_order_symbol ? ` (${execution.last_order_symbol})` : ""}: ${execution.last_order_error} | ${formatIstDateTime(execution.last_order_error_at)}`
+    : "No live order error.";
+
+  const dataSync = summary.data_sync || {};
+  elements.syncStatusValue.textContent = `${dataSync.status || "idle"} (${dataSync.source || "idle"})`;
+  elements.syncMessageValue.textContent = dataSync.message || "No chart sync yet.";
+  elements.syncPreviousValue.textContent = dataSync.previous_day_candles || 0;
+  elements.syncIntradayValue.textContent = dataSync.intraday_candles || 0;
+  elements.syncTotalValue.textContent = dataSync.total_loaded || 0;
+  elements.syncReplayDayValue.textContent = formatIsoDate(dataSync.replay_session_day);
+  elements.syncPreviousContextDayValue.textContent = formatIsoDate(dataSync.previous_context_day);
+  elements.syncOpenValue.textContent = dataSync.has_live_open_candle ? "Yes" : "No";
+  elements.syncUpdatedValue.textContent = dataSync.last_synced_at ? new Date(dataSync.last_synced_at).toLocaleString() : "-";
+
+  const operationJob = summary.operation_job || {};
+  elements.operationJobValue.textContent = `${operationJob.job_type || "idle"} (${operationJob.status || "idle"})`;
+  elements.operationJobMessage.textContent = operationJob.message || "No background sync or replay job is running.";
+
+  renderUniverseWarmup({ universe_warmup: summary.universe_warmup || {} });
+}
+
 function renderState(state) {
   runtimeUiState.dashboard = state;
   runtimeUiState.stateRevision = state.state_revision || 0;
+  runtimeUiState.summaryRevision = Math.max(runtimeUiState.summaryRevision || 0, runtimeUiState.stateRevision);
   elements.instrumentValue.textContent = state.instrument.label;
   elements.modeValue.textContent = state.mode;
   elements.operatingModeValue.textContent = state.operating_mode;

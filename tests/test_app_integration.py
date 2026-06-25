@@ -18,7 +18,7 @@ from app.schemas import Candle, InstrumentMode, InstrumentState, LiquidityLedger
 from app.services.advanced_indicator_engine import AdvancedIndicatorEngine
 from app.services.credential_store import CredentialStore
 from app.services.dhan_execution import BrokerOrderResult
-from app.services.dhan_adapter import _retry_delay_seconds
+from app.services.dhan_adapter import DhanMarketFeedAdapter, _retry_delay_seconds
 from app.services.dhan_history import DhanChartEmptyDataError, DhanChartError, DhanChartRateLimitError, DhanChartService, DhanSessionBundle
 from app.services.dhan_order_updates import DhanOrderUpdateAdapter
 from app.services.dhan_options import DhanOptionQuoteError, OptionContract, OptionQuote
@@ -401,6 +401,22 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertGreater(payload["assets"]["styles.css"]["size"], 0)
         self.assertTrue(payload["assets"]["app.js"]["exists"])
         self.assertGreater(payload["assets"]["app.js"]["size"], 0)
+
+    def test_state_summary_is_lightweight_dashboard_snapshot(self) -> None:
+        response = self.client.get("/api/state/summary")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertIn("state_revision", payload)
+        self.assertIn("live_feed", payload)
+        self.assertIn("execution", payload)
+        self.assertIn("data_sync", payload)
+        self.assertIn("operation_job", payload)
+        self.assertIn("integrated_pnl", payload)
+        self.assertIn("universe_warmup", payload)
+        self.assertNotIn("liquidity_zones", payload)
+        self.assertNotIn("trade_history", payload)
+        self.assertNotIn("heuristic_trace", payload)
 
     def test_extract_bulk_stock_symbols_from_nse_style_table(self) -> None:
         raw_text = (
@@ -2366,6 +2382,77 @@ class AppIntegrationTests(unittest.TestCase):
             ),
             240,
         )
+
+    def test_dhan_live_feed_subscribes_in_documented_100_symbol_batches(self) -> None:
+        adapter = DhanMarketFeedAdapter("cid-123", "tok-456", [])
+        feed = Mock()
+        feed.subscribe_symbols = Mock()
+        instruments = [("NSE_EQ", str(index), "Quote") for index in range(205)]
+        with adapter._feed_lock:
+            adapter._feed = feed
+        adapter.connected = True
+
+        adapter.subscribe_symbols(instruments)
+
+        self.assertEqual(feed.subscribe_symbols.call_count, 3)
+        self.assertEqual(len(feed.subscribe_symbols.call_args_list[0].args[0]), 100)
+        self.assertEqual(len(feed.subscribe_symbols.call_args_list[1].args[0]), 100)
+        self.assertEqual(len(feed.subscribe_symbols.call_args_list[2].args[0]), 5)
+        self.assertEqual(len(adapter.instruments), 205)
+
+    def test_dhan_live_feed_defers_subscribe_until_connected(self) -> None:
+        adapter = DhanMarketFeedAdapter("cid-123", "tok-456", [])
+        feed = Mock()
+        feed.subscribe_symbols = Mock()
+        with adapter._feed_lock:
+            adapter._feed = feed
+
+        adapter.subscribe_symbols([("NSE_EQ", "1333", "Quote")])
+
+        feed.subscribe_symbols.assert_not_called()
+        self.assertEqual(adapter.instruments, [("NSE_EQ", "1333", "Quote")])
+
+    def test_dhan_live_feed_creates_marketfeed_with_initial_instruments(self) -> None:
+        instruments = [("NSE_EQ", "1333", "Quote"), ("NSE_EQ", "11536", "Quote")]
+        adapter = DhanMarketFeedAdapter("cid-123", "tok-456", instruments)
+        fake_context = Mock()
+        fake_feed = Mock()
+
+        with patch("app.services.dhan_adapter.DhanContext", return_value=fake_context) as context_mock:
+            with patch("app.services.dhan_adapter.MarketFeed", return_value=fake_feed) as marketfeed_mock:
+                created = adapter._create_feed()
+
+        self.assertIs(created, fake_feed)
+        context_mock.assert_called_once_with("cid-123", "tok-456")
+        marketfeed_mock.assert_called_once_with(fake_context, instruments, version="v2")
+
+    def test_dhan_live_feed_creates_legacy_dhanfeed_with_initial_instruments(self) -> None:
+        instruments = [("NSE_EQ", "1333", "Quote"), ("NSE_EQ", "11536", "Quote")]
+        adapter = DhanMarketFeedAdapter("cid-123", "tok-456", instruments)
+        fake_feed = Mock()
+
+        with patch("app.services.dhan_adapter.DhanContext", None):
+            with patch("app.services.dhan_adapter.MarketFeed", None):
+                with patch("app.services.dhan_adapter.LegacyDhanFeed", return_value=fake_feed) as legacy_feed_mock:
+                    created = adapter._create_feed()
+
+        self.assertIs(created, fake_feed)
+        legacy_feed_mock.assert_called_once_with("cid-123", "tok-456", instruments, version="v2")
+
+    def test_dhan_sdk_429_breaks_internal_retry_loop_for_outer_backoff(self) -> None:
+        adapter = DhanMarketFeedAdapter("cid-123", "tok-456", [])
+        feed = Mock()
+        feed.close_connection = Mock()
+        feed._running = True
+        with adapter._feed_lock:
+            adapter._feed = feed
+        error = RuntimeError("server rejected websocket connection: HTTP 429")
+
+        adapter._handle_sdk_error(feed, error)
+
+        self.assertIs(adapter._last_sdk_error, error)
+        self.assertFalse(feed._running)
+        feed.close_connection.assert_called_once()
 
     def test_watchlist_subscription_refresh_batches_dhan_updates(self) -> None:
         self.test_engine.set_instrument_mode("stock")
