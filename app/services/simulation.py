@@ -2503,21 +2503,69 @@ class SimulationEngine:
             )
             return blocked
 
-        if decision.action != TradeAction.enter_call:
-            passed = decision.model_copy(deep=True)
-            passed.reason = (
-                f"{passed.reason} 2-minute turnover gate passed: "
-                f"{snapshot.window_start.strftime('%H:%M')}-{snapshot.window_end.strftime('%H:%M')} "
-                f"turnover was {self._format_crore(snapshot.turnover)}."
-            ).strip()
-            return passed
-
         session = context.session_candles
         if len(session) < 1 or not context.previous_day.close:
             return decision
         first = session[0]
         latest = context.current_candle
         gap_up = first.open > context.previous_day.close
+        gap_down = first.open < context.previous_day.close
+
+        if decision.action == TradeAction.enter_put:
+            if not gap_down:
+                passed = decision.model_copy(deep=True)
+                passed.reason = (
+                    f"{passed.reason} 2-minute turnover gate passed: "
+                    f"{snapshot.window_start.strftime('%H:%M')}-{snapshot.window_end.strftime('%H:%M')} "
+                    f"turnover was {self._format_crore(snapshot.turnover)}."
+                ).strip()
+                return passed
+
+            setup_type = (decision.setup_type or "").lower()
+            if setup_type == "carry_forward_gmma_obv_short" and latest.close > first.high:
+                blocked = decision.model_copy(deep=True)
+                blocked.action = TradeAction.no_trade
+                blocked.confidence = min(blocked.confidence, 0.35)
+                blocked.decision_source = f"{decision.decision_source}-gapdown-carry-cancel"
+                blocked.pending_setup_action = "NONE"
+                blocked.reason = (
+                    f"Heuristic Advance carry-forward short cancelled: stock opened gap-down but price "
+                    f"recovered above first candle high {first.high:.2f}. Waiting for a fresh GMMA/OBV setup."
+                )
+                return blocked
+
+            two_green_open = len(session) >= 2 and session[0].close > session[0].open and session[1].close > session[1].open
+            first_low_broken = latest.close < first.low
+            if two_green_open and not first_low_broken:
+                blocked = decision.model_copy(deep=True)
+                blocked.action = TradeAction.no_trade
+                blocked.confidence = min(blocked.confidence, 0.45)
+                blocked.decision_source = f"{decision.decision_source}-gapdown-green-open-filter"
+                blocked.pending_setup_action = "NONE"
+                blocked.reason = (
+                    "Heuristic Advance short blocked: gap-down stock printed first and second Advance candles green. "
+                    f"Short is allowed only after first candle low {first.low:.2f} breaks."
+                )
+                return blocked
+            if not first_low_broken:
+                blocked = decision.model_copy(deep=True)
+                blocked.action = TradeAction.no_trade
+                blocked.confidence = min(blocked.confidence, 0.49)
+                blocked.decision_source = f"{decision.decision_source}-gapdown-breakdown-filter"
+                blocked.pending_setup_action = "NONE"
+                blocked.reason = (
+                    f"Heuristic Advance short blocked: gap-down stock has not broken first candle low "
+                    f"{first.low:.2f}. Latest close is {latest.close:.2f}."
+                )
+                return blocked
+
+            passed = decision.model_copy(deep=True)
+            passed.reason = (
+                f"{passed.reason} Gap-down continuation confirmed by close below first candle low {first.low:.2f}; "
+                f"2-minute turnover gate passed with {self._format_crore(snapshot.turnover)} turnover."
+            ).strip()
+            return passed
+
         if not gap_up:
             passed = decision.model_copy(deep=True)
             passed.reason = (

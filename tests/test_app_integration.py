@@ -257,6 +257,7 @@ class AppIntegrationTests(unittest.TestCase):
                 "stock_execution_mode": "future",
                 "stock_future_lots": "3",
                 "stock_option_lots": "4",
+                "heuristic_advance_min_2m_turnover": "12500000",
                 "nifty_expiry_preference": "next-weekly",
                 "stock_partial_profit_enabled": "false",
                 "stock_trailing_stop_enabled": "false",
@@ -306,6 +307,7 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertEqual(summary["stock_execution_mode"], "future")
         self.assertEqual(summary["stock_future_lots"], 3)
         self.assertEqual(summary["stock_option_lots"], 4)
+        self.assertEqual(summary["heuristic_advance_min_2m_turnover"], 12500000.0)
         self.assertEqual(summary["nifty_expiry_preference"], "next-weekly")
         self.assertFalse(summary["stock_partial_profit_enabled"])
         self.assertFalse(summary["stock_trailing_stop_enabled"])
@@ -1047,6 +1049,100 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertEqual(blocked.action, TradeAction.no_trade)
         self.assertIn("last completed 2-minute turnover", blocked.reason)
         self.assertIn("below required", blocked.reason)
+
+    def test_heuristic_advance_gapdown_two_green_candles_blocks_short_until_first_low_break(self) -> None:
+        self.test_engine.set_instrument_mode("stock")
+        self.test_engine.operating_mode = OperatingMode.heuristic_advance
+        self.temp_store.save(heuristic_advance_min_2m_turnover=10000000.0)
+        raw = [
+            Candle(timestamp=datetime(2026, 5, 21, 9, 15) + timedelta(minutes=minute), open=95, high=99, low=94, close=98, volume=60000)
+            for minute in range(5)
+        ]
+        self.test_engine.reset_with_candles(raw)
+        self.test_engine.current_index = len(raw) - 1
+        context = self._build_context(
+            [
+                Candle(timestamp=datetime(2026, 5, 21, 9, 15), open=95, high=97, low=94, close=96, volume=120000),
+                Candle(timestamp=datetime(2026, 5, 21, 9, 18), open=96, high=99, low=95.5, close=98, volume=120000),
+            ],
+            previous_close=100,
+        )
+        decision = TradeDecision(
+            action=TradeAction.enter_put,
+            confidence=0.86,
+            reason="Heuristic Advance short entry.",
+            decision_source="heuristic-advance",
+            option_type="PE",
+            setup_type="advanced_gmma_obv_short",
+        )
+
+        blocked = self.test_engine._apply_heuristic_advance_stock_entry_filter_locked(context, decision)
+
+        self.assertEqual(blocked.action, TradeAction.no_trade)
+        self.assertIn("first and second Advance candles green", blocked.reason)
+
+    def test_heuristic_advance_cancels_gapdown_carry_forward_short_above_first_high(self) -> None:
+        self.test_engine.set_instrument_mode("stock")
+        self.test_engine.operating_mode = OperatingMode.heuristic_advance
+        self.temp_store.save(heuristic_advance_min_2m_turnover=10000000.0)
+        raw = [
+            Candle(timestamp=datetime(2026, 5, 21, 9, 15) + timedelta(minutes=minute), open=95, high=99, low=94, close=98, volume=60000)
+            for minute in range(5)
+        ]
+        self.test_engine.reset_with_candles(raw)
+        self.test_engine.current_index = len(raw) - 1
+        context = self._build_context(
+            [
+                Candle(timestamp=datetime(2026, 5, 21, 9, 15), open=95, high=97, low=94, close=96, volume=120000),
+                Candle(timestamp=datetime(2026, 5, 21, 9, 18), open=96, high=99, low=95.5, close=98, volume=120000),
+            ],
+            previous_close=100,
+        )
+        decision = TradeDecision(
+            action=TradeAction.enter_put,
+            confidence=0.78,
+            reason="Carry-forward short.",
+            decision_source="heuristic-advance",
+            option_type="PE",
+            setup_type="carry_forward_gmma_obv_short",
+        )
+
+        blocked = self.test_engine._apply_heuristic_advance_stock_entry_filter_locked(context, decision)
+
+        self.assertEqual(blocked.action, TradeAction.no_trade)
+        self.assertIn("carry-forward short cancelled", blocked.reason)
+
+    def test_heuristic_advance_gapdown_short_allowed_after_first_low_break_and_2m_turnover(self) -> None:
+        self.test_engine.set_instrument_mode("stock")
+        self.test_engine.operating_mode = OperatingMode.heuristic_advance
+        self.temp_store.save(heuristic_advance_min_2m_turnover=10000000.0)
+        raw = [
+            Candle(timestamp=datetime(2026, 5, 21, 9, 15) + timedelta(minutes=minute), open=95, high=96, low=91, close=92, volume=60000)
+            for minute in range(5)
+        ]
+        self.test_engine.reset_with_candles(raw)
+        self.test_engine.current_index = len(raw) - 1
+        context = self._build_context(
+            [
+                Candle(timestamp=datetime(2026, 5, 21, 9, 15), open=95, high=97, low=94, close=96, volume=120000),
+                Candle(timestamp=datetime(2026, 5, 21, 9, 18), open=96, high=96, low=91, close=92, volume=120000),
+            ],
+            previous_close=100,
+        )
+        decision = TradeDecision(
+            action=TradeAction.enter_put,
+            confidence=0.86,
+            reason="Heuristic Advance short entry.",
+            decision_source="heuristic-advance",
+            option_type="PE",
+            setup_type="advanced_gmma_obv_short",
+        )
+
+        allowed = self.test_engine._apply_heuristic_advance_stock_entry_filter_locked(context, decision)
+
+        self.assertEqual(allowed.action, TradeAction.enter_put)
+        self.assertIn("Gap-down continuation confirmed", allowed.reason)
+        self.assertIn("2-minute turnover gate passed", allowed.reason)
 
     def test_stock_turnover_filter_allows_high_5m_turnover_entry(self) -> None:
         self.test_engine.set_instrument_mode("stock")
