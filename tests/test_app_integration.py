@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import tempfile
@@ -13,8 +14,10 @@ from zoneinfo import ZoneInfo
 from fastapi.testclient import TestClient
 
 import app.main as main_module
+from app.candles.candle_builder import update_live_minute_candle
 from app.config import get_settings
-from app.schemas import Candle, InstrumentMode, InstrumentState, LiquidityLedgerEntry, LiveFeedState, OperatingMode, PendingSetup, PreviousDayLevels, PyramidLeg, SimulatedTrade, StrategyContext, TradeAction, TradeDecision
+from app.market_data.subscription_manager import SubscriptionManager
+from app.schemas import Candle, DataSyncState, InstrumentMode, InstrumentState, LiquidityLedgerEntry, LiveFeedState, OperatingMode, PendingSetup, PreviousDayLevels, PyramidLeg, SimulatedTrade, StrategyContext, TradeAction, TradeDecision
 from app.services.advanced_indicator_engine import AdvancedIndicatorEngine
 from app.services.credential_store import CredentialStore
 from app.services.dhan_execution import BrokerOrderResult
@@ -39,6 +42,7 @@ class AppIntegrationTests(unittest.TestCase):
             self.test_engine = SimulationEngine(get_settings())
         self.test_engine.credential_store = self.temp_store
         self.test_engine.universe_warmup_path = Path(self.tempdir.name) / "universe_warmup_cache.json"
+        self.test_engine.universe_warmup_history_path = Path(self.tempdir.name) / "universe_warmup_history_cache.json"
         self.test_engine.universe_warmup_symbols = []
         self.test_engine.ai_service.enabled = False
         self.test_engine.live_feed = self.test_engine._build_live_feed_state()
@@ -265,6 +269,8 @@ class AppIntegrationTests(unittest.TestCase):
                 "nifty_daily_max_loss": "125",
                 "global_mtm_square_off_enabled": "true",
                 "global_mtm_square_off_threshold": "-250",
+                "position_max_loss_enabled": "true",
+                "position_max_loss": "400",
                 "pyramiding_enabled": "true",
                 "intelligent_pyramiding_enabled": "true",
                 "stock_percent_pyramiding_enabled": "true",
@@ -312,6 +318,8 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertEqual(summary["nifty_daily_max_loss"], 125.0)
         self.assertTrue(summary["global_mtm_square_off_enabled"])
         self.assertEqual(summary["global_mtm_square_off_threshold"], -250.0)
+        self.assertTrue(summary["position_max_loss_enabled"])
+        self.assertEqual(summary["position_max_loss"], 400.0)
         self.assertTrue(summary["pyramiding_enabled"])
         self.assertTrue(summary["intelligent_pyramiding_enabled"])
         self.assertTrue(summary["stock_percent_pyramiding_enabled"])
@@ -402,6 +410,47 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertTrue(payload["assets"]["app.js"]["exists"])
         self.assertGreater(payload["assets"]["app.js"]["size"], 0)
 
+    def test_candle_builder_rolls_live_candle_on_new_minute(self) -> None:
+        candles: list[Candle] = []
+        first = update_live_minute_candle(
+            candles=candles,
+            current_candle=None,
+            current_index=-1,
+            tick_time=datetime(2026, 6, 25, 9, 15, 10),
+            ltp=100.0,
+            volume=10.0,
+        )
+        second = update_live_minute_candle(
+            candles=first.candles,
+            current_candle=first.current_candle,
+            current_index=first.current_index,
+            tick_time=datetime(2026, 6, 25, 9, 16, 1),
+            ltp=101.0,
+            volume=12.0,
+        )
+
+        self.assertEqual(len(second.candles), 1)
+        self.assertEqual(second.candles[0].close, 100.0)
+        self.assertEqual(second.current_candle.open, 101.0)
+        self.assertEqual(second.evaluation_index, 0)
+
+    def test_subscription_manager_builds_stock_plan_without_engine_state(self) -> None:
+        specs = [
+            build_stock_instrument("SBIN", "3045", label="SBIN"),
+            build_stock_instrument("TCS", "11536", label="TCS"),
+        ]
+        manager = SubscriptionManager(
+            dhan_quote_builder=lambda security_id, segment: (segment, security_id, "Quote"),
+            zerodha_quote_builder=lambda spec: (int(spec.security_id), spec.security_id, "quote"),
+            live_feed_security_id=lambda spec, broker: spec.security_id,
+        )
+
+        plan = manager.stock_watchlist_plan(specs=specs, broker="dhan")
+
+        self.assertEqual([subscription[1] for subscription in plan.instruments], ["3045", "11536"])
+        self.assertEqual(set(plan.security_to_subscription), {"3045", "11536"})
+        self.assertEqual(plan.security_to_symbol["3045"], "SBIN")
+
     def test_state_summary_is_lightweight_dashboard_snapshot(self) -> None:
         response = self.client.get("/api/state/summary")
 
@@ -417,6 +466,32 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertNotIn("liquidity_zones", payload)
         self.assertNotIn("trade_history", payload)
         self.assertNotIn("heuristic_trace", payload)
+
+    def test_state_marks_connected_live_feed_stale_after_market_close(self) -> None:
+        with self.test_engine.lock:
+            self.test_engine.live_feed = LiveFeedState(
+                connected=True,
+                status="connected",
+                source="dhan-websocket",
+                security_id="13",
+                instrument_label="Nifty 50",
+                last_ltp=24200.5,
+                last_tick_at=datetime(2026, 6, 25, 15, 30),
+                status_message="Live feed connected.",
+            )
+
+        with patch.object(self.test_engine, "_is_nse_regular_session_now", return_value=False):
+            response = self.client.get("/api/state/summary")
+            state = self.test_engine.get_state()
+
+        self.assertEqual(response.status_code, 200)
+        summary_feed = response.json()["live_feed"]
+        self.assertEqual(summary_feed["status"], "market_closed")
+        self.assertFalse(summary_feed["connected"])
+        self.assertIsNone(summary_feed["last_ltp"])
+        self.assertEqual(state.live_feed.status, "market_closed")
+        self.assertFalse(state.live_feed.connected)
+        self.assertIsNone(state.live_feed.last_ltp)
 
     def test_extract_bulk_stock_symbols_from_nse_style_table(self) -> None:
         raw_text = (
@@ -466,6 +541,115 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertIn("job", payload)
         self.assertEqual(payload["job"]["job_type"], "universe-warmup")
         self.assertNotIn("state", payload)
+
+    def test_universe_warmup_history_persists_and_loads_after_memory_clear(self) -> None:
+        spec = build_stock_instrument("TCS", "11536", label="TATA CONSULTANCY SERV LT")
+        bundle = DhanSessionBundle(
+            previous_day_candles=[
+                Candle(timestamp=datetime(2026, 6, 24, 15, 29), open=100, high=101, low=99, close=100.5, volume=1000)
+            ],
+            intraday_candles=[
+                Candle(timestamp=datetime(2026, 6, 25, 9, 15), open=101, high=102, low=100, close=101.5, volume=1200)
+            ],
+            live_open_candle=None,
+            previous_day_source="intraday-fallback",
+            replay_session_day=date(2026, 6, 25),
+            previous_context_day=date(2026, 6, 24),
+        )
+
+        self.test_engine._apply_universe_warmup_bundle("TCS", spec, bundle, provider="dhan")
+        self.test_engine.universe_warmup_symbols = ["TCS"]
+        self.test_engine._persist_universe_warmup_history()
+        self.assertTrue(self.test_engine.universe_warmup_history_path.exists())
+        self.test_engine.stock_sessions.clear()
+        self.test_engine._stock_symbol_by_security_id.clear()
+
+        self.test_engine._load_persisted_universe_warmup_history()
+
+        self.assertIn("TCS", self.test_engine.stock_sessions)
+        restored = self.test_engine.stock_sessions["TCS"]
+        self.assertEqual(len(restored.candles), 2)
+        self.assertEqual(restored.data_sync.status, "ready")
+        self.assertEqual(restored.data_sync.previous_context_day, date(2026, 6, 24))
+
+    def test_stock_bulk_historical_replay_uses_warmed_cache_when_replay_day_matches(self) -> None:
+        self.test_engine.set_instrument_mode("stock")
+        spec = build_stock_instrument("TCS", "11536", label="TATA CONSULTANCY SERV LT")
+        bundle = DhanSessionBundle(
+            previous_day_candles=[
+                Candle(timestamp=datetime(2026, 6, 24, 15, 29), open=100, high=101, low=99, close=100.5, volume=1000)
+            ],
+            intraday_candles=[
+                Candle(timestamp=datetime(2026, 6, 25, 9, 15), open=101, high=102, low=100, close=101.5, volume=1200),
+                Candle(timestamp=datetime(2026, 6, 25, 9, 16), open=101.5, high=103, low=101, close=102.5, volume=1500),
+            ],
+            live_open_candle=None,
+            previous_day_source="intraday-fallback",
+            replay_session_day=date(2026, 6, 25),
+            previous_context_day=date(2026, 6, 24),
+        )
+        nifty_bundle = DhanSessionBundle(
+            previous_day_candles=[
+                Candle(timestamp=datetime(2026, 6, 24, 15, 29), open=23000, high=23050, low=22950, close=23010, volume=1)
+            ],
+            intraday_candles=[
+                Candle(timestamp=datetime(2026, 6, 25, 9, 15), open=23020, high=23030, low=23000, close=23025, volume=1)
+            ],
+            live_open_candle=None,
+            previous_day_source="intraday-fallback",
+            replay_session_day=date(2026, 6, 25),
+            previous_context_day=date(2026, 6, 24),
+        )
+        self.test_engine.stock_watchlist = {"TCS": spec}
+        self.test_engine.stock_watch_meta = {"TCS": {"trade_bias": "both"}}
+        self.test_engine.selected_stock_symbol = "TCS"
+        self.test_engine.universe_warmup_symbols = ["TCS"]
+        self.test_engine._apply_universe_warmup_bundle("TCS", spec, bundle, provider="dhan")
+
+        with (
+            patch.object(self.test_engine, "_fetch_stock_historical_bundles_with_previous_fallback") as stock_fetch,
+            patch.object(self.test_engine, "_fetch_historical_bundle_with_previous_fallback", return_value=nifty_bundle),
+            patch.object(self.test_engine, "_evaluate_index", return_value=None),
+        ):
+            state = self.test_engine._simulate_stock_historical_range_session(
+                client_id="cid-123",
+                access_token="tok-456",
+                provider="dhan",
+                replay_days=[date(2026, 6, 25)],
+                replay_decision_duration_minutes=1,
+                stock_replay_scope="all",
+            )
+
+        stock_fetch.assert_not_called()
+        self.assertEqual(state.data_sync.status, "ready")
+        self.assertIn("1 stock-session", state.data_sync.message)
+        self.assertEqual(self.test_engine.stock_sessions["TCS"].data_sync.replay_session_day, date(2026, 6, 25))
+
+    def test_watchlist_prepare_reuses_warmed_history_without_duplicate_broker_sync(self) -> None:
+        spec = build_stock_instrument("TCS", "11536", label="TATA CONSULTANCY SERV LT")
+        self.test_engine.stock_watchlist["TCS"] = spec
+        session = self.test_engine._build_stock_runtime_session(spec)
+        session.candles = [
+            Candle(timestamp=datetime(2026, 6, 24, 15, 29), open=100, high=101, low=99, close=100, volume=1000)
+        ]
+        session.current_index = 0
+        session.data_sync = DataSyncState(
+            status="ready",
+            source="dhan-rest",
+            message="Warmed test history.",
+            previous_day_candles=1,
+            intraday_candles=0,
+            total_loaded=1,
+        )
+        self.test_engine.stock_sessions["TCS"] = session
+        self.test_engine.selected_stock_symbol = "TCS"
+
+        with patch.object(self.test_engine, "_sync_stock_symbol_now") as sync_mock:
+            self.test_engine._run_selected_stock_prepare("TCS", "cid-123", "tok-456", "dhan")
+
+        sync_mock.assert_not_called()
+        self.assertEqual(self.test_engine.stock_watch_meta["TCS"]["history_status"], "ready")
+        self.assertIn("Using warmed stock history for TCS", self.test_engine.rulebook_service.learning_log[0])
 
     def test_bulk_add_stock_watchlist_api_extracts_and_adds_symbols(self) -> None:
         with patch.object(self.test_engine, "_auto_prepare_watchlist_symbols_async", return_value=None):
@@ -646,7 +830,8 @@ class AppIntegrationTests(unittest.TestCase):
             self.test_engine.realized_pnl = 100.0
             self.test_engine.balance = self.test_engine.settings.simulation_starting_balance + 100.0
 
-        state = self.test_engine.get_state()
+        with patch.object(self.test_engine, "_is_nse_regular_session_now", return_value=True):
+            state = self.test_engine.get_state()
         self.assertEqual(state.integrated_pnl.total_pnl, 205.0)
         self.assertEqual(state.integrated_pnl.realized_pnl, 80.0)
         self.assertEqual(state.integrated_pnl.unrealized_pnl, 125.0)
@@ -702,6 +887,166 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertEqual(blocked.action, TradeAction.no_trade)
         self.assertIn("turnover gate blocked long entry", blocked.reason)
         self.assertIn("below required 3.00 crore", blocked.reason)
+
+    def test_heuristic_advance_stock_entries_bypass_turnover_filter(self) -> None:
+        self.test_engine.set_instrument_mode("stock")
+        self.test_engine.operating_mode = OperatingMode.heuristic_advance
+        previous_day = [
+            Candle(timestamp=datetime(2026, 5, 20, 15, 29), open=350, high=352, low=349, close=351, volume=10000),
+        ]
+        intraday = [
+            Candle(
+                timestamp=datetime(2026, 5, 21, 9, 15) + timedelta(minutes=minute),
+                open=370 + minute * 0.2,
+                high=371 + minute * 0.2,
+                low=369 + minute * 0.2,
+                close=370.5 + minute * 0.2,
+                volume=100,
+            )
+            for minute in range(13)
+        ]
+        self.test_engine.reset_with_candles(previous_day + intraday)
+        self.test_engine.current_index = len(previous_day + intraday) - 1
+
+        decision = TradeDecision(
+            action=TradeAction.enter_call,
+            confidence=0.86,
+            reason="Heuristic Advance long entry: GMMA/OBV confirmed.",
+            decision_source="heuristic-advance",
+            option_type="CE",
+        )
+
+        allowed = self.test_engine._apply_stock_turnover_filter_locked(intraday[-1], decision)
+
+        self.assertEqual(allowed.action, TradeAction.enter_call)
+        self.assertEqual(allowed.reason, decision.reason)
+        self.assertEqual(allowed.decision_source, "heuristic-advance")
+
+    def test_heuristic_advance_gapup_two_red_candles_blocks_long_until_first_high_reclaim(self) -> None:
+        self.test_engine.set_instrument_mode("stock")
+        self.test_engine.operating_mode = OperatingMode.heuristic_advance
+        self.temp_store.save(heuristic_advance_min_2m_turnover=10000000.0)
+        raw = [
+            Candle(timestamp=datetime(2026, 5, 21, 9, 15) + timedelta(minutes=minute), open=105, high=106, low=101, close=102, volume=60000)
+            for minute in range(5)
+        ]
+        self.test_engine.reset_with_candles(raw)
+        self.test_engine.current_index = len(raw) - 1
+        context = self._build_context(
+            [
+                Candle(timestamp=datetime(2026, 5, 21, 9, 15), open=105, high=106, low=103, close=104, volume=120000),
+                Candle(timestamp=datetime(2026, 5, 21, 9, 18), open=104, high=104.5, low=101, close=102, volume=120000),
+            ],
+            previous_close=100,
+        )
+        decision = TradeDecision(
+            action=TradeAction.enter_call,
+            confidence=0.86,
+            reason="Heuristic Advance long entry.",
+            decision_source="heuristic-advance",
+            option_type="CE",
+            setup_type="advanced_gmma_obv_long",
+        )
+
+        blocked = self.test_engine._apply_heuristic_advance_stock_entry_filter_locked(context, decision)
+
+        self.assertEqual(blocked.action, TradeAction.no_trade)
+        self.assertIn("first and second Advance candles red", blocked.reason)
+
+    def test_heuristic_advance_cancels_gapup_carry_forward_long_below_first_low(self) -> None:
+        self.test_engine.set_instrument_mode("stock")
+        self.test_engine.operating_mode = OperatingMode.heuristic_advance
+        self.temp_store.save(heuristic_advance_min_2m_turnover=10000000.0)
+        raw = [
+            Candle(timestamp=datetime(2026, 5, 21, 9, 15) + timedelta(minutes=minute), open=105, high=106, low=101, close=102, volume=60000)
+            for minute in range(5)
+        ]
+        self.test_engine.reset_with_candles(raw)
+        self.test_engine.current_index = len(raw) - 1
+        context = self._build_context(
+            [
+                Candle(timestamp=datetime(2026, 5, 21, 9, 15), open=105, high=106, low=103, close=104, volume=120000),
+                Candle(timestamp=datetime(2026, 5, 21, 9, 18), open=104, high=104.5, low=101, close=102, volume=120000),
+            ],
+            previous_close=100,
+        )
+        decision = TradeDecision(
+            action=TradeAction.enter_call,
+            confidence=0.78,
+            reason="Carry-forward long.",
+            decision_source="heuristic-advance",
+            option_type="CE",
+            setup_type="carry_forward_gmma_obv_long",
+        )
+
+        blocked = self.test_engine._apply_heuristic_advance_stock_entry_filter_locked(context, decision)
+
+        self.assertEqual(blocked.action, TradeAction.no_trade)
+        self.assertIn("carry-forward long cancelled", blocked.reason)
+
+    def test_heuristic_advance_gapup_long_allowed_after_first_high_reclaim_and_2m_turnover(self) -> None:
+        self.test_engine.set_instrument_mode("stock")
+        self.test_engine.operating_mode = OperatingMode.heuristic_advance
+        self.temp_store.save(heuristic_advance_min_2m_turnover=10000000.0)
+        raw = [
+            Candle(timestamp=datetime(2026, 5, 21, 9, 15) + timedelta(minutes=minute), open=105, high=108, low=103, close=107, volume=60000)
+            for minute in range(5)
+        ]
+        self.test_engine.reset_with_candles(raw)
+        self.test_engine.current_index = len(raw) - 1
+        context = self._build_context(
+            [
+                Candle(timestamp=datetime(2026, 5, 21, 9, 15), open=105, high=106, low=103, close=104, volume=120000),
+                Candle(timestamp=datetime(2026, 5, 21, 9, 18), open=104, high=108, low=104, close=107, volume=120000),
+            ],
+            previous_close=100,
+        )
+        decision = TradeDecision(
+            action=TradeAction.enter_call,
+            confidence=0.86,
+            reason="Heuristic Advance long entry.",
+            decision_source="heuristic-advance",
+            option_type="CE",
+            setup_type="advanced_gmma_obv_long",
+        )
+
+        allowed = self.test_engine._apply_heuristic_advance_stock_entry_filter_locked(context, decision)
+
+        self.assertEqual(allowed.action, TradeAction.enter_call)
+        self.assertIn("Gap-up acceptance confirmed", allowed.reason)
+        self.assertIn("2-minute turnover gate passed", allowed.reason)
+
+    def test_heuristic_advance_blocks_entry_when_2m_turnover_is_below_setting(self) -> None:
+        self.test_engine.set_instrument_mode("stock")
+        self.test_engine.operating_mode = OperatingMode.heuristic_advance
+        self.temp_store.save(heuristic_advance_min_2m_turnover=10000000.0)
+        raw = [
+            Candle(timestamp=datetime(2026, 5, 21, 9, 15) + timedelta(minutes=minute), open=100, high=101, low=99, close=100, volume=100)
+            for minute in range(5)
+        ]
+        self.test_engine.reset_with_candles(raw)
+        self.test_engine.current_index = len(raw) - 1
+        context = self._build_context(
+            [
+                Candle(timestamp=datetime(2026, 5, 21, 9, 15), open=100, high=101, low=99, close=100.5, volume=200),
+                Candle(timestamp=datetime(2026, 5, 21, 9, 18), open=100.5, high=102, low=100, close=101.5, volume=200),
+            ],
+            previous_close=100,
+        )
+        decision = TradeDecision(
+            action=TradeAction.enter_put,
+            confidence=0.86,
+            reason="Heuristic Advance short entry.",
+            decision_source="heuristic-advance",
+            option_type="PE",
+            setup_type="advanced_gmma_obv_short",
+        )
+
+        blocked = self.test_engine._apply_heuristic_advance_stock_entry_filter_locked(context, decision)
+
+        self.assertEqual(blocked.action, TradeAction.no_trade)
+        self.assertIn("last completed 2-minute turnover", blocked.reason)
+        self.assertIn("below required", blocked.reason)
 
     def test_stock_turnover_filter_allows_high_5m_turnover_entry(self) -> None:
         self.test_engine.set_instrument_mode("stock")
@@ -955,6 +1300,7 @@ class AppIntegrationTests(unittest.TestCase):
             instrument_mode="stock",
             selected_stock_symbol="TCS",
             stock_watchlist_symbols=["SBIN", "TCS"],
+            stock_watchlist_biases={"SBIN": "short", "TCS": "long"},
         )
 
         with patch("app.services.simulation.CredentialStore", return_value=store):
@@ -965,6 +1311,9 @@ class AppIntegrationTests(unittest.TestCase):
             self.assertEqual(state.instrument.mode, "stock")
             self.assertEqual(state.instrument.symbol, "TCS")
             self.assertTrue(any(item.symbol == "TCS" for item in restored_engine.stock_watchlist.values()))
+            by_symbol = {item.symbol: item for item in state.stock_watchlist}
+            self.assertEqual(by_symbol["TCS"].trade_bias, "long")
+            self.assertEqual(by_symbol["SBIN"].trade_bias, "short")
         finally:
             restored_engine.disconnect_live_feed()
 
@@ -987,6 +1336,23 @@ class AppIntegrationTests(unittest.TestCase):
             self.assertFalse(restored_engine.stock_watchlist)
         finally:
             restored_engine.disconnect_live_feed()
+
+    def test_remove_all_stock_watchlist_clears_symbols_and_persists_empty_list(self) -> None:
+        self.test_engine.set_instrument_mode("stock")
+        with patch.object(self.test_engine, "_auto_prepare_watchlist_symbols_async", return_value=None):
+            self.client.post(
+                "/api/stocks/watchlist/bulk-add",
+                data={"bulk_text": "AMBER\nGLAND\nSJVN\n", "trade_bias": "long"},
+            )
+
+        response = self.client.post("/api/stocks/watchlist/remove-all")
+
+        self.assertEqual(response.status_code, 200)
+        state = response.json()["state"]
+        self.assertEqual(state["stock_watchlist"], [])
+        payload = self.temp_store.load()
+        self.assertEqual(payload["stock_watchlist_symbols"], [])
+        self.assertEqual(payload["stock_watchlist_biases"], {})
 
     def test_start_live_trading_arms_execution_state(self) -> None:
         self.client.post(
@@ -1239,8 +1605,9 @@ class AppIntegrationTests(unittest.TestCase):
         )
         self.test_engine.zerodha_chart_service.fetch_market_context = Mock(return_value=bundle)
 
-        with patch("app.services.simulation.ZerodhaMarketFeedAdapter", FakeZerodhaFeed):
-            state = self.test_engine.connect_live_feed()
+        with patch.object(self.test_engine, "_is_nse_regular_session_now", return_value=True):
+            with patch("app.services.simulation.ZerodhaMarketFeedAdapter", FakeZerodhaFeed):
+                state = self.test_engine.connect_live_feed()
 
         self.assertEqual(created["api_key"], "kite-key")
         self.assertEqual(created["access_token"], "kite-token")
@@ -1869,6 +2236,70 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertIsNone(self.test_engine.active_trade)
         self.assertTrue(self.test_engine.trade_history[-1].exit_notes.startswith("Global MTM profit threshold hit"))
 
+    def test_position_max_loss_closes_only_breached_position(self) -> None:
+        self.temp_store.save(
+            position_max_loss_enabled=True,
+            position_max_loss=400.0,
+        )
+        self.test_engine.live_paper_trading_enabled = True
+        self.test_engine.execution_state.live_paper_trading_enabled = True
+        trade = SimulatedTrade(
+            trade_id="stock-loss-1",
+            status="OPEN",
+            direction="LONG_STOCK",
+            instrument_mode=InstrumentMode.stock,
+            instrument_label="SBIN",
+            price_mode="cash",
+            trade_security_id="3045",
+            quote_exchange_segment="NSE_EQ",
+            option_type="CE",
+            strike=0,
+            symbol="SBIN EQ",
+            quantity=10,
+            open_quantity=10,
+            entry_time=datetime.fromisoformat("2026-05-20T09:30:00"),
+            entry_price=400.0,
+            entry_spot_price=400.0,
+            entry_option_price=400.0,
+            current_price=355.0,
+            current_option_price=355.0,
+            stop_price=340.0,
+            stop_option_price=340.0,
+            target_price=460.0,
+            target_option_price=460.0,
+            invalidation_level=340.0,
+            pnl=-450.0,
+            execution_source="live-paper",
+        )
+        self.test_engine.active_trade = trade
+        self.test_engine.trade_history = [trade]
+
+        self.assertTrue(self.test_engine._check_position_max_loss(datetime.fromisoformat("2026-05-20T10:00:00")))
+
+        self.assertIsNone(self.test_engine.active_trade)
+        self.assertEqual(trade.status, "CLOSED")
+        self.assertEqual(trade.pnl, -450.0)
+        self.assertIn("Position max loss hit", trade.exit_notes)
+
+    def test_universe_warmup_uses_dedicated_workers_and_skips_today_ready_sessions(self) -> None:
+        self.assertEqual(self.test_engine._max_universe_warmup_workers(100), 8)
+        spec = build_stock_instrument("TCS", "11536", label="TATA CONSULTANCY SERV LT")
+        session = self.test_engine._build_stock_runtime_session(spec)
+        session.candles = [self._make_candle(0, 100.0, 101.0, 99.0, 100.5)]
+        session.current_index = 0
+        session.data_sync = DataSyncState(
+            status="ready",
+            source="warmup-test",
+            message="ready",
+            last_synced_at=datetime.now(),
+            previous_day_candles=1,
+            intraday_candles=0,
+            total_loaded=1,
+        )
+        self.test_engine.stock_sessions["TCS"] = session
+
+        self.assertTrue(self.test_engine._stock_session_has_ready_history("TCS", require_synced_today=True))
+
     def test_live_connect_uses_saved_credentials_when_form_is_blank(self) -> None:
         self.client.post(
             "/api/settings/credentials",
@@ -1883,7 +2314,8 @@ class AppIntegrationTests(unittest.TestCase):
                     response = self.client.post("/api/live/connect", data={"client_id": "", "access_token": ""})
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(sync_mock.call_count, 1)
+        sync_mock.assert_not_called()
+        self.assertIn("summary", response.json())
         self.assertEqual(adapter_mock.call_args.args[0], "cid-123")
         self.assertEqual(adapter_mock.call_args.args[1], "tok-456")
         fake_adapter.start.assert_called_once()
@@ -2225,7 +2657,8 @@ class AppIntegrationTests(unittest.TestCase):
 
         self.test_engine._enter_live_trade(self._make_candle(0, 800, 801, 799, 800.5), decision, trade)
 
-        state = self.test_engine.get_state()
+        with patch.object(self.test_engine, "_is_nse_regular_session_now", return_value=True):
+            state = self.test_engine.get_state()
         self.assertEqual(state.execution.last_order_error, "Invalid IP")
         self.assertEqual(state.execution.last_order_symbol, "SBIN EQ")
         stock_item = next(item for item in state.stock_watchlist if item.symbol == "SBIN")
@@ -2442,7 +2875,7 @@ class AppIntegrationTests(unittest.TestCase):
     def test_dhan_sdk_429_breaks_internal_retry_loop_for_outer_backoff(self) -> None:
         adapter = DhanMarketFeedAdapter("cid-123", "tok-456", [])
         feed = Mock()
-        feed.close_connection = Mock()
+        feed.disconnect = Mock(return_value=None)
         feed._running = True
         with adapter._feed_lock:
             adapter._feed = feed
@@ -2452,7 +2885,26 @@ class AppIntegrationTests(unittest.TestCase):
 
         self.assertIs(adapter._last_sdk_error, error)
         self.assertFalse(feed._running)
-        feed.close_connection.assert_called_once()
+        feed.disconnect.assert_called_once()
+
+    def test_dhan_disconnect_uses_disconnect_not_unsafe_close_connection(self) -> None:
+        adapter = DhanMarketFeedAdapter("cid-123", "tok-456", [])
+        calls: list[str] = []
+
+        async def disconnect():
+            calls.append("disconnect")
+
+        feed = Mock()
+        feed.disconnect = Mock(side_effect=disconnect)
+        feed.close_connection = Mock(side_effect=AssertionError("close_connection should not be used"))
+        loop = asyncio.new_event_loop()
+        try:
+            adapter._disconnect_feed(feed, loop=loop, wait=True)
+        finally:
+            loop.close()
+
+        self.assertEqual(calls, ["disconnect"])
+        feed.close_connection.assert_not_called()
 
     def test_watchlist_subscription_refresh_batches_dhan_updates(self) -> None:
         self.test_engine.set_instrument_mode("stock")
@@ -5673,7 +6125,9 @@ class AppIntegrationTests(unittest.TestCase):
                     response = self.client.post("/api/live/connect", data={"client_id": "cid", "access_token": "tok"})
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(sync_mock.call_count, 1)
+        sync_mock.assert_not_called()
+        self.assertIn("summary", response.json())
+        self.assertNotIn("state", response.json())
         fake_adapter.start.assert_called_once()
 
     def test_available_dhan_credentials_prefers_client_id_embedded_in_token(self) -> None:
@@ -5727,7 +6181,7 @@ class AppIntegrationTests(unittest.TestCase):
                     response = self.client.post("/api/live/connect", data={"client_id": "cid", "access_token": "tok"})
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(sync_mock.call_count, 1)
+        sync_mock.assert_not_called()
         stale_adapter.stop.assert_called_once()
         fake_adapter.start.assert_called_once()
 
@@ -5735,7 +6189,7 @@ class AppIntegrationTests(unittest.TestCase):
         fake_adapter = Mock()
         fake_adapter.start = Mock()
 
-        with patch.object(self.test_engine, "sync_dhan_context", return_value=self.test_engine.get_state()):
+        with patch.object(self.test_engine, "sync_dhan_context") as sync_mock:
             with patch(
                 "app.services.simulation.resolve_quote_subscription",
                 side_effect=lambda security_id, segment: (segment, security_id, "Quote"),
@@ -5744,6 +6198,7 @@ class AppIntegrationTests(unittest.TestCase):
                     response = self.client.post("/api/live/connect", data={"client_id": "cid", "access_token": "tok"})
 
         self.assertEqual(response.status_code, 200)
+        sync_mock.assert_not_called()
         fake_adapter.start.assert_called_once()
         instruments = adapter_mock.call_args.args[2]
         self.assertEqual({instrument[1] for instrument in instruments}, {"13", "25"})
@@ -5758,7 +6213,8 @@ class AppIntegrationTests(unittest.TestCase):
             next_retry_at=next_retry_at,
         )
 
-        state = self.test_engine.get_state()
+        with patch.object(self.test_engine, "_is_nse_regular_session_now", return_value=True):
+            state = self.test_engine.get_state()
         self.assertEqual(state.live_feed.status, "reconnecting")
         self.assertEqual(state.live_feed.retry_attempt, 2)
         self.assertEqual(state.live_feed.next_retry_at, next_retry_at)
@@ -5949,7 +6405,7 @@ class AppIntegrationTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         sync_mock.assert_not_called()
-        prepare_mock.assert_called_once()
+        prepare_mock.assert_not_called()
         fake_adapter.start.assert_called_once()
         instruments = adapter_mock.call_args.args[2]
         self.assertEqual({instrument[1] for instrument in instruments}, {"13", "3045", "11536"})
@@ -5966,7 +6422,7 @@ class AppIntegrationTests(unittest.TestCase):
         self.test_engine.selected_stock_symbol = "SBIN"
         self.test_engine.instrument_spec = self.test_engine.stock_watchlist["SBIN"]
 
-        with patch.object(self.test_engine, "sync_dhan_context", return_value=self.test_engine.get_state()):
+        with patch.object(self.test_engine, "sync_dhan_context") as sync_mock:
             with patch(
                 "app.services.simulation.resolve_quote_subscription",
                 side_effect=lambda security_id, segment: (segment, security_id, "Quote"),
@@ -5976,6 +6432,7 @@ class AppIntegrationTests(unittest.TestCase):
                         response = self.client.post("/api/live/connect", data={"client_id": "cid", "access_token": "tok"})
 
         self.assertEqual(response.status_code, 200)
+        sync_mock.assert_not_called()
         self.assertEqual(set(self.test_engine._stock_quote_subscriptions), {"3045", "11536"})
 
     def test_adding_stock_while_live_feed_running_schedules_background_subscription_refresh(self) -> None:

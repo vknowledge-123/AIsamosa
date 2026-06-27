@@ -25,6 +25,7 @@ class Settings(BaseSettings):
     stock_future_lots: int = 1
     stock_option_lots: int = 1
     heuristic_advance_timeframe_minutes: int = 3
+    heuristic_advance_min_2m_turnover: float = 10000000.0
     nifty_expiry_preference: str = "current-weekly"
     nifty_trailing_stop_enabled: bool = True
     nifty_heuristic_early_exit_enabled: bool = True
@@ -53,6 +54,9 @@ class Settings(BaseSettings):
     stock_min_5m_turnover: float = 30000000.0
     global_mtm_square_off_enabled: bool = False
     global_mtm_square_off_threshold: float = 0.0
+    position_max_loss_enabled: bool = False
+    position_max_loss: float = 400.0
+    universe_warmup_max_workers: int = 8
 
     model_config = SettingsConfigDict(
         env_file=".env",

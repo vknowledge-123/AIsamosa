@@ -12,6 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from app.config import get_settings
+from app.dashboard.serializers import serialize_summary
 from app.services.market_data import generate_sample_candles
 from app.services.simulation import SimulationEngine
 
@@ -92,7 +93,7 @@ async def get_state(request: Request):
 
 @app.get("/api/state/summary")
 async def get_state_summary():
-    return await run_in_threadpool(engine.get_state_summary)
+    return await run_in_threadpool(serialize_summary, engine)
 
 
 @app.get("/api/state/stream")
@@ -105,7 +106,7 @@ async def stream_state(request: Request):
             revision = await run_in_threadpool(engine.wait_for_state_revision, last_revision, 15.0)
             if revision > last_revision:
                 last_revision = revision
-                summary = await run_in_threadpool(engine.get_state_summary)
+                summary = await run_in_threadpool(serialize_summary, engine)
                 yield f"event: state\ndata: {json.dumps({'revision': revision, 'summary': summary})}\n\n"
             else:
                 yield ": keep-alive\n\n"
@@ -245,6 +246,15 @@ async def remove_stock_from_watchlist(symbol: str = Form(...)):
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"message": f"Removed {symbol.strip().upper()} from the stock watchlist.", "state": state}
+
+
+@app.post("/api/stocks/watchlist/remove-all")
+async def remove_all_stocks_from_watchlist():
+    try:
+        state = await run_in_threadpool(engine.remove_all_stocks_from_watchlist)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"message": "Removed all stocks from the stock watchlist.", "state": state}
 
 
 @app.post("/api/stocks/watchlist/square-off")
@@ -460,10 +470,20 @@ async def connect_live_feed(
     access_token: str = Form(default=""),
 ):
     try:
-        state = await run_in_threadpool(engine.connect_live_feed, client_id=client_id, access_token=access_token)
+        summary = await run_in_threadpool(
+            engine.connect_live_feed,
+            client_id=client_id,
+            access_token=access_token,
+            return_state=False,
+        )
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return {"message": f"Connecting to Dhan live feed for {state.instrument.label}.", "state": state}
+    instrument = summary.get("instrument", {}) if isinstance(summary, dict) else {}
+    broker = summary.get("broker_provider") if isinstance(summary, dict) else None
+    return {
+        "message": f"Connecting to {(broker or 'Dhan').title()} live feed for {instrument.get('label') or 'selected instrument'}.",
+        "summary": summary,
+    }
 
 
 @app.post("/api/live/sync-history")
@@ -543,6 +563,7 @@ async def save_credentials(
     stock_future_lots: int = Form(default=1),
     stock_option_lots: int = Form(default=1),
     heuristic_advance_timeframe_minutes: int = Form(default=3),
+    heuristic_advance_min_2m_turnover: float = Form(default=10000000.0),
     nifty_expiry_preference: str = Form(default="current-weekly"),
     stock_partial_profit_enabled: str = Form(default="true"),
     stock_trailing_stop_enabled: str = Form(default="true"),
@@ -568,6 +589,8 @@ async def save_credentials(
     nifty_option_trade_mode: str = Form(default="selling"),
     global_mtm_square_off_enabled: str = Form(default="false"),
     global_mtm_square_off_threshold: float = Form(default=0.0),
+    position_max_loss_enabled: str = Form(default="false"),
+    position_max_loss: float = Form(default=400.0),
 ):
     partial_profit_enabled = stock_partial_profit_enabled.strip().lower() in {"1", "true", "yes", "on"}
     trailing_stop_enabled = stock_trailing_stop_enabled.strip().lower() in {"1", "true", "yes", "on"}
@@ -583,6 +606,7 @@ async def save_credentials(
     stock_cost_after_pyramid_enabled = stock_cost_sl_after_pyramid_enabled.strip().lower() in {"1", "true", "yes", "on"}
     nifty_point_pyramid_enabled = nifty_point_pyramiding_enabled.strip().lower() in {"1", "true", "yes", "on"}
     global_mtm_enabled = global_mtm_square_off_enabled.strip().lower() in {"1", "true", "yes", "on"}
+    position_loss_enabled = position_max_loss_enabled.strip().lower() in {"1", "true", "yes", "on"}
     state = await run_in_threadpool(
         engine.save_credentials,
         client_id=client_id,
@@ -603,6 +627,7 @@ async def save_credentials(
         stock_future_lots=stock_future_lots,
         stock_option_lots=stock_option_lots,
         heuristic_advance_timeframe_minutes=heuristic_advance_timeframe_minutes,
+        heuristic_advance_min_2m_turnover=heuristic_advance_min_2m_turnover,
         nifty_expiry_preference=nifty_expiry_preference,
         stock_partial_profit_enabled=partial_profit_enabled,
         stock_trailing_stop_enabled=trailing_stop_enabled,
@@ -628,6 +653,8 @@ async def save_credentials(
         nifty_option_trade_mode=nifty_option_trade_mode,
         global_mtm_square_off_enabled=global_mtm_enabled,
         global_mtm_square_off_threshold=global_mtm_square_off_threshold,
+        position_max_loss_enabled=position_loss_enabled,
+        position_max_loss=position_max_loss,
         return_state=False,
     )
     return {

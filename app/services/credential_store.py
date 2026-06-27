@@ -44,6 +44,7 @@ class CredentialStore:
         stock_future_lots: int | None = None,
         stock_option_lots: int | None = None,
         heuristic_advance_timeframe_minutes: int | None = None,
+        heuristic_advance_min_2m_turnover: float | None = None,
         nifty_expiry_preference: str | None = None,
         stock_partial_profit_enabled: bool | None = None,
         stock_trailing_stop_enabled: bool | None = None,
@@ -69,6 +70,8 @@ class CredentialStore:
         nifty_option_trade_mode: str | None = None,
         global_mtm_square_off_enabled: bool | None = None,
         global_mtm_square_off_threshold: float | None = None,
+        position_max_loss_enabled: bool | None = None,
+        position_max_loss: float | None = None,
     ) -> None:
         payload = self.load()
         updated = False
@@ -166,6 +169,11 @@ class CredentialStore:
             normalized = min(max(int(heuristic_advance_timeframe_minutes), 1), 60)
             if payload.get("heuristic_advance_timeframe_minutes") != normalized:
                 payload["heuristic_advance_timeframe_minutes"] = normalized
+                updated = True
+        if heuristic_advance_min_2m_turnover is not None:
+            normalized = round(max(float(heuristic_advance_min_2m_turnover), 0.0), 2)
+            if payload.get("heuristic_advance_min_2m_turnover") != normalized:
+                payload["heuristic_advance_min_2m_turnover"] = normalized
                 updated = True
         if nifty_expiry_preference and nifty_expiry_preference.strip():
             normalized = nifty_expiry_preference.strip().lower()
@@ -292,6 +300,16 @@ class CredentialStore:
             if payload.get("global_mtm_square_off_threshold") != normalized:
                 payload["global_mtm_square_off_threshold"] = normalized
                 updated = True
+        if position_max_loss_enabled is not None:
+            normalized = bool(position_max_loss_enabled)
+            if payload.get("position_max_loss_enabled") != normalized:
+                payload["position_max_loss_enabled"] = normalized
+                updated = True
+        if position_max_loss is not None:
+            normalized = round(max(float(position_max_loss), 0.0), 2)
+            if payload.get("position_max_loss") != normalized:
+                payload["position_max_loss"] = normalized
+                updated = True
 
         if not updated:
             return
@@ -306,6 +324,7 @@ class CredentialStore:
         instrument_mode: str | InstrumentMode | None = None,
         selected_stock_symbol: str | None = None,
         stock_watchlist_symbols: list[str] | tuple[str, ...] | None = None,
+        stock_watchlist_biases: dict[str, str] | None = None,
     ) -> None:
         payload = self.load()
         updated = False
@@ -334,6 +353,16 @@ class CredentialStore:
             normalized_watchlist = list(dict.fromkeys(normalized_watchlist))
             if payload.get("stock_watchlist_symbols") != normalized_watchlist:
                 payload["stock_watchlist_symbols"] = normalized_watchlist
+                updated = True
+
+        if stock_watchlist_biases is not None:
+            normalized_biases = {
+                str(symbol).strip().upper(): self._normalize_stock_trade_bias(bias)
+                for symbol, bias in stock_watchlist_biases.items()
+                if str(symbol).strip()
+            }
+            if payload.get("stock_watchlist_biases") != normalized_biases:
+                payload["stock_watchlist_biases"] = normalized_biases
                 updated = True
 
         if not updated:
@@ -457,6 +486,14 @@ class CredentialStore:
             return min(max(int(raw), 1), 60)
         except (TypeError, ValueError):
             return min(max(int(settings.heuristic_advance_timeframe_minutes), 1), 60)
+
+    def get_heuristic_advance_min_2m_turnover(self, settings: Settings) -> float:
+        payload = self.load()
+        raw = payload.get("heuristic_advance_min_2m_turnover", settings.heuristic_advance_min_2m_turnover)
+        try:
+            return round(max(float(raw), 0.0), 2)
+        except (TypeError, ValueError):
+            return round(max(float(settings.heuristic_advance_min_2m_turnover), 0.0), 2)
 
     def get_nifty_expiry_preference(self, settings: Settings) -> str:
         payload = self.load()
@@ -599,6 +636,21 @@ class CredentialStore:
             float(settings.global_mtm_square_off_threshold),
         )
 
+    def get_position_max_loss_enabled(self, settings: Settings) -> bool:
+        payload = self.load()
+        return self._coerce_bool(
+            payload.get("position_max_loss_enabled"),
+            bool(settings.position_max_loss_enabled),
+        )
+
+    def get_position_max_loss(self, settings: Settings) -> float:
+        payload = self.load()
+        return self._coerce_float(
+            payload.get("position_max_loss"),
+            float(settings.position_max_loss),
+            minimum=0.0,
+        )
+
     def get_ui_preferences(self) -> tuple[InstrumentMode, str | None, list[str]]:
         payload = self.load()
         raw_mode = str(payload.get("instrument_mode") or InstrumentMode.nifty.value).strip().lower()
@@ -615,6 +667,17 @@ class CredentialStore:
         else:
             stock_watchlist_symbols = []
         return instrument_mode, selected_stock_symbol, stock_watchlist_symbols
+
+    def get_stock_watchlist_biases(self) -> dict[str, str]:
+        payload = self.load()
+        raw_biases = payload.get("stock_watchlist_biases")
+        if not isinstance(raw_biases, dict):
+            return {}
+        return {
+            str(symbol).strip().upper(): self._normalize_stock_trade_bias(bias)
+            for symbol, bias in raw_biases.items()
+            if str(symbol).strip()
+        }
 
     def summary(self, settings: Settings) -> CredentialSummary:
         payload = self.load()
@@ -648,6 +711,7 @@ class CredentialStore:
             stock_future_lots=self.get_stock_future_lots(settings),
             stock_option_lots=self.get_stock_option_lots(settings),
             heuristic_advance_timeframe_minutes=self.get_heuristic_advance_timeframe_minutes(settings),
+            heuristic_advance_min_2m_turnover=self.get_heuristic_advance_min_2m_turnover(settings),
             nifty_expiry_preference=self.get_nifty_expiry_preference(settings),
             stock_partial_profit_enabled=self.get_stock_partial_profit_enabled(settings),
             stock_trailing_stop_enabled=self.get_stock_trailing_stop_enabled(settings),
@@ -673,6 +737,8 @@ class CredentialStore:
             nifty_option_trade_mode=self.get_nifty_option_trade_mode(settings),
             global_mtm_square_off_enabled=self.get_global_mtm_square_off_enabled(settings),
             global_mtm_square_off_threshold=self.get_global_mtm_square_off_threshold(settings),
+            position_max_loss_enabled=self.get_position_max_loss_enabled(settings),
+            position_max_loss=self.get_position_max_loss(settings),
             dhan_credential_message=self.resolve_dhan_credentials(
                 payload.get("client_id") or settings.dhan_client_id,
                 payload.get("access_token") or settings.dhan_access_token,
@@ -734,6 +800,15 @@ class CredentialStore:
         if normalized in {"long", "buy", "bullish", "ce", "call"}:
             return "long"
         if normalized in {"short", "sell", "bearish", "pe", "put"}:
+            return "short"
+        return "both"
+
+    @staticmethod
+    def _normalize_stock_trade_bias(value: object) -> str:
+        normalized = str(value or "both").strip().lower()
+        if normalized in {"long", "long-only", "long_only", "buy"}:
+            return "long"
+        if normalized in {"short", "short-only", "short_only", "sell"}:
             return "short"
         return "both"
 

@@ -102,6 +102,9 @@
         <div id="stockSearchResults" class="list-surface">
           <div class="list-item empty-state">Search results will appear here in stock mode.</div>
         </div>
+        <div class="button-row stock-watchlist-actions">
+          <button type="button" id="removeAllStocksBtn" class="danger-btn">Remove All Stocks</button>
+        </div>
         <div id="stockWatchlist" class="list-surface stock-watchlist-panel">
           <div class="list-item empty-state">The stock watchlist will appear here in stock mode.</div>
         </div>
@@ -213,6 +216,11 @@
           <p class="caption">Replay still loads 1-minute candles, but entries and exits use only completed candles of the selected duration.</p>
         </form>
         <form id="historicalRangeReplayForm" class="stack-form">
+          <label>Bulk Stock Replay Scope</label>
+          <select name="stock_replay_scope">
+            <option value="all" selected>Select All Watchlist Stocks</option>
+            <option value="active">Active Stock Only</option>
+          </select>
           <label>Bulk Replay Start</label>
           <input type="date" name="replay_start_date" required />
           <label>Bulk Replay End</label>
@@ -278,6 +286,8 @@
           </select>
           <label>Heuristic Advance Timeframe Minutes</label>
           <input type="number" name="heuristic_advance_timeframe_minutes" min="1" max="60" step="1" value="3" />
+          <label>Heuristic Advance 2m Turnover</label>
+          <input type="number" name="heuristic_advance_min_2m_turnover" min="0" step="100000" value="10000000" />
           <label>Nifty Order Lots</label>
           <input type="number" name="nifty_order_lots" min="1" step="1" value="1" />
           <label>Stock Trade Capital</label>
@@ -340,6 +350,12 @@
           </label>
           <label>Global MTM Threshold</label>
           <input type="number" name="global_mtm_square_off_threshold" step="1" value="0" />
+          <label class="checkbox-row">
+            <input type="checkbox" name="position_max_loss_enabled" />
+            <span>Enable Max Loss Per Position</span>
+          </label>
+          <label>Max Loss Per Position</label>
+          <input type="number" name="position_max_loss" min="0" step="1" value="400" />
           <label class="checkbox-row">
             <input type="checkbox" name="pyramiding_enabled" />
             <span>Enable Heuristic Pyramiding</span>
@@ -438,6 +454,10 @@
             <p id="savedHeuristicAdvanceTimeframeValue">3 min</p>
           </div>
           <div class="list-item">
+            <strong>Advance 2m Turnover</strong>
+            <p id="savedHeuristicAdvanceTurnoverValue">10000000</p>
+          </div>
+          <div class="list-item">
             <strong>Nifty Order Lots</strong>
             <p id="savedNiftyLotsValue">1</p>
           </div>
@@ -528,6 +548,14 @@
           <div class="list-item">
             <strong>Global MTM Threshold</strong>
             <p id="savedGlobalMtmThresholdValue">0</p>
+          </div>
+          <div class="list-item">
+            <strong>Max Loss Per Position</strong>
+            <p id="savedPositionMaxLossEnabledValue">Disabled</p>
+          </div>
+          <div class="list-item">
+            <strong>Position Max Loss Amount</strong>
+            <p id="savedPositionMaxLossValue">400</p>
           </div>
           <div class="list-item">
             <strong>Heuristic Pyramiding</strong>

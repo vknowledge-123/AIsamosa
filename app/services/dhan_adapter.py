@@ -275,12 +275,7 @@ class DhanMarketFeedAdapter:
             setattr(feed, "_running", False)
         except Exception:
             pass
-        close_connection = getattr(feed, "close_connection", None)
-        if callable(close_connection):
-            try:
-                close_connection()
-            except Exception:
-                pass
+        self._disconnect_feed(feed, wait=False)
 
     def _handle_sdk_close(self, *_args) -> None:
         return
@@ -313,19 +308,42 @@ class DhanMarketFeedAdapter:
             feed = self._feed
         if not feed:
             return
-        close_connection = getattr(feed, "close_connection", None)
-        if callable(close_connection):
-            try:
-                close_connection()
-            except Exception:
-                pass
+        self._disconnect_feed(feed, loop=loop, wait=not loop.is_running())
+
+    def _disconnect_feed(
+        self,
+        feed: Any,
+        *,
+        loop: asyncio.AbstractEventLoop | None = None,
+        wait: bool = False,
+    ) -> None:
         disconnect = getattr(feed, "disconnect", None)
-        if not callable(disconnect):
+        if callable(disconnect):
+            try:
+                result = disconnect()
+                if inspect.isawaitable(result):
+                    target_loop = loop or getattr(feed, "loop", None)
+                    if target_loop is not None and target_loop.is_running():
+                        future = asyncio.run_coroutine_threadsafe(result, target_loop)
+                        if wait:
+                            future.result(timeout=2)
+                    elif target_loop is not None:
+                        target_loop.run_until_complete(result)
+                    else:
+                        asyncio.run(result)
+                return
+            except Exception:
+                return
+        close_connection = getattr(feed, "close_connection", None)
+        if not callable(close_connection):
             return
         try:
-            result = disconnect()
+            result = close_connection()
             if inspect.isawaitable(result):
-                loop.run_until_complete(result)
+                if loop is not None and not loop.is_running():
+                    loop.run_until_complete(result)
+                else:
+                    result.close()
         except Exception:
             pass
 

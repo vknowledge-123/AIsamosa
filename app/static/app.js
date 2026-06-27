@@ -55,6 +55,7 @@ const elements = {
   savedFullAIProviderValue: document.getElementById("savedFullAIProviderValue"),
   savedOperatingModeValue: document.getElementById("savedOperatingModeValue"),
   savedHeuristicAdvanceTimeframeValue: document.getElementById("savedHeuristicAdvanceTimeframeValue"),
+  savedHeuristicAdvanceTurnoverValue: document.getElementById("savedHeuristicAdvanceTurnoverValue"),
   savedNiftyLotsValue: document.getElementById("savedNiftyLotsValue"),
   savedStockCapitalValue: document.getElementById("savedStockCapitalValue"),
   savedStockExecutionModeValue: document.getElementById("savedStockExecutionModeValue"),
@@ -78,6 +79,8 @@ const elements = {
   savedNiftyDailyMaxLossAmountValue: document.getElementById("savedNiftyDailyMaxLossAmountValue"),
   savedGlobalMtmSquareOffValue: document.getElementById("savedGlobalMtmSquareOffValue"),
   savedGlobalMtmThresholdValue: document.getElementById("savedGlobalMtmThresholdValue"),
+  savedPositionMaxLossEnabledValue: document.getElementById("savedPositionMaxLossEnabledValue"),
+  savedPositionMaxLossValue: document.getElementById("savedPositionMaxLossValue"),
   savedPyramidingValue: document.getElementById("savedPyramidingValue"),
   savedIntelligentPyramidingValue: document.getElementById("savedIntelligentPyramidingValue"),
   savedStockPercentPyramidingValue: document.getElementById("savedStockPercentPyramidingValue"),
@@ -515,6 +518,7 @@ function buildCredentialPayload(form) {
     full_ai_provider: (form.elements.full_ai_provider?.value || "").trim(),
     operating_mode: (form.elements.operating_mode?.value || "").trim(),
     heuristic_advance_timeframe_minutes: (form.elements.heuristic_advance_timeframe_minutes?.value || "3").trim(),
+    heuristic_advance_min_2m_turnover: (form.elements.heuristic_advance_min_2m_turnover?.value || "10000000").trim(),
     nifty_order_lots: (form.elements.nifty_order_lots?.value || "1").trim(),
     stock_trade_capital: (form.elements.stock_trade_capital?.value || "25000").trim(),
     stock_execution_mode: (form.elements.stock_execution_mode?.value || "cash").trim(),
@@ -536,6 +540,8 @@ function buildCredentialPayload(form) {
     nifty_daily_max_loss: (form.elements.nifty_daily_max_loss?.value || "100").trim(),
     global_mtm_square_off_enabled: form.elements.global_mtm_square_off_enabled?.checked ? "true" : "false",
     global_mtm_square_off_threshold: (form.elements.global_mtm_square_off_threshold?.value || "0").trim(),
+    position_max_loss_enabled: form.elements.position_max_loss_enabled?.checked ? "true" : "false",
+    position_max_loss: (form.elements.position_max_loss?.value || "400").trim(),
     pyramiding_enabled: form.elements.pyramiding_enabled?.checked ? "true" : "false",
     intelligent_pyramiding_enabled: form.elements.intelligent_pyramiding_enabled?.checked ? "true" : "false",
     stock_percent_pyramiding_enabled: form.elements.stock_percent_pyramiding_enabled?.checked ? "true" : "false",
@@ -561,6 +567,7 @@ function serializeCredentialPayload(payload) {
     deepseek_model: payload.deepseek_model,
     full_ai_provider: payload.full_ai_provider,
     heuristic_advance_timeframe_minutes: payload.heuristic_advance_timeframe_minutes,
+    heuristic_advance_min_2m_turnover: payload.heuristic_advance_min_2m_turnover,
     nifty_expiry_preference: payload.nifty_expiry_preference,
     nifty_order_lots: payload.nifty_order_lots,
     openai_api_key: payload.openai_api_key,
@@ -588,6 +595,8 @@ function serializeCredentialPayload(payload) {
     nifty_daily_max_loss: payload.nifty_daily_max_loss,
     global_mtm_square_off_enabled: payload.global_mtm_square_off_enabled,
     global_mtm_square_off_threshold: payload.global_mtm_square_off_threshold,
+    position_max_loss_enabled: payload.position_max_loss_enabled,
+    position_max_loss: payload.position_max_loss,
     pyramiding_enabled: payload.pyramiding_enabled,
     intelligent_pyramiding_enabled: payload.intelligent_pyramiding_enabled,
     stock_percent_pyramiding_enabled: payload.stock_percent_pyramiding_enabled,
@@ -1233,6 +1242,8 @@ function renderState(state) {
     connectLiveBtn.textContent = `Reconnecting ${liveFeedProviderLabel} ${state.instrument.label}`;
   } else if (state.live_feed.status === "connecting") {
     connectLiveBtn.textContent = `Connecting ${liveFeedProviderLabel} ${state.instrument.label}`;
+  } else if (state.live_feed.status === "market_closed") {
+    connectLiveBtn.textContent = `Market Closed ${state.instrument.label}`;
   } else {
     connectLiveBtn.textContent = `Connect ${liveFeedProviderLabel} ${state.instrument.label}`;
   }
@@ -1271,6 +1282,9 @@ function renderState(state) {
   elements.savedFullAIProviderValue.textContent = state.credentials.full_ai_provider || "openai";
   elements.savedOperatingModeValue.textContent = state.credentials.operating_mode || "full-ai";
   elements.savedHeuristicAdvanceTimeframeValue.textContent = `${state.credentials.heuristic_advance_timeframe_minutes || 3} min`;
+  if (elements.savedHeuristicAdvanceTurnoverValue) {
+    elements.savedHeuristicAdvanceTurnoverValue.textContent = money(state.credentials.heuristic_advance_min_2m_turnover ?? 10000000);
+  }
   elements.savedNiftyLotsValue.textContent = state.credentials.nifty_order_lots || 1;
   elements.savedStockCapitalValue.textContent = money(state.credentials.stock_trade_capital);
   elements.savedStockExecutionModeValue.textContent = state.credentials.stock_execution_mode || "cash";
@@ -1294,6 +1308,8 @@ function renderState(state) {
   elements.savedNiftyDailyMaxLossAmountValue.textContent = money(state.credentials.nifty_daily_max_loss);
   elements.savedGlobalMtmSquareOffValue.textContent = state.credentials.global_mtm_square_off_enabled ? "Enabled" : "Disabled";
   elements.savedGlobalMtmThresholdValue.textContent = money(state.credentials.global_mtm_square_off_threshold);
+  elements.savedPositionMaxLossEnabledValue.textContent = state.credentials.position_max_loss_enabled ? "Enabled" : "Disabled";
+  elements.savedPositionMaxLossValue.textContent = money(state.credentials.position_max_loss);
   elements.savedPyramidingValue.textContent = state.credentials.pyramiding_enabled ? "Enabled" : "Disabled";
   elements.savedIntelligentPyramidingValue.textContent = state.credentials.intelligent_pyramiding_enabled ? "Enabled" : "Disabled";
   elements.savedStockPercentPyramidingValue.textContent = state.credentials.stock_percent_pyramiding_enabled ? "Enabled" : "Disabled";
@@ -1472,6 +1488,7 @@ function renderState(state) {
     syncCredentialField(credentialSaveForm, "full_ai_provider", state.credentials.full_ai_provider || "");
     syncCredentialField(credentialSaveForm, "operating_mode", state.credentials.operating_mode || "");
     syncCredentialField(credentialSaveForm, "heuristic_advance_timeframe_minutes", String(state.credentials.heuristic_advance_timeframe_minutes || 3));
+    syncCredentialField(credentialSaveForm, "heuristic_advance_min_2m_turnover", String(state.credentials.heuristic_advance_min_2m_turnover ?? 10000000));
     syncCredentialField(credentialSaveForm, "nifty_order_lots", String(state.credentials.nifty_order_lots || 1));
     syncCredentialField(credentialSaveForm, "stock_trade_capital", String(state.credentials.stock_trade_capital || 25000));
     syncCredentialField(credentialSaveForm, "stock_execution_mode", state.credentials.stock_execution_mode || "cash");
@@ -1494,6 +1511,8 @@ function renderState(state) {
     syncCredentialField(credentialSaveForm, "nifty_daily_max_loss", String(state.credentials.nifty_daily_max_loss ?? 100));
     syncCredentialField(credentialSaveForm, "global_mtm_square_off_enabled", state.credentials.global_mtm_square_off_enabled === true);
     syncCredentialField(credentialSaveForm, "global_mtm_square_off_threshold", String(state.credentials.global_mtm_square_off_threshold ?? 0));
+    syncCredentialField(credentialSaveForm, "position_max_loss_enabled", state.credentials.position_max_loss_enabled === true);
+    syncCredentialField(credentialSaveForm, "position_max_loss", String(state.credentials.position_max_loss ?? 400));
     syncCredentialField(credentialSaveForm, "pyramiding_enabled", state.credentials.pyramiding_enabled === true);
     syncCredentialField(credentialSaveForm, "intelligent_pyramiding_enabled", state.credentials.intelligent_pyramiding_enabled === true);
     syncCredentialField(credentialSaveForm, "stock_percent_pyramiding_enabled", state.credentials.stock_percent_pyramiding_enabled === true);
@@ -1545,6 +1564,9 @@ function renderCredentialSettingsOnly(state) {
   elements.savedFullAIProviderValue.textContent = state.credentials.full_ai_provider || "openai";
   elements.savedOperatingModeValue.textContent = state.credentials.operating_mode || "full-ai";
   elements.savedHeuristicAdvanceTimeframeValue.textContent = `${state.credentials.heuristic_advance_timeframe_minutes || 3} min`;
+  if (elements.savedHeuristicAdvanceTurnoverValue) {
+    elements.savedHeuristicAdvanceTurnoverValue.textContent = money(state.credentials.heuristic_advance_min_2m_turnover ?? 10000000);
+  }
   elements.savedNiftyLotsValue.textContent = state.credentials.nifty_order_lots || 1;
   elements.savedStockCapitalValue.textContent = money(state.credentials.stock_trade_capital);
   elements.savedStockExecutionModeValue.textContent = state.credentials.stock_execution_mode || "cash";
@@ -1568,6 +1590,8 @@ function renderCredentialSettingsOnly(state) {
   elements.savedNiftyDailyMaxLossAmountValue.textContent = money(state.credentials.nifty_daily_max_loss);
   elements.savedGlobalMtmSquareOffValue.textContent = state.credentials.global_mtm_square_off_enabled ? "Enabled" : "Disabled";
   elements.savedGlobalMtmThresholdValue.textContent = money(state.credentials.global_mtm_square_off_threshold);
+  elements.savedPositionMaxLossEnabledValue.textContent = state.credentials.position_max_loss_enabled ? "Enabled" : "Disabled";
+  elements.savedPositionMaxLossValue.textContent = money(state.credentials.position_max_loss);
   elements.savedPyramidingValue.textContent = state.credentials.pyramiding_enabled ? "Enabled" : "Disabled";
   elements.savedIntelligentPyramidingValue.textContent = state.credentials.intelligent_pyramiding_enabled ? "Enabled" : "Disabled";
   elements.savedStockPercentPyramidingValue.textContent = state.credentials.stock_percent_pyramiding_enabled ? "Enabled" : "Disabled";
@@ -1594,6 +1618,7 @@ function renderCredentialSettingsOnly(state) {
     syncCredentialField(credentialSaveForm, "full_ai_provider", state.credentials.full_ai_provider || "");
     syncCredentialField(credentialSaveForm, "operating_mode", state.credentials.operating_mode || "");
     syncCredentialField(credentialSaveForm, "heuristic_advance_timeframe_minutes", String(state.credentials.heuristic_advance_timeframe_minutes || 3));
+    syncCredentialField(credentialSaveForm, "heuristic_advance_min_2m_turnover", String(state.credentials.heuristic_advance_min_2m_turnover ?? 10000000));
     syncCredentialField(credentialSaveForm, "nifty_order_lots", String(state.credentials.nifty_order_lots || 1));
     syncCredentialField(credentialSaveForm, "stock_trade_capital", String(state.credentials.stock_trade_capital || 25000));
     syncCredentialField(credentialSaveForm, "stock_execution_mode", state.credentials.stock_execution_mode || "cash");
@@ -1616,6 +1641,8 @@ function renderCredentialSettingsOnly(state) {
     syncCredentialField(credentialSaveForm, "nifty_daily_max_loss", String(state.credentials.nifty_daily_max_loss ?? 100));
     syncCredentialField(credentialSaveForm, "global_mtm_square_off_enabled", state.credentials.global_mtm_square_off_enabled === true);
     syncCredentialField(credentialSaveForm, "global_mtm_square_off_threshold", String(state.credentials.global_mtm_square_off_threshold ?? 0));
+    syncCredentialField(credentialSaveForm, "position_max_loss_enabled", state.credentials.position_max_loss_enabled === true);
+    syncCredentialField(credentialSaveForm, "position_max_loss", String(state.credentials.position_max_loss ?? 400));
     syncCredentialField(credentialSaveForm, "pyramiding_enabled", state.credentials.pyramiding_enabled === true);
     syncCredentialField(credentialSaveForm, "intelligent_pyramiding_enabled", state.credentials.intelligent_pyramiding_enabled === true);
     syncCredentialField(credentialSaveForm, "stock_percent_pyramiding_enabled", state.credentials.stock_percent_pyramiding_enabled === true);
@@ -1711,6 +1738,10 @@ async function removeStock(symbol) {
   await postForm("/api/stocks/watchlist/remove", formData);
 }
 
+async function removeAllStocks() {
+  await postForm("/api/stocks/watchlist/remove-all", new FormData());
+}
+
 async function squareOffStock(symbol) {
   const formData = new FormData();
   formData.append("symbol", symbol);
@@ -1750,6 +1781,10 @@ async function postForm(url, formData, options = {}) {
   const data = await fetchJson(url, { method: "POST", body: formData, timeoutMs: options.timeoutMs });
   if (data.state) {
     renderState(data.state);
+  }
+  if (data.summary) {
+    renderStateSummary(data.summary);
+    scheduleFullStateRefresh();
   }
   if (data.message) {
     if (options.pendingTitle) {
@@ -1837,7 +1872,7 @@ document.getElementById("historicalRangeReplayForm").addEventListener("submit", 
     formData.append("replay_start_date", form.elements.replay_start_date.value || "");
     formData.append("replay_end_date", form.elements.replay_end_date.value || "");
     formData.append("decision_duration_minutes", replayForm.elements.decision_duration_minutes.value || "5");
-    formData.append("stock_replay_scope", replayForm.elements.stock_replay_scope?.value || "all");
+    formData.append("stock_replay_scope", form.elements.stock_replay_scope?.value || "all");
     await postForm("/api/simulation/historical-range/start", formData, {
       timeoutMs: 120000,
       pendingTitle: "Bulk replay started",
@@ -2076,6 +2111,27 @@ document.querySelectorAll(".stock-bulk-form").forEach((bulkForm) => {
     });
   });
 });
+
+document.getElementById("removeAllStocksBtn")?.addEventListener("click", () => runAction(async () => {
+  const button = document.getElementById("removeAllStocksBtn");
+  if (stockUiState.pendingActions.has("remove-all:*")) {
+    return;
+  }
+  stockUiState.pendingActions.add("remove-all:*");
+  if (button) {
+    button.disabled = true;
+    button.textContent = "Removing...";
+  }
+  try {
+    await removeAllStocks();
+  } finally {
+    stockUiState.pendingActions.delete("remove-all:*");
+    if (button) {
+      button.disabled = false;
+      button.textContent = "Remove All Stocks";
+    }
+  }
+}));
 
 document.addEventListener("click", (event) => {
   const addButton = event.target.closest(".stock-add-btn");

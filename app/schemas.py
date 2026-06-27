@@ -215,6 +215,7 @@ class StrategyContext(BaseModel):
     nifty_option_trade_mode: str = "selling"
     stock_trade_bias: str = "both"
     heuristic_advance_timeframe_minutes: int = 3
+    heuristic_advance_min_2m_turnover: float = 10000000.0
 
 
 class PendingSetup(BaseModel):
@@ -438,8 +439,11 @@ class CredentialSummary(BaseModel):
     nifty_trade_bias: str = "both"
     nifty_option_trade_mode: str = "selling"
     heuristic_advance_timeframe_minutes: int = 3
+    heuristic_advance_min_2m_turnover: float = 10000000.0
     global_mtm_square_off_enabled: bool = False
     global_mtm_square_off_threshold: float = 0.0
+    position_max_loss_enabled: bool = False
+    position_max_loss: float = 400.0
     dhan_credential_message: str | None = None
     storage_path: str
     last_updated: datetime | None = None
