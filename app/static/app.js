@@ -75,6 +75,8 @@ const elements = {
   savedNiftyMaxSlPointsValue: document.getElementById("savedNiftyMaxSlPointsValue"),
   savedNiftyTargetValue: document.getElementById("savedNiftyTargetValue"),
   savedNiftyTargetPointsValue: document.getElementById("savedNiftyTargetPointsValue"),
+  savedNiftyTargetTrailingValue: document.getElementById("savedNiftyTargetTrailingValue"),
+  savedNiftyTargetTrailingPointsValue: document.getElementById("savedNiftyTargetTrailingPointsValue"),
   savedNiftyDailyMaxLossValue: document.getElementById("savedNiftyDailyMaxLossValue"),
   savedNiftyDailyMaxLossAmountValue: document.getElementById("savedNiftyDailyMaxLossAmountValue"),
   savedGlobalMtmSquareOffValue: document.getElementById("savedGlobalMtmSquareOffValue"),
@@ -536,6 +538,8 @@ function buildCredentialPayload(form) {
     nifty_max_sl_points: (form.elements.nifty_max_sl_points?.value || "60").trim(),
     nifty_target_enabled: form.elements.nifty_target_enabled?.checked ? "true" : "false",
     nifty_target_points: (form.elements.nifty_target_points?.value || "90").trim(),
+    nifty_target_trailing_enabled: form.elements.nifty_target_trailing_enabled?.checked ? "true" : "false",
+    nifty_target_trailing_points: (form.elements.nifty_target_trailing_points?.value || "20").trim(),
     nifty_daily_max_loss_enabled: form.elements.nifty_daily_max_loss_enabled?.checked ? "true" : "false",
     nifty_daily_max_loss: (form.elements.nifty_daily_max_loss?.value || "100").trim(),
     global_mtm_square_off_enabled: form.elements.global_mtm_square_off_enabled?.checked ? "true" : "false",
@@ -591,6 +595,8 @@ function serializeCredentialPayload(payload) {
     nifty_max_sl_points: payload.nifty_max_sl_points,
     nifty_target_enabled: payload.nifty_target_enabled,
     nifty_target_points: payload.nifty_target_points,
+    nifty_target_trailing_enabled: payload.nifty_target_trailing_enabled,
+    nifty_target_trailing_points: payload.nifty_target_trailing_points,
     nifty_daily_max_loss_enabled: payload.nifty_daily_max_loss_enabled,
     nifty_daily_max_loss: payload.nifty_daily_max_loss,
     global_mtm_square_off_enabled: payload.global_mtm_square_off_enabled,
@@ -1304,6 +1310,8 @@ function renderState(state) {
   elements.savedNiftyMaxSlPointsValue.textContent = money(state.credentials.nifty_max_sl_points);
   elements.savedNiftyTargetValue.textContent = state.credentials.nifty_target_enabled ? "Enabled" : "Disabled";
   elements.savedNiftyTargetPointsValue.textContent = money(state.credentials.nifty_target_points);
+  elements.savedNiftyTargetTrailingValue.textContent = state.credentials.nifty_target_trailing_enabled ? "Enabled" : "Disabled";
+  elements.savedNiftyTargetTrailingPointsValue.textContent = money(state.credentials.nifty_target_trailing_points);
   elements.savedNiftyDailyMaxLossValue.textContent = state.credentials.nifty_daily_max_loss_enabled ? "Enabled" : "Disabled";
   elements.savedNiftyDailyMaxLossAmountValue.textContent = money(state.credentials.nifty_daily_max_loss);
   elements.savedGlobalMtmSquareOffValue.textContent = state.credentials.global_mtm_square_off_enabled ? "Enabled" : "Disabled";
@@ -1507,6 +1515,8 @@ function renderState(state) {
     syncCredentialField(credentialSaveForm, "nifty_max_sl_points", String(state.credentials.nifty_max_sl_points ?? 60));
     syncCredentialField(credentialSaveForm, "nifty_target_enabled", state.credentials.nifty_target_enabled === true);
     syncCredentialField(credentialSaveForm, "nifty_target_points", String(state.credentials.nifty_target_points ?? 90));
+    syncCredentialField(credentialSaveForm, "nifty_target_trailing_enabled", state.credentials.nifty_target_trailing_enabled === true);
+    syncCredentialField(credentialSaveForm, "nifty_target_trailing_points", String(state.credentials.nifty_target_trailing_points ?? 20));
     syncCredentialField(credentialSaveForm, "nifty_daily_max_loss_enabled", state.credentials.nifty_daily_max_loss_enabled === true);
     syncCredentialField(credentialSaveForm, "nifty_daily_max_loss", String(state.credentials.nifty_daily_max_loss ?? 100));
     syncCredentialField(credentialSaveForm, "global_mtm_square_off_enabled", state.credentials.global_mtm_square_off_enabled === true);
@@ -1586,6 +1596,8 @@ function renderCredentialSettingsOnly(state) {
   elements.savedNiftyMaxSlPointsValue.textContent = money(state.credentials.nifty_max_sl_points);
   elements.savedNiftyTargetValue.textContent = state.credentials.nifty_target_enabled ? "Enabled" : "Disabled";
   elements.savedNiftyTargetPointsValue.textContent = money(state.credentials.nifty_target_points);
+  elements.savedNiftyTargetTrailingValue.textContent = state.credentials.nifty_target_trailing_enabled ? "Enabled" : "Disabled";
+  elements.savedNiftyTargetTrailingPointsValue.textContent = money(state.credentials.nifty_target_trailing_points);
   elements.savedNiftyDailyMaxLossValue.textContent = state.credentials.nifty_daily_max_loss_enabled ? "Enabled" : "Disabled";
   elements.savedNiftyDailyMaxLossAmountValue.textContent = money(state.credentials.nifty_daily_max_loss);
   elements.savedGlobalMtmSquareOffValue.textContent = state.credentials.global_mtm_square_off_enabled ? "Enabled" : "Disabled";
@@ -1637,6 +1649,8 @@ function renderCredentialSettingsOnly(state) {
     syncCredentialField(credentialSaveForm, "nifty_max_sl_points", String(state.credentials.nifty_max_sl_points ?? 60));
     syncCredentialField(credentialSaveForm, "nifty_target_enabled", state.credentials.nifty_target_enabled === true);
     syncCredentialField(credentialSaveForm, "nifty_target_points", String(state.credentials.nifty_target_points ?? 90));
+    syncCredentialField(credentialSaveForm, "nifty_target_trailing_enabled", state.credentials.nifty_target_trailing_enabled === true);
+    syncCredentialField(credentialSaveForm, "nifty_target_trailing_points", String(state.credentials.nifty_target_trailing_points ?? 20));
     syncCredentialField(credentialSaveForm, "nifty_daily_max_loss_enabled", state.credentials.nifty_daily_max_loss_enabled === true);
     syncCredentialField(credentialSaveForm, "nifty_daily_max_loss", String(state.credentials.nifty_daily_max_loss ?? 100));
     syncCredentialField(credentialSaveForm, "global_mtm_square_off_enabled", state.credentials.global_mtm_square_off_enabled === true);

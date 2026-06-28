@@ -202,6 +202,8 @@ class StrategyContext(BaseModel):
     nifty_max_sl_points: float = 60.0
     nifty_target_enabled: bool = False
     nifty_target_points: float = 90.0
+    nifty_target_trailing_enabled: bool = False
+    nifty_target_trailing_points: float = 20.0
     nifty_daily_max_loss_enabled: bool = False
     nifty_daily_max_loss: float = 100.0
     pyramiding_enabled: bool = False
@@ -340,6 +342,9 @@ class SimulatedTrade(BaseModel):
     invalidation_level: float | None = None
     target_spot_price: float | None = None
     first_target_price: float | None = None
+    nifty_target_trailing_active: bool = False
+    nifty_target_trailing_best_spot: float | None = None
+    nifty_target_trailing_trigger_spot: float | None = None
     setup_type: str | None = None
     setup_score: float | None = None
     market_state: str | None = None
@@ -427,6 +432,8 @@ class CredentialSummary(BaseModel):
     nifty_max_sl_points: float = 60.0
     nifty_target_enabled: bool = False
     nifty_target_points: float = 90.0
+    nifty_target_trailing_enabled: bool = False
+    nifty_target_trailing_points: float = 20.0
     nifty_daily_max_loss_enabled: bool = False
     nifty_daily_max_loss: float = 100.0
     pyramiding_enabled: bool = False

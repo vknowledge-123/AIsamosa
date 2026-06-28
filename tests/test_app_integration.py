@@ -188,6 +188,8 @@ class AppIntegrationTests(unittest.TestCase):
 
         self.assertEqual(dashboard.status_code, 200)
         self.assertIn("SL Hunting Paper Trader", dashboard.text)
+        self.assertIn("nifty_target_trailing_enabled", dashboard.text)
+        self.assertIn("Nifty TG Trail Points", dashboard.text)
         self.assertEqual(health.status_code, 200)
         self.assertTrue(health.json()["reachable"])
 
@@ -266,6 +268,10 @@ class AppIntegrationTests(unittest.TestCase):
                 "nifty_heuristic_early_exit_enabled": "false",
                 "nifty_min_sl_points": "18",
                 "nifty_max_sl_points": "45",
+                "nifty_target_enabled": "true",
+                "nifty_target_points": "95",
+                "nifty_target_trailing_enabled": "true",
+                "nifty_target_trailing_points": "22",
                 "nifty_daily_max_loss_enabled": "true",
                 "nifty_daily_max_loss": "125",
                 "global_mtm_square_off_enabled": "true",
@@ -316,6 +322,10 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertFalse(summary["nifty_heuristic_early_exit_enabled"])
         self.assertEqual(summary["nifty_min_sl_points"], 18.0)
         self.assertEqual(summary["nifty_max_sl_points"], 45.0)
+        self.assertTrue(summary["nifty_target_enabled"])
+        self.assertEqual(summary["nifty_target_points"], 95.0)
+        self.assertTrue(summary["nifty_target_trailing_enabled"])
+        self.assertEqual(summary["nifty_target_trailing_points"], 22.0)
         self.assertTrue(summary["nifty_daily_max_loss_enabled"])
         self.assertEqual(summary["nifty_daily_max_loss"], 125.0)
         self.assertTrue(summary["global_mtm_square_off_enabled"])
@@ -8559,6 +8569,73 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertEqual(decision.action, TradeAction.exit)
         self.assertEqual(decision.target_spot_price, 23282.0)
         self.assertIn("fixed target", decision.reason.lower())
+
+    def test_nifty_target_trailing_arms_after_target_instead_of_exiting(self) -> None:
+        candles = [
+            Candle(timestamp="2026-05-13T09:15:00", open=23100, high=23120, low=23080, close=23100, volume=1000),
+            Candle(timestamp="2026-05-14T09:15:00", open=23192, high=23205, low=23180, close=23196, volume=1200),
+            Candle(timestamp="2026-05-14T09:16:00", open=23196, high=23290, low=23255, close=23284, volume=1400),
+        ]
+        trade = self._build_trade(
+            entry_time=candles[1].timestamp,
+            entry_spot_price=23192.0,
+            invalidation_level=23140.0,
+            setup_type="bullish_reclaim_watch",
+        )
+        context = self._build_context(candles, active_trade=trade).model_copy(
+            update={
+                "nifty_heuristic_early_exit_enabled": False,
+                "nifty_target_enabled": True,
+                "nifty_target_points": 90.0,
+                "nifty_target_trailing_enabled": True,
+                "nifty_target_trailing_points": 20.0,
+            }
+        )
+        observation = self._build_observation(atr=25.0)
+
+        decision = self.test_engine.heuristic_engine.manage_active_trade(context, observation, current_trade_price=12.0)
+
+        self.assertEqual(decision.action, TradeAction.hold)
+        self.assertTrue(trade.nifty_target_trailing_active)
+        self.assertEqual(trade.nifty_target_trailing_best_spot, 23290.0)
+        self.assertEqual(trade.nifty_target_trailing_trigger_spot, 23270.0)
+        self.assertIn("target trailing armed", decision.reason.lower())
+
+    def test_nifty_target_trailing_exits_after_reversal_from_best_spot(self) -> None:
+        candles = [
+            Candle(timestamp="2026-05-13T09:15:00", open=23100, high=23120, low=23080, close=23100, volume=1000),
+            Candle(timestamp="2026-05-14T09:15:00", open=23192, high=23205, low=23180, close=23196, volume=1200),
+            Candle(timestamp="2026-05-14T09:16:00", open=23196, high=23290, low=23255, close=23284, volume=1400),
+            Candle(timestamp="2026-05-14T09:17:00", open=23284, high=23310, low=23288, close=23304, volume=1300),
+            Candle(timestamp="2026-05-14T09:18:00", open=23304, high=23306, low=23288, close=23292, volume=1500),
+        ]
+        trade = self._build_trade(
+            entry_time=candles[1].timestamp,
+            entry_spot_price=23192.0,
+            invalidation_level=23140.0,
+            setup_type="bullish_reclaim_watch",
+        )
+        trade.nifty_target_trailing_active = True
+        trade.nifty_target_trailing_best_spot = 23310.0
+        trade.nifty_target_trailing_trigger_spot = 23290.0
+        context = self._build_context(candles, active_trade=trade).model_copy(
+            update={
+                "nifty_heuristic_early_exit_enabled": False,
+                "nifty_target_enabled": True,
+                "nifty_target_points": 90.0,
+                "nifty_target_trailing_enabled": True,
+                "nifty_target_trailing_points": 20.0,
+            }
+        )
+        observation = self._build_observation(atr=25.0)
+
+        decision = self.test_engine.heuristic_engine.manage_active_trade(context, observation, current_trade_price=12.0)
+
+        self.assertEqual(decision.action, TradeAction.exit)
+        self.assertEqual(decision.target_spot_price, 23290.0)
+        self.assertEqual(trade.nifty_target_trailing_best_spot, 23310.0)
+        self.assertEqual(trade.nifty_target_trailing_trigger_spot, 23290.0)
+        self.assertIn("target trailing booked profit", decision.reason.lower())
 
     def test_nifty_bias_filter_blocks_wrong_side_entry_and_pending_setup(self) -> None:
         self.temp_store.save(nifty_trade_bias="long")

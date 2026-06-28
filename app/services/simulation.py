@@ -482,6 +482,12 @@ class SimulationEngine:
     def _nifty_target_points(self) -> float:
         return self.credential_store.get_nifty_target_points(self.settings)
 
+    def _nifty_target_trailing_enabled(self) -> bool:
+        return self.credential_store.get_nifty_target_trailing_enabled(self.settings)
+
+    def _nifty_target_trailing_points(self) -> float:
+        return self.credential_store.get_nifty_target_trailing_points(self.settings)
+
     def _nifty_daily_max_loss_enabled(self) -> bool:
         return self.credential_store.get_nifty_daily_max_loss_enabled(self.settings)
 
@@ -1135,6 +1141,8 @@ class SimulationEngine:
             nifty_max_sl_points=self._nifty_max_sl_points(),
             nifty_target_enabled=self._nifty_target_enabled(),
             nifty_target_points=self._nifty_target_points(),
+            nifty_target_trailing_enabled=self._nifty_target_trailing_enabled(),
+            nifty_target_trailing_points=self._nifty_target_trailing_points(),
             nifty_daily_max_loss_enabled=self._nifty_daily_max_loss_enabled(),
             nifty_daily_max_loss=self._nifty_daily_max_loss(),
             pyramiding_enabled=False if self._stock_derivative_execution_mode_enabled() else self.credential_store.get_pyramiding_enabled(self.settings),
@@ -5256,6 +5264,8 @@ class SimulationEngine:
         nifty_max_sl_points: float | None = None,
         nifty_target_enabled: bool | None = None,
         nifty_target_points: float | None = None,
+        nifty_target_trailing_enabled: bool | None = None,
+        nifty_target_trailing_points: float | None = None,
         nifty_daily_max_loss_enabled: bool | None = None,
         nifty_daily_max_loss: float | None = None,
         pyramiding_enabled: bool | None = None,
@@ -5306,6 +5316,8 @@ class SimulationEngine:
                 nifty_max_sl_points=nifty_max_sl_points,
                 nifty_target_enabled=nifty_target_enabled,
                 nifty_target_points=nifty_target_points,
+                nifty_target_trailing_enabled=nifty_target_trailing_enabled,
+                nifty_target_trailing_points=nifty_target_trailing_points,
                 nifty_daily_max_loss_enabled=nifty_daily_max_loss_enabled,
                 nifty_daily_max_loss=nifty_daily_max_loss,
                 pyramiding_enabled=pyramiding_enabled,
@@ -5501,6 +5513,8 @@ class SimulationEngine:
             nifty_max_sl_points=self._nifty_max_sl_points(),
             nifty_target_enabled=self._nifty_target_enabled(),
             nifty_target_points=self._nifty_target_points(),
+            nifty_target_trailing_enabled=self._nifty_target_trailing_enabled(),
+            nifty_target_trailing_points=self._nifty_target_trailing_points(),
             nifty_daily_max_loss_enabled=self._nifty_daily_max_loss_enabled(),
             nifty_daily_max_loss=self._nifty_daily_max_loss(),
             pyramiding_enabled=False if self._stock_derivative_execution_mode_enabled() else self.credential_store.get_pyramiding_enabled(self.settings),
@@ -7248,8 +7262,48 @@ class SimulationEngine:
             if nifty_trade and self._nifty_target_enabled() and self._nifty_target_points() > 0:
                 target_points = self._nifty_target_points()
                 target_spot = trade.entry_spot_price + target_points if bullish_trade else trade.entry_spot_price - target_points
+                target_trailing_enabled = (
+                    self._nifty_target_trailing_enabled()
+                    and self._nifty_target_trailing_points() > 0
+                )
+                if target_trailing_enabled and trade.nifty_target_trailing_active:
+                    trail_points = self._nifty_target_trailing_points()
+                    previous_best = trade.nifty_target_trailing_best_spot
+                    if previous_best is None:
+                        previous_best = target_spot
+                    best_spot = max(previous_best, ltp) if bullish_trade else min(previous_best, ltp)
+                    trigger_spot = best_spot - trail_points if bullish_trade else best_spot + trail_points
+                    trade.nifty_target_trailing_best_spot = round(best_spot, 2)
+                    trade.nifty_target_trailing_trigger_spot = round(trigger_spot, 2)
+                    trailing_exit = ltp <= trigger_spot if bullish_trade else ltp >= trigger_spot
+                    if trailing_exit:
+                        exit_note = (
+                            f"Nifty target trailing booked profit: target was achieved, best live spot "
+                            f"reached {best_spot:.2f}, and live spot reversed to TG trail trigger "
+                            f"{trigger_spot:.2f}."
+                        )
+                    else:
+                        trade.notes = (
+                            f"Nifty target trailing active; best live spot {best_spot:.2f}, "
+                            f"TG trail trigger {trigger_spot:.2f}."
+                        )
+                        self._mark_state_dirty_locked()
+                        return True
                 target_hit = ltp >= target_spot if bullish_trade else ltp <= target_spot
-                if target_hit:
+                if exit_note is None and target_hit and target_trailing_enabled:
+                    trail_points = self._nifty_target_trailing_points()
+                    best_spot = max(target_spot, ltp) if bullish_trade else min(target_spot, ltp)
+                    trigger_spot = best_spot - trail_points if bullish_trade else best_spot + trail_points
+                    trade.nifty_target_trailing_active = True
+                    trade.nifty_target_trailing_best_spot = round(best_spot, 2)
+                    trade.nifty_target_trailing_trigger_spot = round(trigger_spot, 2)
+                    trade.notes = (
+                        f"Nifty target trailing armed after live spot reached target {target_spot:.2f}; "
+                        f"TG trail trigger is {trigger_spot:.2f}."
+                    )
+                    self._mark_state_dirty_locked()
+                    return True
+                if exit_note is None and target_hit:
                     exit_note = (
                         f"Nifty fixed target control booked profit: live spot {ltp:.2f} reached "
                         f"{target_spot:.2f}, {target_points:.2f} points from entry."

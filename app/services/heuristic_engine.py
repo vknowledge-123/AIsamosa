@@ -6372,12 +6372,96 @@ class HeuristicDecisionEngine:
                 if bullish_trade
                 else trade.entry_spot_price - context.nifty_target_points
             )
+            target_trailing_enabled = (
+                context.nifty_target_trailing_enabled
+                and context.nifty_target_trailing_points > 0
+            )
+            if target_trailing_enabled and trade.nifty_target_trailing_active:
+                previous_best = trade.nifty_target_trailing_best_spot
+                if previous_best is None:
+                    previous_best = target_spot
+                best_spot = (
+                    max(previous_best, context.current_candle.high)
+                    if bullish_trade
+                    else min(previous_best, context.current_candle.low)
+                )
+                trigger_spot = (
+                    best_spot - context.nifty_target_trailing_points
+                    if bullish_trade
+                    else best_spot + context.nifty_target_trailing_points
+                )
+                trade.nifty_target_trailing_best_spot = round(best_spot, 2)
+                trade.nifty_target_trailing_trigger_spot = round(trigger_spot, 2)
+                trailing_exit = (
+                    context.current_candle.low <= trigger_spot
+                    if bullish_trade
+                    else context.current_candle.high >= trigger_spot
+                )
+                if trailing_exit:
+                    return TradeDecision(
+                        action=TradeAction.exit,
+                        confidence=0.95,
+                        reason=(
+                            f"Nifty target trailing booked profit because target was already achieved, "
+                            f"best favorable spot reached {best_spot:.2f}, and price reversed to "
+                            f"the TG trail trigger {trigger_spot:.2f}."
+                        ),
+                        decision_source="heuristic",
+                        option_type=trade.option_type,
+                        target_spot_price=round(trigger_spot, 2),
+                        market_state=observation.day_type,
+                        setup_type=trade.setup_type,
+                        rule_ids_used=["R41", "R42", "R44", "R74", "R99"],
+                    )
+                return TradeDecision(
+                    action=TradeAction.hold,
+                    confidence=0.78,
+                    reason=(
+                        f"Nifty target trailing is active after target {target_spot:.2f}; "
+                        f"best favorable spot is {best_spot:.2f} and TG trail trigger is {trigger_spot:.2f}."
+                    ),
+                    decision_source="heuristic",
+                    option_type=trade.option_type,
+                    target_spot_price=round(trigger_spot, 2),
+                    market_state=observation.day_type,
+                    setup_type=trade.setup_type,
+                    rule_ids_used=["R41", "R42", "R44", "R74", "R99"],
+                )
             target_tagged = (
                 context.current_candle.high >= target_spot
                 if bullish_trade
                 else context.current_candle.low <= target_spot
             )
             if target_tagged:
+                if target_trailing_enabled:
+                    best_spot = (
+                        max(target_spot, context.current_candle.high)
+                        if bullish_trade
+                        else min(target_spot, context.current_candle.low)
+                    )
+                    trigger_spot = (
+                        best_spot - context.nifty_target_trailing_points
+                        if bullish_trade
+                        else best_spot + context.nifty_target_trailing_points
+                    )
+                    trade.nifty_target_trailing_active = True
+                    trade.nifty_target_trailing_best_spot = round(best_spot, 2)
+                    trade.nifty_target_trailing_trigger_spot = round(trigger_spot, 2)
+                    trade.notes = (
+                        f"Nifty target trailing armed after spot reached target {target_spot:.2f}; "
+                        f"TG trail trigger is {trigger_spot:.2f}."
+                    )
+                    return TradeDecision(
+                        action=TradeAction.hold,
+                        confidence=0.8,
+                        reason=trade.notes,
+                        decision_source="heuristic",
+                        option_type=trade.option_type,
+                        target_spot_price=round(trigger_spot, 2),
+                        market_state=observation.day_type,
+                        setup_type=trade.setup_type,
+                        rule_ids_used=["R41", "R42", "R44", "R74", "R99"],
+                    )
                 return TradeDecision(
                     action=TradeAction.exit,
                     confidence=0.95,

@@ -339,6 +339,12 @@
           <label>Nifty Target Points</label>
           <input type="number" name="nifty_target_points" min="0" step="1" value="90" />
           <label class="checkbox-row">
+            <input type="checkbox" name="nifty_target_trailing_enabled" />
+            <span>Enable Nifty Target Trailing</span>
+          </label>
+          <label>Nifty TG Trail Points</label>
+          <input type="number" name="nifty_target_trailing_points" min="0" step="1" value="20" />
+          <label class="checkbox-row">
             <input type="checkbox" name="nifty_daily_max_loss_enabled" />
             <span>Enable Nifty Daily Max Loss Cap</span>
           </label>
@@ -532,6 +538,14 @@
           <div class="list-item">
             <strong>Nifty Target Points</strong>
             <p id="savedNiftyTargetPointsValue">90</p>
+          </div>
+          <div class="list-item">
+            <strong>Nifty Target Trailing</strong>
+            <p id="savedNiftyTargetTrailingValue">Disabled</p>
+          </div>
+          <div class="list-item">
+            <strong>Nifty TG Trail Points</strong>
+            <p id="savedNiftyTargetTrailingPointsValue">20</p>
           </div>
           <div class="list-item">
             <strong>Nifty Daily Max Loss Cap</strong>

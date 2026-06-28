@@ -57,6 +57,8 @@ class CredentialStore:
         nifty_max_sl_points: float | None = None,
         nifty_target_enabled: bool | None = None,
         nifty_target_points: float | None = None,
+        nifty_target_trailing_enabled: bool | None = None,
+        nifty_target_trailing_points: float | None = None,
         nifty_daily_max_loss_enabled: bool | None = None,
         nifty_daily_max_loss: float | None = None,
         pyramiding_enabled: bool | None = None,
@@ -234,6 +236,16 @@ class CredentialStore:
             normalized = round(max(float(nifty_target_points), 0.0), 2)
             if payload.get("nifty_target_points") != normalized:
                 payload["nifty_target_points"] = normalized
+                updated = True
+        if nifty_target_trailing_enabled is not None:
+            normalized = bool(nifty_target_trailing_enabled)
+            if payload.get("nifty_target_trailing_enabled") != normalized:
+                payload["nifty_target_trailing_enabled"] = normalized
+                updated = True
+        if nifty_target_trailing_points is not None:
+            normalized = round(max(float(nifty_target_trailing_points), 0.0), 2)
+            if payload.get("nifty_target_trailing_points") != normalized:
+                payload["nifty_target_trailing_points"] = normalized
                 updated = True
         if nifty_daily_max_loss_enabled is not None:
             normalized = bool(nifty_daily_max_loss_enabled)
@@ -551,6 +563,21 @@ class CredentialStore:
         payload = self.load()
         return self._coerce_float(payload.get("nifty_target_points"), float(settings.nifty_target_points), minimum=0.0)
 
+    def get_nifty_target_trailing_enabled(self, settings: Settings) -> bool:
+        payload = self.load()
+        return self._coerce_bool(
+            payload.get("nifty_target_trailing_enabled"),
+            bool(settings.nifty_target_trailing_enabled),
+        )
+
+    def get_nifty_target_trailing_points(self, settings: Settings) -> float:
+        payload = self.load()
+        return self._coerce_float(
+            payload.get("nifty_target_trailing_points"),
+            float(settings.nifty_target_trailing_points),
+            minimum=0.0,
+        )
+
     def get_nifty_daily_max_loss_enabled(self, settings: Settings) -> bool:
         payload = self.load()
         return self._coerce_bool(
@@ -724,6 +751,8 @@ class CredentialStore:
             nifty_max_sl_points=self.get_nifty_max_sl_points(settings),
             nifty_target_enabled=self.get_nifty_target_enabled(settings),
             nifty_target_points=self.get_nifty_target_points(settings),
+            nifty_target_trailing_enabled=self.get_nifty_target_trailing_enabled(settings),
+            nifty_target_trailing_points=self.get_nifty_target_trailing_points(settings),
             nifty_daily_max_loss_enabled=self.get_nifty_daily_max_loss_enabled(settings),
             nifty_daily_max_loss=self.get_nifty_daily_max_loss(settings),
             pyramiding_enabled=self.get_pyramiding_enabled(settings),
