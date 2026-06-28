@@ -1308,6 +1308,22 @@ class HeuristicDecisionEngine:
             round_level -= round_step
         return round(round_level, 2), round(round_level + 20.0, 2)
 
+    def _nifty_entry_round_level(self, trade: SimulatedTrade) -> float | None:
+        marker = "100-point round band "
+        notes = trade.entry_notes or trade.notes or ""
+        marker_index = notes.find(marker)
+        if marker_index < 0:
+            return None
+        raw = notes[marker_index + len(marker) :].split(" ", 1)[0]
+        try:
+            return float(raw)
+        except ValueError:
+            return None
+
+    def _nifty_major_round_level(self, level: float) -> bool:
+        rounded = int(round(level))
+        return rounded % 300 == 0 or rounded % 500 == 0
+
     def _nifty_late_entry_round_band_note(self, context: StrategyContext, option_type: str, spot_price: float) -> str | None:
         if not self._is_nifty_mode(context):
             return None

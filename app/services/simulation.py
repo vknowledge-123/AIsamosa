@@ -188,6 +188,7 @@ class SimulationEngine:
         self._stock_quote_subscriptions: dict[str, tuple] = {}
         self._stock_symbol_by_security_id: dict[str, str] = {}
         self._live_cumulative_volume_by_security_id: dict[str, tuple[date, float]] = {}
+        self._stock_current_day_fill_inflight: set[str] = set()
         self.stock_watchlist: dict[str, InstrumentSpec] = {}
         self.stock_watch_meta: dict[str, dict] = {}
         self.stock_sessions: dict[str, StockRuntimeSession] = {}
@@ -657,7 +658,7 @@ class SimulationEngine:
             spec,
             previous_candidate,
         )
-        return DhanSessionBundle(
+        bundle = DhanSessionBundle(
             previous_day_candles=previous_candles,
             intraday_candles=replay_candles,
             live_open_candle=None,
@@ -666,6 +667,7 @@ class SimulationEngine:
             intraday_source=replay_source,
             previous_context_day=previous_context_day,
         )
+        return self._augment_nifty_advance_previous_context(provider, client_id, access_token, spec, bundle)
 
     def _fetch_nifty_and_banknifty_historical_bundles_with_previous_fallback(
         self,
@@ -762,24 +764,29 @@ class SimulationEngine:
         spec: InstrumentSpec,
         *,
         prefer_last_closed_session_before_open: bool = False,
+        market_now: datetime | None = None,
     ) -> DhanSessionBundle:
         if provider == "zerodha":
-            return self.zerodha_chart_service.fetch_market_context(
+            bundle = self.zerodha_chart_service.fetch_market_context(
                 key,
                 token,
                 symbol=spec.symbol,
                 tradingsymbol=spec.symbol,
                 exchange_segment=spec.exchange_segment,
                 prefer_last_closed_session_before_open=prefer_last_closed_session_before_open,
+                market_now=market_now,
             )
-        return self.chart_service.fetch_market_context(
-            client_id=key,
-            access_token=token,
-            security_id=spec.security_id,
-            exchange_segment=spec.exchange_segment,
-            instrument_type=spec.instrument_type,
-            prefer_last_closed_session_before_open=prefer_last_closed_session_before_open,
-        )
+        else:
+            bundle = self.chart_service.fetch_market_context(
+                client_id=key,
+                access_token=token,
+                security_id=spec.security_id,
+                exchange_segment=spec.exchange_segment,
+                instrument_type=spec.instrument_type,
+                prefer_last_closed_session_before_open=prefer_last_closed_session_before_open,
+                market_now=market_now,
+            )
+        return self._augment_nifty_advance_previous_context(provider, key, token, spec, bundle)
 
     def _fetch_market_context_for_spec_days(
         self,
@@ -792,7 +799,7 @@ class SimulationEngine:
         previous_context_day: date,
     ) -> DhanSessionBundle:
         if provider == "zerodha":
-            return self.zerodha_chart_service.fetch_market_context_for_days(
+            bundle = self.zerodha_chart_service.fetch_market_context_for_days(
                 key,
                 token,
                 session_day=session_day,
@@ -801,15 +808,17 @@ class SimulationEngine:
                 tradingsymbol=spec.symbol,
                 exchange_segment=spec.exchange_segment,
             )
-        return self.chart_service.fetch_market_context_for_days(
-            client_id=key,
-            access_token=token,
-            session_day=session_day,
-            previous_context_day=previous_context_day,
-            security_id=spec.security_id,
-            exchange_segment=spec.exchange_segment,
-            instrument_type=spec.instrument_type,
-        )
+        else:
+            bundle = self.chart_service.fetch_market_context_for_days(
+                client_id=key,
+                access_token=token,
+                session_day=session_day,
+                previous_context_day=previous_context_day,
+                security_id=spec.security_id,
+                exchange_segment=spec.exchange_segment,
+                instrument_type=spec.instrument_type,
+            )
+        return self._augment_nifty_advance_previous_context(provider, key, token, spec, bundle)
 
     def _fetch_session_day_candles_for_spec(
         self,
@@ -861,6 +870,60 @@ class SimulationEngine:
             session_day,
             spec.exchange_segment,
             spec.instrument_type,
+        )
+
+    def _nifty_multiday_previous_context_days(self) -> int:
+        return 5
+
+    def _augment_nifty_advance_previous_context(
+        self,
+        provider: str,
+        key: str,
+        token: str,
+        spec: InstrumentSpec,
+        bundle: DhanSessionBundle,
+    ) -> DhanSessionBundle:
+        if (
+            self.operating_mode not in {OperatingMode.heuristic, OperatingMode.heuristic_advance}
+            or spec.symbol != "NIFTY"
+            or not spec.supports_options
+            or bundle.replay_session_day is None
+        ):
+            return bundle
+        target_days = self._nifty_multiday_previous_context_days()
+        sessions: dict[date, list[Candle]] = {}
+        if bundle.previous_context_day is not None and bundle.previous_day_candles:
+            sessions[bundle.previous_context_day] = [candle.model_copy(deep=True) for candle in bundle.previous_day_candles]
+        candidate_day = self.chart_service._previous_trading_day(bundle.previous_context_day or bundle.replay_session_day)
+        attempts = 0
+        while len(sessions) < target_days and attempts < target_days + 10:
+            attempts += 1
+            try:
+                candles, _, actual_day = self._fetch_latest_session_day_candles_for_spec(
+                    provider,
+                    key,
+                    token,
+                    spec,
+                    candidate_day,
+                )
+            except Exception:
+                break
+            if actual_day not in sessions:
+                sessions[actual_day] = [candle.model_copy(deep=True) for candle in candles]
+            candidate_day = self.chart_service._previous_trading_day(actual_day)
+        if len(sessions) <= 1:
+            return bundle
+        previous_candles: list[Candle] = []
+        for day in sorted(sessions):
+            previous_candles.extend(sessions[day])
+        return DhanSessionBundle(
+            previous_day_candles=previous_candles,
+            intraday_candles=bundle.intraday_candles,
+            live_open_candle=bundle.live_open_candle,
+            previous_day_source=f"{bundle.previous_day_source}+5-session-context",
+            replay_session_day=bundle.replay_session_day,
+            intraday_source=bundle.intraday_source,
+            previous_context_day=bundle.previous_context_day,
         )
 
     def zerodha_login_url(self) -> str:
@@ -1981,6 +2044,21 @@ class SimulationEngine:
             self._resolve_watchlist_symbol_if_needed(symbol)
             self._schedule_watchlist_subscription_refresh()
             if self._stock_session_has_ready_history(symbol):
+                if client_id and access_token:
+                    now = self._market_now()
+                    with self.lock:
+                        needs_today_fill = self._stock_session_needs_current_day_fill_locked(symbol, now)
+                    if needs_today_fill:
+                        self._fill_current_day_missing_stock_candles(
+                            symbol,
+                            client_id=client_id,
+                            access_token=access_token,
+                            provider=provider,
+                            allow_early_catchup_entries=self._current_day_catchup_allows_entries(now),
+                            reason="watchlist add",
+                            market_now=now,
+                        )
+                        return
                 with self.lock:
                     session = self.stock_sessions.get(symbol)
                     meta = self.stock_watch_meta.setdefault(symbol, {})
@@ -1998,7 +2076,13 @@ class SimulationEngine:
                     self._mark_state_dirty_locked()
                 return
             if client_id and access_token:
-                self._sync_stock_symbol_now(symbol, client_id=client_id, access_token=access_token, provider=provider)
+                self._sync_stock_symbol_now(
+                    symbol,
+                    client_id=client_id,
+                    access_token=access_token,
+                    provider=provider,
+                    allow_early_catchup_entries=self._current_day_catchup_allows_entries(),
+                )
             else:
                 with self.lock:
                     spec = self.stock_watchlist.get(symbol)
@@ -2042,6 +2126,202 @@ class SimulationEngine:
                     return False
             return True
 
+    def _market_time_is_at_or_before(self, stamp: datetime, hour: int, minute: int) -> bool:
+        return stamp.time() <= stamp.replace(hour=hour, minute=minute, second=0, microsecond=0).time()
+
+    def _current_day_catchup_allows_entries(self, stamp: datetime | None = None) -> bool:
+        now = stamp or self._market_now()
+        session_open = now.replace(hour=9, minute=15, second=0, microsecond=0)
+        session_cutoff = now.replace(hour=9, minute=25, second=0, microsecond=0)
+        return session_open <= now <= session_cutoff
+
+    def _stock_session_needs_current_day_fill_locked(self, symbol: str, market_now: datetime | None = None) -> bool:
+        session = self.stock_sessions.get(symbol)
+        if session is None or session.data_sync.status != "ready":
+            return False
+        now = market_now or self._market_now()
+        if now.weekday() >= 5:
+            return False
+        market_open_time = now.replace(hour=9, minute=15, second=0, microsecond=0).time()
+        market_close_time = now.replace(hour=15, minute=30, second=0, microsecond=0).time()
+        if now.time() < market_open_time or now.time() > market_close_time:
+            return False
+        today = now.date()
+        closed_today = [candle for candle in session.candles if candle.timestamp.date() == today]
+        if not closed_today:
+            return True
+        latest_closed = max(candle.timestamp for candle in closed_today)
+        expected_latest = now.replace(second=0, microsecond=0) - timedelta(minutes=1)
+        market_open = now.replace(hour=9, minute=15, second=0, microsecond=0)
+        if expected_latest < market_open:
+            return False
+        return latest_closed < expected_latest
+
+    def _apply_current_day_stock_fill_bundle(
+        self,
+        symbol: str,
+        bundle: DhanSessionBundle,
+        *,
+        allow_early_catchup_entries: bool,
+    ) -> None:
+        def operation():
+            with self.lock:
+                if self.active_trade is not None:
+                    return
+                before_count = len(self.candles)
+                existing_timestamps = {candle.timestamp for candle in self.candles}
+                evaluation_start_index = 0
+                if bundle.replay_session_day is not None:
+                    existing_today = [
+                        index
+                        for index, candle in enumerate(self.candles)
+                        if candle.timestamp.date() == bundle.replay_session_day
+                    ]
+                    if existing_today:
+                        evaluation_start_index = min(existing_today)
+                    else:
+                        evaluation_start_index = len(self.candles)
+                result = self._load_dhan_bundle(bundle, replay_from_session_start=False)
+                if result is None:
+                    return
+                evaluation_end_index = result
+                if before_count and evaluation_start_index < before_count:
+                    first_new_timestamp = None
+                    for candle in bundle.intraday_candles:
+                        if candle.timestamp not in existing_timestamps:
+                            first_new_timestamp = candle.timestamp
+                            break
+                    if first_new_timestamp is not None:
+                        evaluation_start_index = next(
+                            (
+                                index
+                                for index, candle in enumerate(self.candles)
+                                if candle.timestamp == first_new_timestamp
+                            ),
+                            evaluation_start_index,
+                        )
+
+            if allow_early_catchup_entries:
+                for index in range(evaluation_start_index, evaluation_end_index + 1):
+                    with self.lock:
+                        if self.active_trade is not None:
+                            break
+                    self._evaluate_index(index, source="live" if self._live_execution_armed() else "sync")
+            elif evaluation_end_index is not None:
+                self._evaluate_index(evaluation_end_index, source="sync")
+
+        self._run_in_stock_session(symbol, operation)
+        with self.lock:
+            session = self.stock_sessions.get(symbol)
+            if session is not None:
+                self.stock_watch_meta.setdefault(symbol, {}).update(
+                    {
+                        "history_status": "ready",
+                        "previous_day_candles": session.data_sync.previous_day_candles,
+                        "intraday_candles": session.data_sync.intraday_candles,
+                        "total_loaded": session.data_sync.total_loaded,
+                    }
+                )
+                if symbol == self.selected_stock_symbol:
+                    self.data_sync = session.data_sync.model_copy(deep=True)
+            self._mark_state_dirty_locked()
+
+    def _fill_current_day_missing_stock_candles(
+        self,
+        symbol: str,
+        *,
+        client_id: str,
+        access_token: str,
+        provider: str,
+        allow_early_catchup_entries: bool,
+        reason: str,
+        market_now: datetime | None = None,
+    ) -> None:
+        spec = self._resolve_watchlist_symbol_if_needed(symbol)
+        if provider != "zerodha" and not spec.security_id:
+            raise ValueError(f"Could not resolve a Dhan NSE cash security id for {symbol}.")
+        now = market_now or self._market_now()
+        with self.lock:
+            if not self._stock_session_needs_current_day_fill_locked(symbol, now):
+                return
+            self.stock_watch_meta.setdefault(symbol, {})["history_status"] = "syncing"
+            self.rulebook_service.learning_log.insert(
+                0,
+                f"Filling missing current-day candles for {symbol} via {self._history_broker_label(provider)} REST ({reason}).",
+            )
+            self._mark_state_dirty_locked()
+        bundle = self._fetch_market_context_for_spec(
+            provider,
+            client_id,
+            access_token,
+            spec,
+            prefer_last_closed_session_before_open=False,
+            market_now=now,
+        )
+        self._apply_current_day_stock_fill_bundle(
+            symbol,
+            bundle,
+            allow_early_catchup_entries=allow_early_catchup_entries,
+        )
+
+    def _start_current_day_stock_fill_async(
+        self,
+        symbols: list[str],
+        *,
+        reason: str,
+        allow_early_catchup_entries: bool | None = None,
+    ) -> None:
+        try:
+            provider, client_id, access_token = self._history_provider_credentials()
+        except ValueError:
+            return
+        now = self._market_now()
+        allow_entries = self._current_day_catchup_allows_entries(now) if allow_early_catchup_entries is None else allow_early_catchup_entries
+        with self.lock:
+            pending = []
+            for symbol in dict.fromkeys(symbols):
+                if not symbol or symbol in self._stock_current_day_fill_inflight:
+                    continue
+                if not self._stock_session_needs_current_day_fill_locked(symbol, now):
+                    continue
+                self._stock_current_day_fill_inflight.add(symbol)
+                pending.append(symbol)
+        if not pending:
+            return
+
+        def worker() -> None:
+            try:
+                with ThreadPoolExecutor(max_workers=self._max_stock_sync_workers(len(pending))) as executor:
+                    futures = [
+                        executor.submit(
+                            self._fill_current_day_missing_stock_candles,
+                            symbol,
+                            client_id=client_id,
+                            access_token=access_token,
+                            provider=provider,
+                            allow_early_catchup_entries=allow_entries,
+                            reason=reason,
+                            market_now=now,
+                        )
+                        for symbol in pending
+                    ]
+                    for future in as_completed(futures):
+                        future.result()
+            except Exception as exc:
+                with self.lock:
+                    self.rulebook_service.learning_log.insert(0, f"Current-day candle filler failed: {exc}")
+                    self._mark_state_dirty_locked()
+            finally:
+                with self.lock:
+                    for symbol in pending:
+                        self._stock_current_day_fill_inflight.discard(symbol)
+
+        threading.Thread(
+            target=worker,
+            name=f"stock-current-day-fill-{reason.replace(' ', '-').lower()}",
+            daemon=True,
+        ).start()
+
     def _resolve_watchlist_symbol_if_needed(self, symbol: str) -> InstrumentSpec:
         with self.lock:
             spec = self.stock_watchlist[symbol]
@@ -2072,7 +2352,15 @@ class SimulationEngine:
             self._mark_state_dirty_locked()
             return updated_spec
 
-    def _sync_stock_symbol_now(self, symbol: str, *, client_id: str, access_token: str, provider: str = "dhan") -> None:
+    def _sync_stock_symbol_now(
+        self,
+        symbol: str,
+        *,
+        client_id: str,
+        access_token: str,
+        provider: str = "dhan",
+        allow_early_catchup_entries: bool = False,
+    ) -> None:
         spec = self._resolve_watchlist_symbol_if_needed(symbol)
         if provider != "zerodha" and not spec.security_id:
             raise ValueError(f"Could not resolve a Dhan NSE cash security id for {symbol}.")
@@ -2083,7 +2371,14 @@ class SimulationEngine:
             spec,
             prefer_last_closed_session_before_open=True,
         )
-        self._apply_bundle_to_stock_session(symbol, bundle, replay_from_session_start=False)
+        if allow_early_catchup_entries:
+            self._apply_current_day_stock_fill_bundle(
+                symbol,
+                bundle,
+                allow_early_catchup_entries=True,
+            )
+        else:
+            self._apply_bundle_to_stock_session(symbol, bundle, replay_from_session_start=False)
         with self.lock:
             self.stock_watch_meta.setdefault(symbol, {}).update(
                 {
@@ -2510,6 +2805,18 @@ class SimulationEngine:
         latest = context.current_candle
         gap_up = first.open > context.previous_day.close
         gap_down = first.open < context.previous_day.close
+        setup_type = (decision.setup_type or "").lower()
+        if setup_type.startswith("carry_forward_gmma_obv_") and not self._current_day_catchup_allows_entries(latest.timestamp):
+            blocked = decision.model_copy(deep=True)
+            blocked.action = TradeAction.no_trade
+            blocked.confidence = min(blocked.confidence, 0.35)
+            blocked.decision_source = f"{decision.decision_source}-carry-forward-cutoff"
+            blocked.pending_setup_action = "NONE"
+            blocked.reason = (
+                "Heuristic Advance carry-forward entry blocked after 09:25. "
+                "After the early catch-up window, only fresh live GMMA/OBV crossovers are allowed."
+            )
+            return blocked
 
         if decision.action == TradeAction.enter_put:
             if not gap_down:
@@ -2521,7 +2828,6 @@ class SimulationEngine:
                 ).strip()
                 return passed
 
-            setup_type = (decision.setup_type or "").lower()
             if setup_type == "carry_forward_gmma_obv_short" and latest.close > first.high:
                 blocked = decision.model_copy(deep=True)
                 blocked.action = TradeAction.no_trade
@@ -2575,7 +2881,6 @@ class SimulationEngine:
             ).strip()
             return passed
 
-        setup_type = (decision.setup_type or "").lower()
         if setup_type == "carry_forward_gmma_obv_long" and latest.close < first.low:
             blocked = decision.model_copy(deep=True)
             blocked.action = TradeAction.no_trade
@@ -2618,6 +2923,154 @@ class SimulationEngine:
             f"{passed.reason} Gap-up acceptance confirmed by close above first candle high {first.high:.2f}; "
             f"2-minute turnover gate passed with {self._format_crore(snapshot.turnover)} turnover."
         ).strip()
+        return passed
+
+    def _nifty_advance_gap_threshold(self, context: StrategyContext) -> float:
+        reference = context.previous_day_candles[-40:] if context.previous_day_candles else context.session_candles[-20:]
+        if reference:
+            avg_range = sum(max(candle.high - candle.low, 0.01) for candle in reference) / len(reference)
+        else:
+            avg_range = 20.0
+        return max(avg_range * 1.5, 20.0)
+
+    @staticmethod
+    def _dedupe_price_levels(levels: list[tuple[str, float]], tolerance: float = 2.0) -> list[tuple[str, float]]:
+        deduped: list[tuple[str, float]] = []
+        for label, level in sorted(levels, key=lambda item: item[1]):
+            if any(abs(level - existing_level) <= tolerance for _, existing_level in deduped):
+                continue
+            deduped.append((label, round(level, 2)))
+        return deduped
+
+    def _nifty_advance_liquidity_levels(self, context: StrategyContext) -> tuple[list[tuple[str, float]], list[tuple[str, float]]]:
+        previous = list(context.previous_day_candles)
+        if not previous:
+            return [], []
+        supports: list[tuple[str, float]] = []
+        resistances: list[tuple[str, float]] = []
+        sessions: dict[date, list[Candle]] = {}
+        for candle in previous:
+            sessions.setdefault(candle.timestamp.date(), []).append(candle)
+        for session_day, candles in sorted(sessions.items()):
+            if not candles:
+                continue
+            day_label = session_day.strftime("%d %b")
+            resistances.append((f"{day_label} day high", round(max(candle.high for candle in candles), 2)))
+            supports.append((f"{day_label} day low", round(min(candle.low for candle in candles), 2)))
+        five_minute = self._aggregate_candles(previous, 5)
+        for index in range(1, len(five_minute) - 1):
+            prev_candle = five_minute[index - 1]
+            candle = five_minute[index]
+            next_candle = five_minute[index + 1]
+            if candle.high >= prev_candle.high and candle.high >= next_candle.high:
+                resistances.append((f"5m swing high {candle.timestamp.strftime('%d %b %H:%M')}", round(candle.high, 2)))
+            if candle.low <= prev_candle.low and candle.low <= next_candle.low:
+                supports.append((f"5m swing low {candle.timestamp.strftime('%d %b %H:%M')}", round(candle.low, 2)))
+        all_candles = previous + list(context.session_candles)
+        if all_candles:
+            low = min(candle.low for candle in all_candles)
+            high = max(candle.high for candle in all_candles)
+            start = int(low // 100) * 100
+            end = int(high // 100 + 1) * 100
+            for level in range(start, end + 1, 100):
+                if low - 50 <= level <= high + 50:
+                    supports.append((f"100-point round shelf {level}", float(level)))
+                    resistances.append((f"100-point round shelf {level}", float(level)))
+        return self._dedupe_price_levels(supports), self._dedupe_price_levels(resistances)
+
+    def _nifty_advance_recent_liquidity_bias(self, context: StrategyContext) -> tuple[str | None, str]:
+        session = context.session_candles
+        if not session:
+            return None, ""
+        latest = context.current_candle
+        recent = session[-3:]
+        recent_high = max(candle.high for candle in recent)
+        recent_low = min(candle.low for candle in recent)
+        supports, resistances = self._nifty_advance_liquidity_levels(context)
+        tolerance = max(self._nifty_advance_gap_threshold(context) * 0.35, 10.0)
+        nearest_support = sorted(supports, key=lambda item: abs(item[1] - latest.close))[:12]
+        nearest_resistance = sorted(resistances, key=lambda item: abs(item[1] - latest.close))[:12]
+        for label, level in nearest_support:
+            if recent_low <= level - tolerance and latest.close > level:
+                return "long", f"{label} {level:.2f} was swept and reclaimed."
+        for label, level in nearest_resistance:
+            if recent_high >= level + tolerance and latest.close < level:
+                return "short", f"{label} {level:.2f} was swept and rejected."
+        return None, ""
+
+    def _apply_heuristic_advance_nifty_regime_filter_locked(
+        self,
+        context: StrategyContext,
+        decision: TradeDecision,
+    ) -> TradeDecision:
+        if (
+            self.operating_mode != OperatingMode.heuristic_advance
+            or self.instrument_mode != InstrumentMode.nifty
+            or self.instrument_spec.symbol != "NIFTY"
+            or decision.action not in {TradeAction.enter_call, TradeAction.enter_put}
+            or not context.session_candles
+            or not context.previous_day.close
+        ):
+            return decision
+        first = context.session_candles[0]
+        latest = context.current_candle
+        gap = first.open - context.previous_day.close
+        gap_threshold = self._nifty_advance_gap_threshold(context)
+        gap_up = gap >= gap_threshold
+        gap_down = gap <= -gap_threshold
+        if not gap_up and not gap_down:
+            return decision
+        liquidity_bias, liquidity_reason = self._nifty_advance_recent_liquidity_bias(context)
+        long_entry = decision.action == TradeAction.enter_call
+        short_entry = decision.action == TradeAction.enter_put
+        accepted_above_first_high = latest.close > first.high
+        accepted_below_first_low = latest.close < first.low
+
+        def block(reason: str, suffix: str) -> TradeDecision:
+            blocked = decision.model_copy(deep=True)
+            blocked.action = TradeAction.no_trade
+            blocked.confidence = min(blocked.confidence, 0.42)
+            blocked.decision_source = f"{decision.decision_source}-{suffix}"
+            blocked.pending_setup_action = "NONE"
+            blocked.reason = reason
+            return blocked
+
+        if gap_up:
+            if long_entry and liquidity_bias != "long" and not accepted_above_first_high:
+                return block(
+                    f"NIFTY Advance gap-up regime blocked long: open gap was {gap:.2f} points, "
+                    f"but price has not accepted above first candle high {first.high:.2f} and no five-session "
+                    "sell-side liquidity sweep/reclaim is visible.",
+                    "nifty-gapup-regime",
+                )
+            if short_entry and liquidity_bias != "short" and not accepted_below_first_low:
+                return block(
+                    f"NIFTY Advance gap-up regime blocked short: open gap was {gap:.2f} points, "
+                    f"but price has not accepted below first candle low {first.low:.2f} and no five-session "
+                    "buy-side liquidity sweep/rejection is visible.",
+                    "nifty-gapup-regime",
+                )
+        if gap_down:
+            if short_entry and liquidity_bias != "short" and not accepted_below_first_low:
+                return block(
+                    f"NIFTY Advance gap-down regime blocked short: open gap was {gap:.2f} points, "
+                    f"but price has not accepted below first candle low {first.low:.2f} and no five-session "
+                    "buy-side liquidity sweep/rejection is visible.",
+                    "nifty-gapdown-regime",
+                )
+            if long_entry and liquidity_bias != "long" and not accepted_above_first_high:
+                return block(
+                    f"NIFTY Advance gap-down regime blocked long: open gap was {gap:.2f} points, "
+                    f"but price has not accepted above first candle high {first.high:.2f} and no five-session "
+                    "sell-side liquidity sweep/reclaim is visible.",
+                    "nifty-gapdown-regime",
+                )
+        passed = decision.model_copy(deep=True)
+        if liquidity_reason:
+            passed.reason = f"{passed.reason} NIFTY Advance gap regime bias confirmed: {liquidity_reason}".strip()
+        else:
+            boundary = "first candle high" if long_entry else "first candle low"
+            passed.reason = f"{passed.reason} NIFTY Advance gap regime accepted beyond {boundary}.".strip()
         return passed
 
     def _apply_stock_trade_bias_filter_locked(self, decision: TradeDecision) -> TradeDecision:
@@ -3552,6 +4005,7 @@ class SimulationEngine:
                     trade.current_option_price = fill_price
                     trade.current_quote_source = "dhan-order-update"
                     trade.current_quote_time = datetime.now()
+                    self._apply_nifty_advance_pyramid_protection_locked(trade)
                     trade.pnl = self.calculate_trade_pnl(trade, trade.current_price)
                 return
             if order_id == matched_leg.broker_exit_order_id:
@@ -5235,6 +5689,7 @@ class SimulationEngine:
         retry_attempt: int = 0,
         next_retry_at: datetime | None = None,
     ) -> None:
+        fill_symbols: list[str] = []
         with self.lock:
             self.live_feed.status = status
             self.live_feed.connected = status == "connected"
@@ -5248,7 +5703,14 @@ class SimulationEngine:
             if status == "connected":
                 self.live_feed.error = None
                 self._sync_active_trade_subscription_locked()
+                if self.instrument_mode == InstrumentMode.stock:
+                    fill_symbols = list(self.stock_watchlist.keys())
             self._mark_state_dirty_locked()
+        if fill_symbols:
+            self._start_current_day_stock_fill_async(
+                fill_symbols,
+                reason="websocket connected",
+            )
 
     def handle_live_packet(self, packet: dict) -> None:
         packet_key = str(packet.get("security_id") or packet.get("type") or "")
@@ -5348,6 +5810,7 @@ class SimulationEngine:
     def _handle_live_packet_now(self, packet: dict) -> None:
         evaluation_index = None
         evaluation_symbol: str | None = None
+        current_day_fill_symbol: str | None = None
         live_trade_control_check: tuple[float, datetime] | None = None
         option_loss_cap_exit: tuple[Candle, str] | None = None
         option_position_loss_check: datetime | None = None
@@ -5424,6 +5887,8 @@ class SimulationEngine:
                     meta["last_ltp"] = ltp
                     meta["last_tick_at"] = tick_time
                     meta["ticks_received"] = meta.get("ticks_received", 0) + 1
+                    if self._stock_session_needs_current_day_fill_locked(matched_symbol, tick_time):
+                        current_day_fill_symbol = matched_symbol
                     self._mark_state_dirty_locked()
                 if matched_symbol is not None and matched_symbol != self.selected_stock_symbol:
                     self._update_nonselected_stock_tick(matched_symbol, tick_time, ltp, volume_delta)
@@ -5457,6 +5922,11 @@ class SimulationEngine:
             if self._check_position_max_loss(control_time):
                 return
             self._check_global_mtm_square_off(control_time)
+        if current_day_fill_symbol is not None:
+            self._start_current_day_stock_fill_async(
+                [current_day_fill_symbol],
+                reason="first live tick after missing candles",
+            )
         if evaluation_index is not None:
             self._queue_live_evaluation(evaluation_symbol, evaluation_index)
 
@@ -5637,6 +6107,7 @@ class SimulationEngine:
                 decision = self._apply_stock_trade_bias_filter_locked(decision)
                 decision = self._apply_nifty_trade_bias_filter_locked(decision)
                 decision = self._apply_heuristic_advance_stock_entry_filter_locked(snapshot, decision)
+                decision = self._apply_heuristic_advance_nifty_regime_filter_locked(snapshot, decision)
                 decision = self._apply_stock_turnover_filter_locked(snapshot.current_candle, decision)
                 decision = self._apply_nifty_daily_loss_cap_filter_locked(snapshot.current_candle, decision, source)
                 self.decision = decision
@@ -6540,6 +7011,77 @@ class SimulationEngine:
     def _is_bullish_spot_trade_direction(self, direction: str) -> bool:
         return direction in {"LONG_CALL", "LONG_STOCK", "SHORT_PUT"}
 
+    def _nifty_advance_mode_active(self) -> bool:
+        return (
+            self.instrument_mode == InstrumentMode.nifty
+            and self.instrument_spec.symbol == "NIFTY"
+            and self.operating_mode == OperatingMode.heuristic_advance
+        )
+
+    def _nifty_fixed_quantity_mode_active(self) -> bool:
+        return (
+            self.instrument_mode == InstrumentMode.nifty
+            and self.instrument_spec.symbol == "NIFTY"
+            and self.operating_mode in {OperatingMode.heuristic, OperatingMode.heuristic_advance}
+        )
+
+    def _nifty_advance_trade_record(self, trade: SimulatedTrade | None) -> bool:
+        return bool(
+            trade is not None
+            and trade.instrument_mode == InstrumentMode.nifty
+            and self.operating_mode == OperatingMode.heuristic_advance
+        )
+
+    def _apply_nifty_advance_pyramid_protection_locked(self, trade: SimulatedTrade | None) -> bool:
+        if not self._nifty_advance_trade_record(trade):
+            return False
+        add_count = max(int(trade.pyramid_count or 0), 0)
+        if add_count <= 0 or trade.entry_spot_price is None:
+            return False
+        entry_spot = round(float(trade.entry_spot_price), 2)
+        bullish_spot = self._is_bullish_spot_trade_direction(trade.direction)
+        if add_count >= 2:
+            protected_invalidation = entry_spot
+            note = "NIFTY advance second pyramid add completed; cost SL is active."
+        else:
+            first_add_leg = next(
+                (
+                    leg
+                    for leg in sorted(trade.pyramid_legs, key=lambda item: item.add_number)
+                    if leg.status in {"OPEN", "PENDING"} and leg.entry_spot_price is not None
+                ),
+                None,
+            )
+            add_reference_spot = round(float(first_add_leg.entry_spot_price), 2) if first_add_leg else entry_spot
+            protected_invalidation = (
+                round(add_reference_spot - 30.0, 2)
+                if bullish_spot
+                else round(add_reference_spot + 30.0, 2)
+            )
+            note = "NIFTY advance first pyramid add completed; max SL is capped to 30 points from first add."
+        current_invalidation = trade.invalidation_level
+        if current_invalidation is not None:
+            if bullish_spot:
+                protected_invalidation = max(float(current_invalidation), protected_invalidation)
+            else:
+                protected_invalidation = min(float(current_invalidation), protected_invalidation)
+        protected_invalidation = round(protected_invalidation, 2)
+        if trade.invalidation_level == protected_invalidation:
+            return False
+        trade.invalidation_level = protected_invalidation
+        if trade.price_mode == "option":
+            next_stop = round(self.price_option(protected_invalidation, trade.strike, trade.option_type), 2)
+        else:
+            next_stop = protected_invalidation
+        if trade.stop_price:
+            trade.stop_price = round(max(trade.stop_price, next_stop) if bullish_spot else min(trade.stop_price, next_stop), 2)
+        else:
+            trade.stop_price = next_stop
+        trade.stop_option_price = trade.stop_price
+        trade.notes = f"{trade.notes} {note}".strip()
+        trade.entry_notes = f"{trade.entry_notes} {note}".strip()
+        return True
+
     def _live_ltp_crossed_invalidation(self, trade: SimulatedTrade | None, ltp: float) -> bool:
         if trade is None or trade.invalidation_level is None:
             return False
@@ -6835,6 +7377,22 @@ class SimulationEngine:
     ) -> float | None:
         if self.instrument_mode != InstrumentMode.nifty or self.instrument_spec.symbol != "NIFTY":
             return invalidation_level
+        if self._nifty_advance_mode_active():
+            if abs(entry_spot) < 10000:
+                return invalidation_level
+            max_initial_sl_points = 25.0
+            bullish_signal = signal_option_type == "CE"
+            if invalidation_level is None:
+                return round(entry_spot - max_initial_sl_points, 2) if bullish_signal else round(entry_spot + max_initial_sl_points, 2)
+            if bullish_signal:
+                distance = entry_spot - invalidation_level
+                if distance <= 0 or distance > max_initial_sl_points:
+                    return round(entry_spot - max_initial_sl_points, 2)
+                return round(invalidation_level, 2)
+            distance = invalidation_level - entry_spot
+            if distance <= 0 or distance > max_initial_sl_points:
+                return round(entry_spot + max_initial_sl_points, 2)
+            return round(invalidation_level, 2)
         if invalidation_level is None or abs(entry_spot) < 10000:
             return invalidation_level
         min_sl_points = max(self._nifty_min_sl_points(), 0.0)
@@ -7057,6 +7615,7 @@ class SimulationEngine:
                 self.advanced_indicator_engine,
                 context.previous_day_candles + context.session_candles,
             )
+            decision = self._block_nifty_advance_carry_forward_decision(context, decision)
             if context.instrument.supports_options and decision.action in {TradeAction.enter_call, TradeAction.enter_put}:
                 decision.strike = decision.strike or self.select_itm_strike(context.current_candle.close, decision.option_type or "CE")
             return decision
@@ -7071,6 +7630,30 @@ class SimulationEngine:
             decision.strike = decision.strike or self.select_itm_strike(context.current_candle.close, decision.option_type or "CE")
         return decision
 
+    def _block_nifty_advance_carry_forward_decision(
+        self,
+        context: StrategyContext,
+        decision: TradeDecision,
+    ) -> TradeDecision:
+        if (
+            self.operating_mode != OperatingMode.heuristic_advance
+            or context.instrument.mode != InstrumentMode.nifty
+            or context.instrument.symbol != "NIFTY"
+            or decision.action not in {TradeAction.enter_call, TradeAction.enter_put}
+            or not (decision.setup_type or "").lower().startswith("carry_forward_gmma_obv_")
+        ):
+            return decision
+        blocked = decision.model_copy(deep=True)
+        blocked.action = TradeAction.no_trade
+        blocked.confidence = min(blocked.confidence, 0.35)
+        blocked.decision_source = f"{decision.decision_source}-nifty-live-cross-only"
+        blocked.pending_setup_action = "NONE"
+        blocked.reason = (
+            "NIFTY Heuristic Advance does not trade previous-day GMMA/OBV carry-forward crossovers. "
+            "Waiting for a fresh live-market GMMA/OBV crossover."
+        )
+        return blocked
+
     def _should_send_live_orders(self, source: str) -> bool:
         return (
             source == "live"
@@ -7081,6 +7664,8 @@ class SimulationEngine:
         )
 
     def _resolve_trade_quantity(self, current_spot: float, is_option_trade: bool) -> int:
+        if self._nifty_fixed_quantity_mode_active():
+            return 32
         if is_option_trade:
             return max(self.settings.simulation_lot_size * self._nifty_order_lots(), self.settings.simulation_lot_size)
         return max(int(self._stock_trade_capital() // max(current_spot, 0.01)), 1)
@@ -7708,6 +8293,7 @@ class SimulationEngine:
         trade.current_price = add_price
         trade.current_option_price = add_price
         trade.current_quote_time = current_candle.timestamp
+        self._apply_nifty_advance_pyramid_protection_locked(trade)
         trade.pnl = self.calculate_trade_pnl(trade, add_price)
         trade.notes = note
         if note:

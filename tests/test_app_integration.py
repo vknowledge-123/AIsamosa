@@ -653,6 +653,67 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertEqual(self.test_engine.stock_watch_meta["TCS"]["history_status"], "ready")
         self.assertIn("Using warmed stock history for TCS", self.test_engine.rulebook_service.learning_log[0])
 
+    def test_watchlist_prepare_fills_current_day_candles_from_warmed_history_during_early_window(self) -> None:
+        self.test_engine.set_instrument_mode("stock")
+        spec = build_stock_instrument("TCS", "11536", label="TATA CONSULTANCY SERV LT")
+        self.test_engine.stock_watchlist = {"TCS": spec}
+        self.test_engine.stock_watch_meta["TCS"] = {"trade_bias": "long"}
+        session = self.test_engine._build_stock_runtime_session(spec)
+        session.candles = [
+            Candle(timestamp=datetime(2026, 6, 24, 15, 28), open=100, high=101, low=99, close=100.5, volume=1000),
+            Candle(timestamp=datetime(2026, 6, 24, 15, 29), open=100.5, high=102, low=100, close=101, volume=1200),
+        ]
+        session.current_index = 1
+        session.data_sync = DataSyncState(
+            status="ready",
+            source="dhan-rest",
+            message="Warmed previous session.",
+            last_synced_at=datetime(2026, 6, 27, 9, 10),
+            replay_session_day=date(2026, 6, 24),
+            previous_context_day=date(2026, 6, 23),
+            previous_day_candles=0,
+            intraday_candles=2,
+            total_loaded=2,
+        )
+        self.test_engine.stock_sessions["TCS"] = session
+        self.test_engine.selected_stock_symbol = "TCS"
+        self.test_engine._load_stock_session_locked("TCS")
+        current_bundle = DhanSessionBundle(
+            previous_day_candles=[
+                Candle(timestamp=datetime(2026, 6, 24, 15, 29), open=100.5, high=102, low=100, close=101, volume=1200)
+            ],
+            intraday_candles=[
+                Candle(timestamp=datetime(2026, 6, 25, 9, 15), open=103, high=104, low=102, close=103.5, volume=10000),
+                Candle(timestamp=datetime(2026, 6, 25, 9, 16), open=103.5, high=105, low=103, close=104.5, volume=12000),
+            ],
+            live_open_candle=None,
+            previous_day_source="intraday-fallback",
+            replay_session_day=date(2026, 6, 25),
+            previous_context_day=date(2026, 6, 24),
+        )
+        with (
+            patch.object(self.test_engine, "_market_now", return_value=datetime(2026, 6, 25, 9, 16)),
+            patch.object(self.test_engine, "_fetch_market_context_for_spec", return_value=current_bundle) as fetch_mock,
+            patch.object(self.test_engine, "_evaluate_index") as evaluate_mock,
+        ):
+            self.test_engine._run_selected_stock_prepare("TCS", "cid-123", "tok-456", "dhan")
+
+        fetch_mock.assert_called_once()
+        self.assertEqual(self.test_engine.stock_sessions["TCS"].data_sync.replay_session_day, date(2026, 6, 25))
+        self.assertEqual(self.test_engine.stock_watch_meta["TCS"]["intraday_candles"], 2)
+        self.assertGreaterEqual(evaluate_mock.call_count, 1)
+
+    def test_live_status_connected_schedules_current_day_fill_for_stock_watchlist(self) -> None:
+        self.test_engine.set_instrument_mode("stock")
+        spec = build_stock_instrument("TCS", "11536", label="TATA CONSULTANCY SERV LT")
+        self.test_engine.stock_watchlist = {"TCS": spec}
+        self.test_engine.selected_stock_symbol = "TCS"
+
+        with patch.object(self.test_engine, "_start_current_day_stock_fill_async") as fill_mock:
+            self.test_engine.handle_live_status("connected", "connected")
+
+        fill_mock.assert_called_once_with(["TCS"], reason="websocket connected")
+
     def test_bulk_add_stock_watchlist_api_extracts_and_adds_symbols(self) -> None:
         with patch.object(self.test_engine, "_auto_prepare_watchlist_symbols_async", return_value=None):
             response = self.client.post(
@@ -1143,6 +1204,37 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertEqual(allowed.action, TradeAction.enter_put)
         self.assertIn("Gap-down continuation confirmed", allowed.reason)
         self.assertIn("2-minute turnover gate passed", allowed.reason)
+
+    def test_heuristic_advance_blocks_carry_forward_entries_after_early_window(self) -> None:
+        self.test_engine.set_instrument_mode("stock")
+        self.test_engine.operating_mode = OperatingMode.heuristic_advance
+        self.temp_store.save(heuristic_advance_min_2m_turnover=10000000.0)
+        raw = [
+            Candle(timestamp=datetime(2026, 5, 21, 9, 24) + timedelta(minutes=minute), open=105, high=108, low=104, close=107, volume=60000)
+            for minute in range(5)
+        ]
+        self.test_engine.reset_with_candles(raw)
+        self.test_engine.current_index = len(raw) - 1
+        context = self._build_context(
+            [
+                Candle(timestamp=datetime(2026, 5, 21, 9, 15), open=105, high=106, low=103, close=104, volume=120000),
+                Candle(timestamp=datetime(2026, 5, 21, 9, 27), open=106, high=108, low=105, close=107, volume=120000),
+            ],
+            previous_close=100,
+        )
+        decision = TradeDecision(
+            action=TradeAction.enter_call,
+            confidence=0.78,
+            reason="Carry-forward long.",
+            decision_source="heuristic-advance",
+            option_type="CE",
+            setup_type="carry_forward_gmma_obv_long",
+        )
+
+        blocked = self.test_engine._apply_heuristic_advance_stock_entry_filter_locked(context, decision)
+
+        self.assertEqual(blocked.action, TradeAction.no_trade)
+        self.assertIn("blocked after 09:25", blocked.reason)
 
     def test_stock_turnover_filter_allows_high_5m_turnover_entry(self) -> None:
         self.test_engine.set_instrument_mode("stock")
@@ -5493,6 +5585,547 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertEqual(tight_long.invalidation_level, 24240.0)
         self.assertEqual(wide_short.invalidation_level, 24282.0)
 
+    def test_nifty_heuristic_entry_uses_fixed_32_quantity(self) -> None:
+        self.test_engine.set_instrument_mode("nifty")
+        self.test_engine.operating_mode = OperatingMode.heuristic
+        candle = Candle(timestamp="2026-05-14T11:27:00", open=24240, high=24258, low=24230, close=24252, volume=1000)
+
+        trade = self.test_engine._build_entry_trade(
+            candle,
+            TradeDecision(action=TradeAction.enter_call, option_type="CE", invalidation_level=24200, target_spot_price=24340),
+            source="replay",
+        )
+
+        self.assertEqual(trade.quantity, 32)
+        self.assertEqual(trade.base_quantity, 32)
+
+    def test_nifty_heuristic_simplified_liquidity_enters_after_sellside_sweep_reclaim(self) -> None:
+        self.test_engine.set_instrument_mode("nifty")
+        self.test_engine.operating_mode = OperatingMode.heuristic
+        session = [
+            Candle(timestamp=datetime(2026, 5, 14, 9, 15), open=24010, high=24020, low=23980, close=23990, volume=1000),
+            Candle(timestamp=datetime(2026, 5, 14, 9, 18), open=23990, high=23996, low=23940, close=23960, volume=1300),
+        ]
+        previous = [
+            Candle(timestamp=datetime(2026, 5, 9, 15, 20), open=24000, high=24110, low=23920, close=24020, volume=1000),
+            Candle(timestamp=datetime(2026, 5, 10, 15, 20), open=24020, high=24140, low=23950, close=24040, volume=1000),
+            Candle(timestamp=datetime(2026, 5, 11, 15, 20), open=24040, high=24120, low=23970, close=24010, volume=1000),
+            Candle(timestamp=datetime(2026, 5, 12, 15, 20), open=24010, high=24090, low=23980, close=24000, volume=1000),
+            Candle(timestamp=datetime(2026, 5, 13, 15, 20), open=24000, high=24100, low=23950, close=24000, volume=1000),
+        ]
+        context = self._build_context(session).model_copy(
+            update={
+                "previous_day": PreviousDayLevels(high=24100, low=23950, close=24000),
+                "previous_day_candles": previous,
+            }
+        )
+
+        decision = self.test_engine.heuristic_decision(context)
+
+        self.assertEqual(decision.action, TradeAction.enter_call)
+        self.assertEqual(decision.setup_type, "nifty_5session_sellside_sweep_reclaim")
+        self.assertIn("sellers trapped", decision.reason)
+        self.assertIn("last 5 trading sessions", decision.reason)
+
+    def test_nifty_heuristic_simplified_liquidity_does_not_chase_higher_highs_without_sweep(self) -> None:
+        self.test_engine.set_instrument_mode("nifty")
+        self.test_engine.operating_mode = OperatingMode.heuristic
+        session = [
+            Candle(timestamp=datetime(2026, 5, 14, 9, 15 + index * 3), open=24000 + index * 12, high=24020 + index * 12, low=23990 + index * 12, close=24010 + index * 12, volume=1000)
+            for index in range(5)
+        ]
+        previous = [
+            Candle(timestamp=datetime(2026, 5, 13, 15, 20), open=23900, high=24200, low=23850, close=24000, volume=1000),
+        ]
+        context = self._build_context(session).model_copy(
+            update={
+                "previous_day": PreviousDayLevels(high=24200, low=23850, close=24000),
+                "previous_day_candles": previous,
+            }
+        )
+
+        decision = self.test_engine.heuristic_decision(context)
+
+        self.assertEqual(decision.action, TradeAction.no_trade)
+        self.assertIn("Avoiding trend-chase", decision.reason)
+
+    def test_nifty_heuristic_round_band_front_run_rejection_near_24300_allows_short(self) -> None:
+        self.test_engine.set_instrument_mode("nifty")
+        self.test_engine.operating_mode = OperatingMode.heuristic
+        session = [
+            Candle(timestamp=datetime(2026, 5, 14, 9, 15), open=24240, high=24262, low=24220, close=24255, volume=1000),
+            Candle(timestamp=datetime(2026, 5, 14, 9, 18), open=24255, high=24292, low=24248, close=24280, volume=1300),
+        ]
+        previous = [
+            Candle(timestamp=datetime(2026, 5, 9, 15, 20), open=24100, high=24400, low=24050, close=24200, volume=1000),
+            Candle(timestamp=datetime(2026, 5, 10, 15, 20), open=24200, high=24420, low=24080, close=24220, volume=1000),
+            Candle(timestamp=datetime(2026, 5, 13, 15, 20), open=24220, high=24410, low=24090, close=24210, volume=1000),
+        ]
+        context = self._build_context(session).model_copy(
+            update={
+                "previous_day": PreviousDayLevels(high=24410, low=24090, close=24210),
+                "previous_day_candles": previous,
+            }
+        )
+
+        decision = self.test_engine.heuristic_decision(context)
+
+        self.assertEqual(decision.action, TradeAction.enter_put)
+        self.assertEqual(decision.setup_type, "nifty_5session_buyside_sweep_rejection")
+        self.assertIn("24300", decision.reason)
+        self.assertIn("buyers trapped", decision.reason)
+
+    def test_nifty_heuristic_blocks_round_band_when_current_auction_is_range_farming(self) -> None:
+        self.test_engine.set_instrument_mode("nifty")
+        self.test_engine.operating_mode = OperatingMode.heuristic
+        session = [
+            Candle(timestamp=datetime(2026, 5, 14, 9, 15), open=23750, high=23770, low=23740, close=23760, volume=1000),
+            Candle(timestamp=datetime(2026, 5, 14, 11, 18), open=23895, high=23924, low=23876, close=23908, volume=1000),
+            Candle(timestamp=datetime(2026, 5, 14, 11, 21), open=23908, high=23926, low=23882, close=23892, volume=1000),
+            Candle(timestamp=datetime(2026, 5, 14, 11, 24), open=23892, high=23919, low=23878, close=23904, volume=1000),
+            Candle(timestamp=datetime(2026, 5, 14, 11, 27), open=23904, high=23922, low=23880, close=23888, volume=1000),
+            Candle(timestamp=datetime(2026, 5, 14, 11, 30), open=23888, high=23920, low=23879, close=23902, volume=1000),
+            Candle(timestamp=datetime(2026, 5, 14, 11, 33), open=23902, high=23921, low=23884, close=23886, volume=1000),
+        ]
+        previous = [
+            Candle(timestamp=datetime(2026, 5, 13, 15, 20), open=23800, high=24150, low=23750, close=23950, volume=1000),
+        ]
+        context = self._build_context(session).model_copy(
+            update={
+                "previous_day": PreviousDayLevels(high=24150, low=23750, close=23950),
+                "previous_day_candles": previous,
+            }
+        )
+
+        decision = self.test_engine.heuristic_decision(context)
+
+        self.assertEqual(decision.action, TradeAction.no_trade)
+        self.assertEqual(decision.setup_type, "nifty_liquidity_weak_operator_intent")
+        self.assertIn("range-farming", decision.reason)
+
+    def test_nifty_heuristic_blocks_late_non_major_round_entry(self) -> None:
+        self.test_engine.set_instrument_mode("nifty")
+        self.test_engine.operating_mode = OperatingMode.heuristic
+        session = [
+            Candle(timestamp=datetime(2026, 5, 14, 9, 15), open=23850, high=23870, low=23840, close=23860, volume=1000),
+            Candle(timestamp=datetime(2026, 5, 14, 14, 54), open=24095, high=24104, low=24086, close=24098, volume=1000),
+            Candle(timestamp=datetime(2026, 5, 14, 14, 57), open=24098, high=24125, low=24090, close=24105, volume=1200),
+            Candle(timestamp=datetime(2026, 5, 14, 15, 0), open=24105, high=24118, low=24074, close=24076, volume=1600),
+        ]
+        previous = [
+            Candle(timestamp=datetime(2026, 5, 13, 15, 20), open=24000, high=24350, low=23900, close=24180, volume=1000),
+        ]
+        context = self._build_context(session).model_copy(
+            update={
+                "previous_day": PreviousDayLevels(high=24350, low=23900, close=24180),
+                "previous_day_candles": previous,
+            }
+        )
+
+        decision = self.test_engine.heuristic_decision(context)
+
+        self.assertEqual(decision.action, TradeAction.no_trade)
+        self.assertEqual(decision.setup_type, "nifty_liquidity_late_session_filter")
+        self.assertIn("blocked after 15:00", decision.reason)
+
+    def test_nifty_heuristic_allows_late_clean_major_round_sweep(self) -> None:
+        self.test_engine.set_instrument_mode("nifty")
+        self.test_engine.operating_mode = OperatingMode.heuristic
+        session = [
+            Candle(timestamp=datetime(2026, 5, 14, 9, 15), open=24100, high=24130, low=24090, close=24120, volume=1000),
+            Candle(timestamp=datetime(2026, 5, 14, 14, 37), open=24295, high=24304, low=24286, close=24298, volume=1000),
+            Candle(timestamp=datetime(2026, 5, 14, 14, 40), open=24298, high=24326, low=24290, close=24305, volume=1200),
+            Candle(timestamp=datetime(2026, 5, 14, 14, 43), open=24305, high=24318, low=24274, close=24276, volume=1600),
+        ]
+        previous = [
+            Candle(timestamp=datetime(2026, 5, 13, 15, 20), open=24100, high=24500, low=24000, close=24220, volume=1000),
+        ]
+        context = self._build_context(session).model_copy(
+            update={
+                "previous_day": PreviousDayLevels(high=24500, low=24000, close=24220),
+                "previous_day_candles": previous,
+            }
+        )
+
+        decision = self.test_engine.heuristic_decision(context)
+
+        self.assertEqual(decision.action, TradeAction.enter_put)
+        self.assertEqual(decision.setup_type, "nifty_5session_buyside_sweep_rejection")
+        self.assertIn("24300", decision.reason)
+
+    def test_nifty_heuristic_ignores_round_number_near_market_open(self) -> None:
+        self.test_engine.set_instrument_mode("nifty")
+        self.test_engine.operating_mode = OperatingMode.heuristic
+        session = [
+            Candle(timestamp=datetime(2026, 5, 14, 9, 15), open=24180, high=24208, low=24162, close=24178, volume=1000),
+            Candle(timestamp=datetime(2026, 5, 14, 9, 18), open=24178, high=24222, low=24170, close=24182, volume=1200),
+        ]
+        previous = [
+            Candle(timestamp=datetime(2026, 5, 13, 15, 20), open=24400, high=24450, low=23900, close=24200, volume=1000),
+        ]
+        context = self._build_context(session).model_copy(
+            update={
+                "previous_day": PreviousDayLevels(high=24450, low=23900, close=24200),
+                "previous_day_candles": previous,
+            }
+        )
+
+        decision = self.test_engine.heuristic_decision(context)
+
+        self.assertNotIn("24200", decision.reason)
+
+    def test_nifty_heuristic_still_uses_far_round_after_open_nearby_round_is_ignored(self) -> None:
+        self.test_engine.set_instrument_mode("nifty")
+        self.test_engine.operating_mode = OperatingMode.heuristic
+        session = [
+            Candle(timestamp=datetime(2026, 5, 14, 9, 15), open=24180, high=24208, low=24162, close=24178, volume=1000),
+            Candle(timestamp=datetime(2026, 5, 14, 9, 18), open=24178, high=24292, low=24170, close=24280, volume=1200),
+        ]
+        previous = [
+            Candle(timestamp=datetime(2026, 5, 13, 15, 20), open=24400, high=24450, low=23900, close=24200, volume=1000),
+        ]
+        context = self._build_context(session).model_copy(
+            update={
+                "previous_day": PreviousDayLevels(high=24450, low=23900, close=24200),
+                "previous_day_candles": previous,
+            }
+        )
+
+        decision = self.test_engine.heuristic_decision(context)
+
+        self.assertEqual(decision.action, TradeAction.enter_put)
+        self.assertIn("24300", decision.reason)
+
+    def test_nifty_heuristic_ignores_round_number_inside_first_one_minute_candle(self) -> None:
+        self.test_engine.set_instrument_mode("nifty")
+        self.test_engine.operating_mode = OperatingMode.heuristic
+        session = [
+            Candle(timestamp=datetime(2026, 5, 14, 9, 15), open=24120, high=24170, low=24080, close=24160, volume=1000),
+            Candle(timestamp=datetime(2026, 5, 14, 9, 18), open=24116, high=24118, low=24074, close=24105, volume=1200),
+        ]
+        previous = [
+            Candle(timestamp=datetime(2026, 5, 13, 15, 20), open=24000, high=24450, low=23900, close=24200, volume=1000),
+        ]
+        context = self._build_context(session).model_copy(
+            update={
+                "previous_day": PreviousDayLevels(high=24450, low=23900, close=24200),
+                "previous_day_candles": previous,
+            }
+        )
+
+        decision = self.test_engine.heuristic_decision(context)
+
+        self.assertNotIn("24100", decision.reason)
+
+    def test_nifty_heuristic_ignores_pdl_near_ignored_opening_round(self) -> None:
+        self.test_engine.set_instrument_mode("nifty")
+        self.test_engine.operating_mode = OperatingMode.heuristic
+        session = [
+            Candle(timestamp=datetime(2026, 5, 14, 9, 15), open=24020, high=24062, low=23950, close=24010, volume=1000),
+            Candle(timestamp=datetime(2026, 5, 14, 9, 18), open=24010, high=24042, low=23970, close=24037.35, volume=1200),
+        ]
+        previous = [
+            Candle(timestamp=datetime(2026, 5, 13, 15, 20), open=24040, high=24150, low=24004.75, close=24100, volume=1000),
+        ]
+        context = self._build_context(session).model_copy(
+            update={
+                "previous_day": PreviousDayLevels(high=24150, low=24004.75, close=24100),
+                "previous_day_candles": previous,
+            }
+        )
+
+        decision = self.test_engine.heuristic_decision(context)
+
+        self.assertEqual(decision.action, TradeAction.no_trade)
+        self.assertNotIn("Previous day low at 24004.75 was swept", decision.reason)
+
+    def test_nifty_heuristic_requires_round_confluence_for_day_low_liquidity(self) -> None:
+        self.test_engine.set_instrument_mode("nifty")
+        self.test_engine.operating_mode = OperatingMode.heuristic
+        session = [
+            Candle(timestamp=datetime(2026, 5, 14, 9, 15), open=25080, high=25120, low=25070, close=25100, volume=1000),
+            Candle(timestamp=datetime(2026, 5, 14, 9, 18), open=25100, high=25120, low=24950, close=24980, volume=1200),
+            Candle(timestamp=datetime(2026, 5, 14, 9, 21), open=24980, high=25010, low=24945, close=24992, volume=1200),
+            Candle(timestamp=datetime(2026, 5, 14, 9, 24), open=24992, high=25020, low=24940, close=24976, volume=1200),
+            Candle(timestamp=datetime(2026, 5, 14, 9, 27), open=24976, high=24995, low=24942, close=24982, volume=1200),
+        ]
+        previous = [
+            Candle(timestamp=datetime(2026, 5, 13, 15, 20), open=25080, high=25200, low=24950, close=25120, volume=1000),
+        ]
+        context = self._build_context(session).model_copy(
+            update={
+                "previous_day": PreviousDayLevels(high=25200, low=24950, close=25120),
+                "previous_day_candles": previous,
+            }
+        )
+
+        decision = self.test_engine.heuristic_decision(context)
+
+        self.assertEqual(decision.action, TradeAction.no_trade)
+        self.assertNotIn("24950", decision.reason)
+
+    def test_nifty_heuristic_requires_round_confluence_for_swing_liquidity(self) -> None:
+        self.test_engine.set_instrument_mode("nifty")
+        self.test_engine.operating_mode = OperatingMode.heuristic
+        session = [
+            Candle(timestamp=datetime(2026, 5, 14, 9, 15), open=24180, high=24220, low=24170, close=24200, volume=1000),
+            Candle(timestamp=datetime(2026, 5, 14, 9, 18), open=24200, high=24220, low=24045, close=24070, volume=1200),
+            Candle(timestamp=datetime(2026, 5, 14, 9, 21), open=24070, high=24100, low=24040, close=24064.20, volume=1200),
+        ]
+        previous = [
+            Candle(timestamp=datetime(2026, 5, 13, 13, 30), open=24150, high=24200, low=24100, close=24160, volume=1000),
+            Candle(timestamp=datetime(2026, 5, 13, 13, 45), open=24160, high=24180, low=24050.40, close=24110, volume=1000),
+            Candle(timestamp=datetime(2026, 5, 13, 14, 0), open=24110, high=24170, low=24100, close=24155, volume=1000),
+            Candle(timestamp=datetime(2026, 5, 13, 14, 15), open=24155, high=24200, low=24130, close=24190, volume=1000),
+            Candle(timestamp=datetime(2026, 5, 13, 14, 30), open=24190, high=24220, low=24140, close=24180, volume=1000),
+            Candle(timestamp=datetime(2026, 5, 13, 14, 45), open=24180, high=24210, low=24120, close=24170, volume=1000),
+            Candle(timestamp=datetime(2026, 5, 13, 15, 0), open=24170, high=24200, low=24130, close=24160, volume=1000),
+            Candle(timestamp=datetime(2026, 5, 13, 15, 15), open=24160, high=24190, low=24120, close=24150, volume=1000),
+            Candle(timestamp=datetime(2026, 5, 13, 15, 25), open=24150, high=24180, low=24100, close=24140, volume=1000),
+            Candle(timestamp=datetime(2026, 5, 13, 15, 29), open=24140, high=24170, low=24100, close=24130, volume=1000),
+            Candle(timestamp=datetime(2026, 5, 13, 15, 30), open=24130, high=24160, low=24100, close=24120, volume=1000),
+        ]
+        context = self._build_context(session).model_copy(
+            update={
+                "previous_day": PreviousDayLevels(high=24220, low=24050.40, close=24120),
+                "previous_day_candles": previous,
+            }
+        )
+
+        decision = self.test_engine.heuristic_decision(context)
+
+        self.assertEqual(decision.action, TradeAction.no_trade)
+        self.assertNotIn("24050.40 was swept", decision.reason)
+
+    def test_nifty_first_two_hour_green_day_bias_blocks_short_on_flat_open(self) -> None:
+        self.test_engine.set_instrument_mode("nifty")
+        self.test_engine.operating_mode = OperatingMode.heuristic
+        session = [
+            Candle(timestamp=datetime(2026, 5, 14, 9, 15), open=24010, high=24040, low=24000, close=24025, volume=1000),
+            Candle(timestamp=datetime(2026, 5, 14, 9, 18), open=24025, high=24128, low=24020, close=24078, volume=1400),
+        ]
+        previous = [
+            Candle(timestamp=datetime(2026, 5, 13, 13, 15), open=23920, high=23970, low=23910, close=23955, volume=1000),
+            Candle(timestamp=datetime(2026, 5, 13, 14, 15), open=23955, high=24020, low=23945, close=24005, volume=1000),
+            Candle(timestamp=datetime(2026, 5, 13, 15, 25), open=24005, high=24100, low=23995, close=24020, volume=1000),
+        ]
+        context = self._build_context(session).model_copy(
+            update={
+                "previous_day": PreviousDayLevels(high=24100, low=23910, close=24020),
+                "previous_day_candles": previous,
+            }
+        )
+
+        decision = self.test_engine.heuristic_decision(context)
+
+        self.assertEqual(decision.action, TradeAction.no_trade)
+        self.assertEqual(decision.setup_type, "nifty_first_two_hour_bias_block")
+        self.assertIn("blocks short", decision.reason)
+
+    def test_nifty_first_two_hour_green_day_bearish_last2h_gapdown_flips_short(self) -> None:
+        self.test_engine.set_instrument_mode("nifty")
+        self.test_engine.operating_mode = OperatingMode.heuristic
+        session = [
+            Candle(timestamp=datetime(2026, 5, 14, 9, 15), open=23930, high=24005, low=23920, close=23980, volume=1000),
+            Candle(timestamp=datetime(2026, 5, 14, 9, 18), open=24095, high=24128, low=24070, close=24076, volume=1400),
+        ]
+        previous = [
+            Candle(timestamp=datetime(2026, 5, 13, 10, 15), open=23900, high=24180, low=23880, close=24150, volume=1000),
+            Candle(timestamp=datetime(2026, 5, 13, 13, 30), open=24150, high=24170, low=24070, close=24100, volume=1000),
+            Candle(timestamp=datetime(2026, 5, 13, 15, 25), open=24100, high=24110, low=24000, close=24020, volume=1000),
+        ]
+        context = self._build_context(session).model_copy(
+            update={
+                "previous_day": PreviousDayLevels(high=24180, low=23880, close=24020),
+                "previous_day_candles": previous,
+            }
+        )
+
+        decision = self.test_engine.heuristic_decision(context)
+
+        self.assertEqual(decision.action, TradeAction.enter_put)
+        self.assertIn("flips first-2-hour bias short", decision.reason)
+
+    def test_nifty_first_two_hour_bias_expires_after_1115(self) -> None:
+        self.test_engine.set_instrument_mode("nifty")
+        self.test_engine.operating_mode = OperatingMode.heuristic
+        session = [
+            Candle(timestamp=datetime(2026, 5, 14, 11, 16), open=24010, high=24040, low=24000, close=24025, volume=1000),
+            Candle(timestamp=datetime(2026, 5, 14, 11, 19), open=24025, high=24128, low=24020, close=24078, volume=1400),
+        ]
+        previous = [
+            Candle(timestamp=datetime(2026, 5, 13, 13, 15), open=23920, high=23970, low=23910, close=23955, volume=1000),
+            Candle(timestamp=datetime(2026, 5, 13, 14, 15), open=23955, high=24020, low=23945, close=24005, volume=1000),
+            Candle(timestamp=datetime(2026, 5, 13, 15, 25), open=24005, high=24100, low=23995, close=24020, volume=1000),
+        ]
+        context = self._build_context(session).model_copy(
+            update={
+                "previous_day": PreviousDayLevels(high=24100, low=23910, close=24020),
+                "previous_day_candles": previous,
+            }
+        )
+
+        decision = self.test_engine.heuristic_decision(context)
+
+        self.assertNotEqual(decision.setup_type, "nifty_first_two_hour_bias_block")
+
+    def test_nifty_advance_entry_uses_32_quantity_and_25_point_initial_sl_cap(self) -> None:
+        self.test_engine.set_instrument_mode("nifty")
+        self.test_engine.operating_mode = OperatingMode.heuristic_advance
+        candle = Candle(timestamp="2026-05-14T11:27:00", open=24240, high=24258, low=24230, close=24252, volume=1000)
+
+        tight_long = self.test_engine._build_entry_trade(
+            candle,
+            TradeDecision(action=TradeAction.enter_call, option_type="CE", invalidation_level=24245, target_spot_price=24340),
+            source="replay",
+        )
+        wide_long = self.test_engine._build_entry_trade(
+            candle,
+            TradeDecision(action=TradeAction.enter_call, option_type="CE", invalidation_level=24180, target_spot_price=24380),
+            source="replay",
+        )
+        wide_short = self.test_engine._build_entry_trade(
+            candle,
+            TradeDecision(action=TradeAction.enter_put, option_type="PE", invalidation_level=24320, target_spot_price=24120),
+            source="replay",
+        )
+
+        self.assertEqual(tight_long.quantity, 32)
+        self.assertEqual(tight_long.base_quantity, 32)
+        self.assertEqual(tight_long.invalidation_level, 24245.0)
+        self.assertEqual(wide_long.invalidation_level, 24227.0)
+        self.assertEqual(wide_short.invalidation_level, 24277.0)
+
+    def test_nifty_advance_pyramid_protection_caps_first_add_and_costs_second_add(self) -> None:
+        self.test_engine.set_instrument_mode("nifty")
+        self.test_engine.operating_mode = OperatingMode.heuristic_advance
+        candle = Candle(timestamp="2026-05-14T11:27:00", open=24240, high=24258, low=24230, close=24252, volume=1000)
+        trade = self.test_engine._build_entry_trade(
+            candle,
+            TradeDecision(action=TradeAction.enter_call, option_type="CE", invalidation_level=24180, target_spot_price=24380),
+            source="replay",
+        )
+        trade.invalidation_level = 24200.0
+        self.test_engine.active_trade = trade
+
+        first_add_candle = Candle(timestamp="2026-05-14T11:28:00", open=24252, high=24290, low=24250, close=24285, volume=1200)
+        self.assertTrue(self.test_engine._add_to_active_trade(first_add_candle, "First add confirmed."))
+        self.assertEqual(trade.pyramid_count, 1)
+        self.assertEqual(trade.invalidation_level, 24255.0)
+
+        trade.invalidation_level = 24210.0
+        second_add_candle = Candle(timestamp="2026-05-14T11:29:00", open=24285, high=24320, low=24282, close=24310, volume=1300)
+        self.assertTrue(self.test_engine._add_to_active_trade(second_add_candle, "Second add confirmed."))
+        self.assertEqual(trade.pyramid_count, 2)
+        self.assertEqual(trade.invalidation_level, 24252.0)
+
+    def test_nifty_advance_gapup_regime_blocks_false_long_without_acceptance_or_liquidity_reclaim(self) -> None:
+        self.test_engine.set_instrument_mode("nifty")
+        self.test_engine.operating_mode = OperatingMode.heuristic_advance
+        context = self._build_context(
+            [
+                Candle(timestamp=datetime(2026, 5, 14, 9, 15), open=24055, high=24080, low=24020, close=24042, volume=1000),
+                Candle(timestamp=datetime(2026, 5, 14, 9, 18), open=24042, high=24060, low=24030, close=24045, volume=1200),
+            ],
+            previous_close=24000,
+        ).model_copy(
+            update={
+                "previous_day": PreviousDayLevels(high=24120, low=23880, close=24000),
+                "previous_day_candles": [
+                    Candle(timestamp=datetime(2026, 5, 13, 15, 18), open=24000, high=24006, low=23996, close=24002, volume=1000),
+                    Candle(timestamp=datetime(2026, 5, 13, 15, 21), open=24002, high=24008, low=23998, close=24004, volume=1000),
+                    Candle(timestamp=datetime(2026, 5, 13, 15, 24), open=24004, high=24010, low=23998, close=24000, volume=1000),
+                ],
+            }
+        )
+        decision = TradeDecision(
+            action=TradeAction.enter_call,
+            confidence=0.86,
+            reason="GMMA/OBV long.",
+            decision_source="heuristic-advance",
+            option_type="CE",
+            setup_type="advanced_gmma_obv_long",
+        )
+
+        blocked = self.test_engine._apply_heuristic_advance_nifty_regime_filter_locked(context, decision)
+
+        self.assertEqual(blocked.action, TradeAction.no_trade)
+        self.assertIn("gap-up regime blocked long", blocked.reason)
+
+    def test_nifty_advance_gapup_regime_allows_short_after_five_session_resistance_sweep_rejection(self) -> None:
+        self.test_engine.set_instrument_mode("nifty")
+        self.test_engine.operating_mode = OperatingMode.heuristic_advance
+        context = self._build_context(
+            [
+                Candle(timestamp=datetime(2026, 5, 14, 9, 15), open=24055, high=24080, low=24020, close=24050, volume=1000),
+                Candle(timestamp=datetime(2026, 5, 14, 9, 18), open=24050, high=24118, low=24070, close=24088, volume=1500),
+            ],
+            previous_close=24000,
+        ).model_copy(
+            update={
+                "previous_day": PreviousDayLevels(high=24100, low=23880, close=24000),
+                "previous_day_candles": [
+                    Candle(timestamp=datetime(2026, 5, 9, 15, 18), open=23990, high=24000, low=23986, close=23994, volume=1000),
+                    Candle(timestamp=datetime(2026, 5, 10, 15, 21), open=24092, high=24100, low=24088, close=24094, volume=1000),
+                    Candle(timestamp=datetime(2026, 5, 13, 15, 24), open=24000, high=24008, low=23996, close=24000, volume=1000),
+                ],
+            }
+        )
+        decision = TradeDecision(
+            action=TradeAction.enter_put,
+            confidence=0.86,
+            reason="GMMA/OBV short.",
+            decision_source="heuristic-advance",
+            option_type="PE",
+            setup_type="advanced_gmma_obv_short",
+        )
+
+        allowed = self.test_engine._apply_heuristic_advance_nifty_regime_filter_locked(context, decision)
+
+        self.assertEqual(allowed.action, TradeAction.enter_put)
+        self.assertIn("gap regime bias confirmed", allowed.reason)
+        self.assertIn("swept and rejected", allowed.reason)
+
+    def test_nifty_advance_blocks_previous_day_carry_forward_crossovers_only_for_nifty(self) -> None:
+        self.test_engine.set_instrument_mode("nifty")
+        self.test_engine.operating_mode = OperatingMode.heuristic_advance
+        context = self._build_context(
+            [
+                Candle(timestamp=datetime(2026, 5, 14, 9, 15), open=24010, high=24030, low=24000, close=24024, volume=1000),
+            ],
+            previous_close=24000,
+        )
+        carry_forward = TradeDecision(
+            action=TradeAction.enter_call,
+            confidence=0.78,
+            reason="Previous-day carry-forward long.",
+            decision_source="heuristic-advance",
+            option_type="CE",
+            setup_type="carry_forward_gmma_obv_long",
+        )
+
+        blocked = self.test_engine._block_nifty_advance_carry_forward_decision(context, carry_forward)
+
+        self.assertEqual(blocked.action, TradeAction.no_trade)
+        self.assertIn("does not trade previous-day", blocked.reason)
+
+        stock_context = context.model_copy(
+            update={
+                "instrument": InstrumentState(
+                    mode=InstrumentMode.stock,
+                    label="TCS",
+                    symbol="TCS",
+                    security_id="11536",
+                    exchange_segment="NSE_EQ",
+                    instrument_type="EQUITY",
+                    supports_options=False,
+                )
+            }
+        )
+        allowed_stock = self.test_engine._block_nifty_advance_carry_forward_decision(stock_context, carry_forward)
+
+        self.assertEqual(allowed_stock.action, TradeAction.enter_call)
+
     def test_short_option_pnl_and_live_order_sides_are_reversed(self) -> None:
         candle = Candle(timestamp="2026-05-14T11:27:00", open=23510, high=23542, low=23502, close=23534, volume=1000)
         decision = TradeDecision(action=TradeAction.enter_put, option_type="PE", invalidation_level=23590, target_spot_price=23410)
@@ -7985,6 +8618,75 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertEqual(decision.action, TradeAction.add_position)
         self.assertEqual(decision.add_quantity, 3)
         self.assertIn("point-wise pyramiding add 1/2", decision.reason.lower())
+
+    def test_nifty_point_wise_pyramiding_uses_configured_point_tag_without_close_filter(self) -> None:
+        candles = [
+            Candle(timestamp="2026-05-13T09:15:00", open=23100, high=23120, low=23080, close=23100, volume=1000),
+            Candle(timestamp="2026-05-14T09:15:00", open=23192, high=23205, low=23180, close=23196, volume=1200),
+            Candle(timestamp="2026-05-14T09:16:00", open=23196, high=23247, low=23194, close=23220, volume=1400),
+        ]
+        trade = self._build_trade(
+            entry_time=candles[1].timestamp,
+            entry_spot_price=23192.0,
+            invalidation_level=23140.0,
+            setup_type="bullish_reclaim_watch",
+        )
+        trade.base_quantity = 3
+        trade.quantity = 3
+        trade.open_quantity = 3
+        context = self._build_context(candles, active_trade=trade).model_copy(
+            update={
+                "nifty_heuristic_early_exit_enabled": False,
+                "nifty_trailing_stop_enabled": False,
+                "nifty_target_enabled": False,
+                "pyramiding_enabled": False,
+                "intelligent_pyramiding_enabled": True,
+                "nifty_point_pyramiding_enabled": True,
+                "nifty_point_pyramiding_points": 45.0,
+            }
+        )
+        observation = self._build_observation(atr=25.0)
+
+        decision = self.test_engine.heuristic_engine.manage_active_trade(context, observation, current_trade_price=12.0)
+
+        self.assertEqual(decision.action, TradeAction.add_position)
+        self.assertEqual(decision.add_quantity, 3)
+
+    def test_nifty_point_wise_pyramiding_allows_middle_round_entry_adds(self) -> None:
+        candles = [
+            Candle(timestamp="2026-05-14T14:29:00", open=24100, high=24130, low=24090, close=24122, volume=1200),
+            Candle(timestamp="2026-05-14T14:30:00", open=24122, high=24148, low=24120, close=24145, volume=1400),
+        ]
+        trade = self._build_trade(
+            entry_time=candles[0].timestamp,
+            entry_spot_price=24122.0,
+            invalidation_level=24082.0,
+            setup_type="nifty_5session_sellside_sweep_reclaim",
+        )
+        trade.entry_notes = (
+            "NIFTY simplified liquidity heuristic starts with trap map. "
+            "100-point round band 24100 +/-25 at 24100.00 was swept/front-run below and reclaimed."
+        )
+        trade.base_quantity = 32
+        trade.quantity = 32
+        trade.open_quantity = 32
+        context = self._build_context(candles, active_trade=trade).model_copy(
+            update={
+                "nifty_heuristic_early_exit_enabled": False,
+                "nifty_trailing_stop_enabled": False,
+                "nifty_target_enabled": False,
+                "pyramiding_enabled": False,
+                "intelligent_pyramiding_enabled": True,
+                "nifty_point_pyramiding_enabled": True,
+                "nifty_point_pyramiding_points": 20.0,
+            }
+        )
+        observation = self._build_observation(atr=25.0)
+
+        decision = self.test_engine.heuristic_engine.manage_active_trade(context, observation, current_trade_price=12.0)
+
+        self.assertEqual(decision.action, TradeAction.add_position)
+        self.assertEqual(decision.add_quantity, 32)
 
     def test_stock_percent_pyramiding_adds_equal_base_quantity_after_percent_move(self) -> None:
         candles = [
