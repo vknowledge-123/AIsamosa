@@ -41,7 +41,7 @@ def _decide_simplified_liquidity_nifty(context: StrategyContext) -> TradeDecisio
         return _no_trade("NIFTY liquidity strategy is waiting for session candles.", "nifty_liquidity_warmup")
     pools = _build_liquidity_pools(context)
     if not pools:
-        return _no_trade("NIFTY liquidity strategy found no 5-session liquidity pools yet.", "nifty_liquidity_warmup")
+        return _no_trade("NIFTY liquidity strategy found no 4-session liquidity pools yet.", "nifty_liquidity_warmup")
 
     latest = context.current_candle
     recent = context.session_candles[-3:]
@@ -80,6 +80,10 @@ def _decide_simplified_liquidity_nifty(context: StrategyContext) -> TradeDecisio
     if weak_reason:
         return _no_trade(weak_reason, "nifty_liquidity_weak_operator_intent")
 
+    trigger_reason = _entry_trigger_confirmation_block_reason(context, selected)
+    if trigger_reason:
+        return _no_trade(trigger_reason, "nifty_liquidity_trigger_wait")
+
     session_reason = _late_session_entry_block_reason(context, selected, pools)
     if session_reason:
         return _no_trade(session_reason, "nifty_liquidity_late_session_filter")
@@ -98,6 +102,14 @@ def _decide_simplified_liquidity_nifty(context: StrategyContext) -> TradeDecisio
     if selected.side == "long":
         invalidation = round(selected.sweep_extreme - buffer, 2)
         risk = max(latest.close - invalidation, 25.0)
+        setup_type = (
+            "nifty_gap_fill_previous_close_reclaim_long"
+            if selected.pool.source == "gap-fill-pdc"
+            else "nifty_5session_sellside_sweep_reclaim"
+        )
+        rule_ids = ["NIFTY-GAP-FILL-PDC", "NIFTY-ROUND-CONFLUENCE", "NIFTY-BIAS", "NIFTY-OPPOSITE-CANDLE-BREAK"]
+        if selected.pool.source != "gap-fill-pdc":
+            rule_ids = ["NIFTY-4D-LIQUIDITY", "NIFTY-3M-SWINGS", "NIFTY-SWEEP-RECLAIM", "NIFTY-TRAP-FIRST", "NIFTY-OPPOSITE-CANDLE-BREAK"]
         return TradeDecision(
             action=TradeAction.enter_call,
             confidence=min(0.95, selected.score / 100.0),
@@ -109,12 +121,20 @@ def _decide_simplified_liquidity_nifty(context: StrategyContext) -> TradeDecisio
             first_target_price=round(latest.close + max(risk, min(opposite_room, risk * 1.2)), 2),
             market_state="nifty_seller_trap_liquidity_reclaim",
             setup_score=round(selected.score, 1),
-            setup_type="nifty_5session_sellside_sweep_reclaim",
-            rule_ids_used=["NIFTY-5D-LIQUIDITY", "NIFTY-3M-SWINGS", "NIFTY-SWEEP-RECLAIM", "NIFTY-TRAP-FIRST"],
+            setup_type=setup_type,
+            rule_ids_used=rule_ids,
         )
 
     invalidation = round(selected.sweep_extreme + buffer, 2)
     risk = max(invalidation - latest.close, 25.0)
+    setup_type = (
+        "nifty_gap_fill_previous_close_rejection_short"
+        if selected.pool.source == "gap-fill-pdc"
+        else "nifty_5session_buyside_sweep_rejection"
+    )
+    rule_ids = ["NIFTY-GAP-FILL-PDC", "NIFTY-ROUND-CONFLUENCE", "NIFTY-BIAS", "NIFTY-OPPOSITE-CANDLE-BREAK"]
+    if selected.pool.source != "gap-fill-pdc":
+        rule_ids = ["NIFTY-4D-LIQUIDITY", "NIFTY-3M-SWINGS", "NIFTY-SWEEP-REJECTION", "NIFTY-TRAP-FIRST", "NIFTY-OPPOSITE-CANDLE-BREAK"]
     return TradeDecision(
         action=TradeAction.enter_put,
         confidence=min(0.95, selected.score / 100.0),
@@ -126,8 +146,8 @@ def _decide_simplified_liquidity_nifty(context: StrategyContext) -> TradeDecisio
         first_target_price=round(latest.close - max(risk, min(opposite_room, risk * 1.2)), 2),
         market_state="nifty_buyer_trap_liquidity_rejection",
         setup_score=round(selected.score, 1),
-        setup_type="nifty_5session_buyside_sweep_rejection",
-        rule_ids_used=["NIFTY-5D-LIQUIDITY", "NIFTY-3M-SWINGS", "NIFTY-SWEEP-REJECTION", "NIFTY-TRAP-FIRST"],
+        setup_type=setup_type,
+        rule_ids_used=rule_ids,
     )
 
 
@@ -137,14 +157,14 @@ def _entry_reason(candidate: SweepCandidate, context: StrategyContext, trap_text
     return (
         f"NIFTY simplified liquidity heuristic starts with trap map: {trap_text}. "
         f"{candidate.reason} Latest close {latest.close:.2f}; score {candidate.score:.1f}/100. "
-        "Decision uses only last 5 trading sessions daily liquidity, 3-minute swing/equal liquidity, "
+        "Decision uses only last 4 trading sessions daily liquidity, 3-minute swing/equal liquidity, "
         f"previous-day high/low, and 100-point round-number bands.{bias_text}"
     )
 
 
 def _build_liquidity_pools(context: StrategyContext) -> list[LiquidityPool]:
     pools: list[LiquidityPool] = []
-    previous = _last_n_sessions(context.previous_day_candles, 5)
+    previous = _last_n_sessions(context.previous_day_candles, 4)
     for session_day, candles in previous:
         high = max(candle.high for candle in candles)
         low = min(candle.low for candle in candles)
@@ -166,14 +186,101 @@ def _build_liquidity_pools(context: StrategyContext) -> list[LiquidityPool]:
     three_minute = _aggregate_candles([candle for _, candles in previous for candle in candles], 3)
     pools.extend(_swing_pools(three_minute, lookback=5))
     pools.extend(_equal_high_low_pools(three_minute, tolerance=max(_atr(three_minute[-80:]) * 0.15, 6.0)))
+    pools.extend(_gap_fill_pools(context))
+    pools.extend(_opening_fib_retracement_pools(context))
     pools.extend(_round_number_pools(context))
     return _dedupe_pools(pools)
 
 
+def _gap_fill_pools(context: StrategyContext) -> list[LiquidityPool]:
+    if not context.session_candles or not context.previous_day.close:
+        return []
+    bias_side, _ = _first_two_hour_bias(context)
+    if bias_side not in {"long", "short"}:
+        return []
+    previous_close = round(context.previous_day.close, 2)
+    opening_gap = context.session_candles[0].open - previous_close
+    nearest_round = round(previous_close / 100.0) * 100.0
+    if abs(previous_close - nearest_round) > 30.0:
+        return []
+    if opening_gap >= 60.0 and bias_side == "long":
+        return [
+            LiquidityPool(
+                f"Previous day gap-fill liquidity {previous_close:.2f} near round {nearest_round:.0f}",
+                "sell",
+                previous_close,
+                48.0,
+                "gap-fill-pdc",
+            )
+        ]
+    if opening_gap <= -60.0 and bias_side == "short":
+        return [
+            LiquidityPool(
+                f"Previous day gap-fill liquidity {previous_close:.2f} near round {nearest_round:.0f}",
+                "buy",
+                previous_close,
+                48.0,
+                "gap-fill-pdc",
+            )
+        ]
+    return []
+
+
+def _opening_fib_retracement_pools(context: StrategyContext) -> list[LiquidityPool]:
+    session = context.session_candles
+    previous_close = context.previous_day.close
+    if not session or not previous_close:
+        return []
+    latest = context.current_candle
+    if latest.timestamp.time() <= dt_time(9, 30):
+        return []
+    first = session[0]
+    first_range = first.high - first.low
+    if first_range <= 40.0:
+        return []
+    bias_side, _ = _first_two_hour_bias(context)
+    first_fifteen = [candle for candle in session if candle.timestamp.time() <= dt_time(9, 30)]
+    if not first_fifteen:
+        return []
+    first_15_open = first_fifteen[0].open
+    first_15_close = first_fifteen[-1].close
+    pools: list[LiquidityPool] = []
+    if first.close > first.open and first_15_close > first_15_open and bias_side in {"long", None}:
+        impulse_high = max(candle.high for candle in session if candle.timestamp <= latest.timestamp)
+        impulse = impulse_high - previous_close
+        if impulse > 40.0:
+            fib_level = round(impulse_high - (impulse * 0.382), 2)
+            nearest_round = round(fib_level / 100.0) * 100.0
+            if abs(fib_level - nearest_round) <= 20.0:
+                pools.append(
+                    LiquidityPool(
+                        f"Opening bullish 38.2% fib retracement liquidity {fib_level:.2f} near round {nearest_round:.0f}",
+                        "sell",
+                        fib_level,
+                        46.0,
+                        "opening-fib",
+                    )
+                )
+    if first.close < first.open and first_15_close < first_15_open and bias_side in {"short", None}:
+        impulse_low = min(candle.low for candle in session if candle.timestamp <= latest.timestamp)
+        impulse = previous_close - impulse_low
+        if impulse > 40.0:
+            fib_level = round(impulse_low + (impulse * 0.382), 2)
+            nearest_round = round(fib_level / 100.0) * 100.0
+            if abs(fib_level - nearest_round) <= 20.0:
+                pools.append(
+                    LiquidityPool(
+                        f"Opening bearish 38.2% fib retracement liquidity {fib_level:.2f} near round {nearest_round:.0f}",
+                        "buy",
+                        fib_level,
+                        46.0,
+                        "opening-fib",
+                    )
+                )
+    return pools
+
+
 def _first_two_hour_bias(context: StrategyContext) -> tuple[str | None, str | None]:
-    current_time = context.current_candle.timestamp.time()
-    if current_time < dt_time(9, 15) or current_time > dt_time(11, 15):
-        return None, None
     previous_sessions = _last_n_sessions(context.previous_day_candles, 1)
     if not previous_sessions or not context.session_candles:
         return None, None
@@ -182,6 +289,12 @@ def _first_two_hour_bias(context: StrategyContext) -> tuple[str | None, str | No
         return None, None
     day_open = previous[0].open
     day_close = previous[-1].close
+    opening_override = _opening_expansion_both_side_override(context, day_close)
+    if opening_override:
+        return None, opening_override
+    current_time = context.current_candle.timestamp.time()
+    if current_time < dt_time(9, 15) or current_time > dt_time(11, 15):
+        return None, None
     day_move = day_close - day_open
     if abs(day_move) < 5.0:
         return None, None
@@ -230,7 +343,57 @@ def _first_two_hour_bias(context: StrategyContext) -> tuple[str | None, str | No
         f"{scenario}; previous day {day_colour} ({day_move:+.2f}), "
         f"last-2h flow {last_2h_flow} ({last_2h_move:+.2f}), open {gap_type} ({gap_points:+.2f})"
     )
+    contradiction_override = _first_five_candle_contradiction_override(context, bias)
+    if contradiction_override:
+        return None, f"{note}; {contradiction_override}"
     return bias, note
+
+
+def _first_five_candle_contradiction_override(context: StrategyContext, bias: str) -> str | None:
+    current_time = context.current_candle.timestamp.time()
+    if current_time < dt_time(9, 20):
+        return None
+    first_five = context.session_candles[:5]
+    if len(first_five) < 5:
+        return None
+    red_count = sum(1 for candle in first_five if candle.close < candle.open)
+    green_count = sum(1 for candle in first_five if candle.close > candle.open)
+    if bias == "long" and red_count >= 3:
+        return (
+            f"first-five-candle contradiction override: {red_count}/5 opening candles are red, "
+            "so from 09:20 the first-2-hour long bias changes to both-side"
+        )
+    if bias == "short" and green_count >= 3:
+        return (
+            f"first-five-candle contradiction override: {green_count}/5 opening candles are green, "
+            "so from 09:20 the first-2-hour short bias changes to both-side"
+        )
+    return None
+
+
+def _opening_expansion_both_side_override(context: StrategyContext, previous_close: float) -> str | None:
+    opening_window = [
+        candle
+        for candle in context.session_candles[:3]
+        if candle.timestamp.time() <= dt_time(9, 20)
+    ]
+    if not opening_window:
+        return None
+    opening_high = max(candle.high for candle in opening_window)
+    opening_low = min(candle.low for candle in opening_window)
+    up_expansion = opening_high - previous_close
+    down_expansion = opening_low - previous_close
+    if up_expansion > 150.0:
+        return (
+            f"opening expansion override: first candles lifted {up_expansion:.2f} points above previous close, "
+            "so NIFTY first-2-hour directional bias changes to both-side for the whole day and liquidity from the last 4 sessions decides."
+        )
+    if down_expansion <= -150.0:
+        return (
+            f"opening expansion override: first candles dropped {abs(down_expansion):.2f} points below previous close, "
+            "so NIFTY first-2-hour directional bias changes to both-side for the whole day and liquidity from the last 4 sessions decides."
+        )
+    return None
 
 
 def _previous_last_two_hours(previous: list[Candle]) -> list[Candle]:
@@ -324,20 +487,21 @@ def _round_number_pools(context: StrategyContext) -> list[LiquidityPool]:
     end = int(high // 100 + 1) * 100
     pools: list[LiquidityPool] = []
     first_session_candle = context.session_candles[0] if context.session_candles else None
+    current_time = context.current_candle.timestamp.time()
     for level in range(start, end + 1, 100):
-        if _ignore_open_round_liquidity(float(level), first_session_candle):
+        if _ignore_open_round_liquidity(float(level), first_session_candle, current_time=current_time):
             continue
-        pools.append(LiquidityPool(f"100-point round band {level} +/-25", "buy", float(level), 30.0, "round"))
-        pools.append(LiquidityPool(f"100-point round band {level} +/-25", "sell", float(level), 30.0, "round"))
+        pools.append(LiquidityPool(f"100-point round band {level} +/-30", "buy", float(level), 30.0, "round"))
+        pools.append(LiquidityPool(f"100-point round band {level} +/-30", "sell", float(level), 30.0, "round"))
     return pools
 
 
-def _ignore_open_round_liquidity(level: float, first_candle: Candle | None) -> bool:
+def _ignore_open_round_liquidity(level: float, first_candle: Candle | None, *, current_time: dt_time | None = None) -> bool:
     if first_candle is None:
         return False
-    if first_candle.low <= level <= first_candle.high:
-        return True
-    return abs(level - first_candle.open) <= 50.0
+    if current_time is not None and current_time >= dt_time(9, 35):
+        return False
+    return first_candle.low <= level <= first_candle.high
 
 
 def _dedupe_pools(pools: list[LiquidityPool]) -> list[LiquidityPool]:
@@ -358,14 +522,20 @@ def _best_sweep_candidate(recent: list[Candle], pools: list[LiquidityPool], *, s
         sell_pools = [pool for pool in pools if pool.side == "sell"]
         recent_low = min(candle.low for candle in recent)
         for pool in sell_pools:
-            if _skip_primary_liquidity_pool_for_open_noise(pool, opening_candle):
+            if _skip_primary_liquidity_pool_for_open_noise(pool, opening_candle, current_time=latest.timestamp.time()):
                 continue
             if _skip_primary_liquidity_without_round_confluence(pool):
                 continue
-            if pool.source == "round":
-                swept = recent_low <= pool.price + 25.0
+            if pool.source == "gap-fill-pdc":
+                swept = recent_low <= pool.price + max(tolerance, 8.0)
+                reclaim = latest.close > pool.price
+            elif pool.source == "opening-fib":
+                swept = recent_low <= pool.price + max(tolerance, 6.0)
+                reclaim = latest.close > pool.price
+            elif pool.source == "round":
+                swept = recent_low <= pool.price + 30.0
                 reclaim = (
-                    pool.price < latest.close <= pool.price + 25.0
+                    pool.price < latest.close <= pool.price + 30.0
                     and (latest.close > latest.open or latest.close >= pool.price + 10.0)
                 )
             else:
@@ -374,19 +544,30 @@ def _best_sweep_candidate(recent: list[Candle], pools: list[LiquidityPool], *, s
             if swept and reclaim:
                 depth = max(pool.price - recent_low, 0.0)
                 score = min(98.0, 52.0 + pool.weight + min(depth, 35.0) * 0.35)
-                candidates.append(SweepCandidate("long", pool, score, recent_low, f"{pool.label} at {pool.price:.2f} was swept/front-run below and reclaimed"))
+                reason = (
+                    f"{pool.label} was filled and reclaimed"
+                    if pool.source in {"gap-fill-pdc", "opening-fib"}
+                    else f"{pool.label} at {pool.price:.2f} was swept/front-run below and reclaimed"
+                )
+                candidates.append(SweepCandidate("long", pool, score, recent_low, reason))
     else:
         buy_pools = [pool for pool in pools if pool.side == "buy"]
         recent_high = max(candle.high for candle in recent)
         for pool in buy_pools:
-            if _skip_primary_liquidity_pool_for_open_noise(pool, opening_candle):
+            if _skip_primary_liquidity_pool_for_open_noise(pool, opening_candle, current_time=latest.timestamp.time()):
                 continue
             if _skip_primary_liquidity_without_round_confluence(pool):
                 continue
-            if pool.source == "round":
-                swept = recent_high >= pool.price - 25.0
+            if pool.source == "gap-fill-pdc":
+                swept = recent_high >= pool.price - max(tolerance, 8.0)
+                reject = latest.close < pool.price
+            elif pool.source == "opening-fib":
+                swept = recent_high >= pool.price - max(tolerance, 6.0)
+                reject = latest.close < pool.price
+            elif pool.source == "round":
+                swept = recent_high >= pool.price - 30.0
                 reject = (
-                    pool.price - 25.0 <= latest.close < pool.price
+                    pool.price - 30.0 <= latest.close < pool.price
                     and (latest.close < latest.open or latest.close <= pool.price - 10.0)
                 )
             else:
@@ -395,24 +576,69 @@ def _best_sweep_candidate(recent: list[Candle], pools: list[LiquidityPool], *, s
             if swept and reject:
                 depth = max(recent_high - pool.price, 0.0)
                 score = min(98.0, 52.0 + pool.weight + min(depth, 35.0) * 0.35)
-                candidates.append(SweepCandidate("short", pool, score, recent_high, f"{pool.label} at {pool.price:.2f} was swept/front-run above and rejected"))
+                reason = (
+                    f"{pool.label} was filled and rejected"
+                    if pool.source in {"gap-fill-pdc", "opening-fib"}
+                    else f"{pool.label} at {pool.price:.2f} was swept/front-run above and rejected"
+                )
+                candidates.append(SweepCandidate("short", pool, score, recent_high, reason))
     if not candidates:
         return None
     return max(candidates, key=lambda item: item.score)
 
 
-def _skip_primary_liquidity_pool_for_open_noise(pool: LiquidityPool, first_candle: Candle) -> bool:
+def _skip_primary_liquidity_pool_for_open_noise(pool: LiquidityPool, first_candle: Candle, *, current_time: dt_time) -> bool:
     if pool.source == "round":
         return False
+    if pool.source == "gap-fill-pdc":
+        return False
+    if pool.source == "opening-fib":
+        return False
     nearest_round = round(pool.price / 100.0) * 100.0
-    return abs(pool.price - nearest_round) <= 20.0 and _ignore_open_round_liquidity(nearest_round, first_candle)
+    return abs(pool.price - nearest_round) <= 30.0 and _ignore_open_round_liquidity(
+        nearest_round,
+        first_candle,
+        current_time=current_time,
+    )
 
 
 def _skip_primary_liquidity_without_round_confluence(pool: LiquidityPool) -> bool:
     if pool.source == "round":
         return False
+    if pool.source == "gap-fill-pdc":
+        nearest_round = round(pool.price / 100.0) * 100.0
+        return abs(pool.price - nearest_round) > 30.0
     nearest_round = round(pool.price / 100.0) * 100.0
-    return abs(pool.price - nearest_round) > 20.0
+    return abs(pool.price - nearest_round) > 30.0
+
+
+def _entry_trigger_confirmation_block_reason(context: StrategyContext, candidate: SweepCandidate) -> str | None:
+    latest = context.current_candle
+    previous_candles = context.session_candles[:-1]
+    if candidate.side == "long":
+        reference = next((candle for candle in reversed(previous_candles) if candle.close < candle.open), None)
+        if reference is None:
+            return "NIFTY long setup is waiting for a prior red candle high to define the entry trigger."
+        if latest.close <= latest.open:
+            return "NIFTY long setup formed, but entry waits for a green candle close after reclaim."
+        if latest.high <= reference.high:
+            return (
+                f"NIFTY long setup formed, but latest candle has not broken the last red candle high "
+                f"{reference.high:.2f} from {reference.timestamp.strftime('%H:%M')}."
+            )
+        return None
+
+    reference = next((candle for candle in reversed(previous_candles) if candle.close > candle.open), None)
+    if reference is None:
+        return "NIFTY short setup is waiting for a prior green candle low to define the entry trigger."
+    if latest.close >= latest.open:
+        return "NIFTY short setup formed, but entry waits for a red candle close after rejection."
+    if latest.low >= reference.low:
+        return (
+            f"NIFTY short setup formed, but latest candle has not broken the last green candle low "
+            f"{reference.low:.2f} from {reference.timestamp.strftime('%H:%M')}."
+        )
+    return None
 
 
 def _weak_operator_intent_reason(context: StrategyContext, candidate: SweepCandidate, pools: list[LiquidityPool]) -> str | None:
@@ -513,7 +739,7 @@ def _round_level_is_range_farming(recent: list[Candle], level: float) -> bool:
         return False
     upper_touches = sum(1 for candle in recent if candle.high >= level + 18.0)
     lower_touches = sum(1 for candle in recent if candle.low <= level - 18.0)
-    closes_inside_band = sum(1 for candle in recent if level - 25.0 <= candle.close <= level + 25.0)
+    closes_inside_band = sum(1 for candle in recent if level - 30.0 <= candle.close <= level + 30.0)
     return upper_touches >= 2 and lower_touches >= 2 and closes_inside_band >= max(3, len(recent) // 2)
 
 

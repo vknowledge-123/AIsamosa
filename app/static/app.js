@@ -123,6 +123,7 @@ const elements = {
   universeWarmupStatus: document.getElementById("universeWarmupStatus"),
   stockSearchResults: document.getElementById("stockSearchResults"),
   stockWatchlist: document.getElementById("stockWatchlist"),
+  hybridWatchlist: document.getElementById("hybridWatchlist"),
   liquidityZones: document.getElementById("liquidityZones"),
   operatorZones: document.getElementById("operatorZones"),
   signalTape: document.getElementById("signalTape"),
@@ -555,6 +556,7 @@ function buildCredentialPayload(form) {
     nifty_point_pyramiding_points: (form.elements.nifty_point_pyramiding_points?.value || "50").trim(),
     nifty_trade_bias: (form.elements.nifty_trade_bias?.value || "both").trim(),
     nifty_option_trade_mode: (form.elements.nifty_option_trade_mode?.value || "selling").trim(),
+    hybrid_buy_gainer_loser_enabled: form.elements.hybrid_buy_gainer_loser_enabled?.checked ? "true" : "false",
   };
   return Object.values(payload).some((value) => value) ? payload : null;
 }
@@ -612,6 +614,7 @@ function serializeCredentialPayload(payload) {
     nifty_point_pyramiding_points: payload.nifty_point_pyramiding_points,
     nifty_trade_bias: payload.nifty_trade_bias,
     nifty_option_trade_mode: payload.nifty_option_trade_mode,
+    hybrid_buy_gainer_loser_enabled: payload.hybrid_buy_gainer_loser_enabled,
   });
 }
 
@@ -1054,6 +1057,43 @@ function renderStockWatchlist(state) {
   `);
 }
 
+function renderHybridWatchlist(state) {
+  if (!elements.hybridWatchlist) {
+    return;
+  }
+  const hybrid = state.hybrid || {};
+  const items = Array.isArray(hybrid.watchlist) ? hybrid.watchlist : [];
+  if (state.instrument.mode !== "hybrid") {
+    elements.hybridWatchlist.innerHTML = `<div class="list-item empty-state">Switch to Hybrid mode to use the NIFTY-driver stock basket.</div>`;
+    return;
+  }
+  if (!items.length) {
+    elements.hybridWatchlist.innerHTML = `<div class="list-item empty-state">Paste NIFTY 50 candidate stocks above. NIFTY will drive the signal and one stock will be traded.</div>`;
+    return;
+  }
+  const selectorText = hybrid.buy_gainer_loser_enabled
+    ? "Auto: buy top gainer / short top loser"
+    : `Fixed: ${hybrid.selected_symbol || "-"}`;
+  renderList(elements.hybridWatchlist, items, (item) => `
+    <div class="list-item stock-card ${item.has_active_trade ? "active-hybrid-stock" : ""}">
+      <strong>${item.symbol}</strong>
+      <span class="pill">${item.selected ? "selected" : (item.subscribed ? "subscribed" : "queued")}</span>
+      <span class="pill">${item.change_pct == null ? "change -" : `${item.change_pct.toFixed(2)}%`}</span>
+      <p>${item.label || item.symbol} | Security ${item.security_id}</p>
+      <p>LTP ${money(item.last_ltp)} | PDC ${money(item.previous_close)} | Ticks ${item.ticks_received || 0}</p>
+      <p>History ${item.history_status || "idle"} | Trades ${item.trade_count || 0} | Realized ${money(item.realized_pnl)}</p>
+      <p>${item.has_active_trade ? `${item.active_trade_direction || "-"} | P&L ${money(item.active_trade_pnl)}` : "No active hybrid stock trade"}</p>
+      <div class="button-row">
+        <button type="button" class="${item.selected ? "" : "secondary-btn"} hybrid-select-btn stable-action-btn" data-symbol="${item.symbol}">${item.selected ? "Selected" : "Select"}</button>
+      </div>
+    </div>
+  `);
+  const header = document.createElement("div");
+  header.className = "list-item";
+  header.innerHTML = `<strong>Hybrid Status</strong><p>${selectorText}</p><p>${hybrid.message || ""}</p><p>Last Driver: ${hybrid.last_driver_action || "-"} | Stock: ${hybrid.last_trade_symbol || "-"}</p>`;
+  elements.hybridWatchlist.prepend(header);
+}
+
 function drawChart(state) {
   const ctx = elements.chart.getContext("2d");
   ctx.clearRect(0, 0, elements.chart.width, elements.chart.height);
@@ -1131,6 +1171,7 @@ function renderStateSummary(summary) {
     runtimeUiState.dashboard.data_sync = summary.data_sync || runtimeUiState.dashboard.data_sync;
     runtimeUiState.dashboard.operation_job = summary.operation_job || runtimeUiState.dashboard.operation_job;
     runtimeUiState.dashboard.integrated_pnl = summary.integrated_pnl || runtimeUiState.dashboard.integrated_pnl;
+    runtimeUiState.dashboard.hybrid = summary.hybrid || runtimeUiState.dashboard.hybrid;
     runtimeUiState.dashboard.universe_warmup = summary.universe_warmup || runtimeUiState.dashboard.universe_warmup;
   }
 
@@ -1233,7 +1274,7 @@ function renderState(state) {
   const connectLiveBtn = document.getElementById("connectLiveBtn");
   const disconnectLiveBtn = document.getElementById("disconnectLiveBtn");
   const syncHistoryBtn = document.getElementById("syncHistoryBtn");
-  const liveFeedBusy = ["connecting", "connected", "reconnecting"].includes(state.live_feed.status);
+  const liveFeedBusy = ["connecting", "connected", "reconnecting", "cooldown"].includes(state.live_feed.status);
   const liveBroker = state.credentials.broker_provider || "dhan";
   const liveFeedProviderLabel = liveBroker === "zerodha" ? "Zerodha Live" : "Dhan Live";
   const historyProviderLabel = liveBroker === "zerodha" ? "Zerodha" : "Dhan";
@@ -1244,6 +1285,8 @@ function renderState(state) {
   disconnectLiveBtn.disabled = state.live_feed.status === "disconnected";
   if (state.live_feed.status === "connected") {
     connectLiveBtn.textContent = `${liveFeedProviderLabel} Connected ${state.instrument.label}`;
+  } else if (state.live_feed.status === "cooldown") {
+    connectLiveBtn.textContent = `${liveFeedProviderLabel} Cooldown ${state.instrument.label}`;
   } else if (state.live_feed.status === "reconnecting") {
     connectLiveBtn.textContent = `Reconnecting ${liveFeedProviderLabel} ${state.instrument.label}`;
   } else if (state.live_feed.status === "connecting") {
@@ -1394,6 +1437,7 @@ function renderState(state) {
   }
   renderStockSearchResults(state);
   renderStockWatchlist(state);
+  renderHybridWatchlist(state);
   renderUniverseWarmup(state);
   renderReplayPnlSummary(state.replay_pnl_summary);
 
@@ -1531,6 +1575,7 @@ function renderState(state) {
     syncCredentialField(credentialSaveForm, "nifty_point_pyramiding_enabled", state.credentials.nifty_point_pyramiding_enabled === true);
     syncCredentialField(credentialSaveForm, "nifty_point_pyramiding_points", String(state.credentials.nifty_point_pyramiding_points ?? 50));
     syncCredentialField(credentialSaveForm, "nifty_trade_bias", state.credentials.nifty_trade_bias || "both");
+    syncCredentialField(credentialSaveForm, "hybrid_buy_gainer_loser_enabled", state.credentials.hybrid_buy_gainer_loser_enabled !== false);
     if (!settingsUiState.dirtyFields.size && !settingsUiState.saveInFlight) {
       setCredentialSaveStatus("Saved locally. Autosave is active.", "saved");
     }
@@ -1665,6 +1710,7 @@ function renderCredentialSettingsOnly(state) {
     syncCredentialField(credentialSaveForm, "nifty_point_pyramiding_enabled", state.credentials.nifty_point_pyramiding_enabled === true);
     syncCredentialField(credentialSaveForm, "nifty_point_pyramiding_points", String(state.credentials.nifty_point_pyramiding_points ?? 50));
     syncCredentialField(credentialSaveForm, "nifty_trade_bias", state.credentials.nifty_trade_bias || "both");
+    syncCredentialField(credentialSaveForm, "hybrid_buy_gainer_loser_enabled", state.credentials.hybrid_buy_gainer_loser_enabled !== false);
   }
   applyBrokerVisibility();
   syncLiveCredentialsFromSavedForm();
@@ -1717,6 +1763,12 @@ async function addBulkStocks(bulkText, tradeBias = "both") {
   await postForm("/api/stocks/watchlist/bulk-add", formData);
 }
 
+async function addBulkHybridStocks(bulkText) {
+  const formData = new FormData();
+  formData.append("bulk_text", bulkText);
+  await postForm("/api/hybrid/watchlist/bulk-add", formData);
+}
+
 async function saveUniverseWarmupList(bulkText) {
   const formData = new FormData();
   formData.append("bulk_text", bulkText);
@@ -1744,6 +1796,12 @@ async function selectStock(symbol) {
   const formData = new FormData();
   formData.append("symbol", symbol);
   await postForm("/api/stocks/watchlist/select", formData);
+}
+
+async function selectHybridStock(symbol) {
+  const formData = new FormData();
+  formData.append("symbol", symbol);
+  await postForm("/api/hybrid/watchlist/select", formData);
 }
 
 async function removeStock(symbol) {
@@ -2126,6 +2184,16 @@ document.querySelectorAll(".stock-bulk-form").forEach((bulkForm) => {
   });
 });
 
+document.getElementById("hybridBulkImportForm")?.addEventListener("submit", (event) => {
+  event.preventDefault();
+  const form = event.currentTarget;
+  runAction(async () => {
+    const bulkText = (form.elements.bulk_text?.value || "").trim();
+    await addBulkHybridStocks(bulkText);
+    form.reset();
+  });
+});
+
 document.getElementById("removeAllStocksBtn")?.addEventListener("click", () => runAction(async () => {
   const button = document.getElementById("removeAllStocksBtn");
   if (stockUiState.pendingActions.has("remove-all:*")) {
@@ -2159,6 +2227,13 @@ document.addEventListener("click", (event) => {
   if (selectButton) {
     runAction(async () => {
       await runStockAction("select", selectButton.dataset.symbol || "", selectStock);
+    });
+    return;
+  }
+  const hybridSelectButton = event.target.closest(".hybrid-select-btn");
+  if (hybridSelectButton) {
+    runAction(async () => {
+      await selectHybridStock(hybridSelectButton.dataset.symbol || "");
     });
     return;
   }

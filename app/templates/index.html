@@ -60,6 +60,7 @@
           <select name="instrument_mode">
             <option value="nifty">NIFTY Mode</option>
             <option value="stock">Stock Universe Mode</option>
+            <option value="hybrid">Hybrid NIFTY Driver Mode</option>
           </select>
           <button type="submit">Apply Instrument Mode</button>
         </form>
@@ -81,6 +82,18 @@
           </div>
           <p class="caption" id="universeWarmupStatus">No universe warmup has run yet.</p>
         </form>
+        <form id="hybridBulkImportForm" class="stack-form">
+          <label>Hybrid NIFTY 50 Paste</label>
+          <textarea
+            name="bulk_text"
+            rows="5"
+            placeholder="Paste NIFTY 50 candidate stocks here. NIFTY heuristic creates the signal; hybrid mode trades one stock from this list."
+          ></textarea>
+          <button type="submit">Save Hybrid Stocks</button>
+        </form>
+        <div id="hybridWatchlist" class="list-surface">
+          <div class="list-item empty-state">Hybrid basket will appear here in Hybrid mode.</div>
+        </div>
         <form id="stockLongBulkImportForm" class="stack-form stock-bulk-form" data-trade-bias="long">
           <label>Long Bulk Stock Paste</label>
           <textarea
@@ -402,6 +415,10 @@
             <option value="selling">Option Selling</option>
             <option value="buying">Option Buying</option>
           </select>
+          <label class="checkbox-row">
+            <input type="checkbox" name="hybrid_buy_gainer_loser_enabled" checked />
+            <span>Hybrid Buy Gainer / Short Loser</span>
+          </label>
           <button type="submit">Save Now</button>
           <p id="credentialSaveStatus" class="caption">Autosave idle. Changes save automatically.</p>
         </form>

@@ -28,6 +28,7 @@ class OperatingMode(str, Enum):
 class InstrumentMode(str, Enum):
     nifty = "nifty"
     stock = "stock"
+    hybrid = "hybrid"
 
 
 class FullAIProvider(str, Enum):
@@ -165,6 +166,35 @@ class StockWatchItem(BaseModel):
     live_order_message: str | None = None
     live_order_error: str | None = None
     live_order_updated_at: datetime | None = None
+
+
+class HybridWatchItem(BaseModel):
+    symbol: str
+    label: str
+    security_id: str
+    selected: bool = False
+    subscribed: bool = False
+    last_ltp: float | None = None
+    previous_close: float | None = None
+    change_pct: float | None = None
+    ticks_received: int = 0
+    history_status: str = "idle"
+    has_active_trade: bool = False
+    active_trade_direction: str | None = None
+    active_trade_pnl: float | None = None
+    trade_count: int = 0
+    realized_pnl: float = 0.0
+
+
+class HybridModeState(BaseModel):
+    enabled: bool = False
+    buy_gainer_loser_enabled: bool = True
+    selected_symbol: str | None = None
+    last_driver_action: str | None = None
+    last_driver_reason: str | None = None
+    last_trade_symbol: str | None = None
+    message: str = "Hybrid mode is idle."
+    watchlist: list[HybridWatchItem] = Field(default_factory=list)
 
 
 class StrategyContext(BaseModel):
@@ -445,6 +475,7 @@ class CredentialSummary(BaseModel):
     nifty_point_pyramiding_points: float = 50.0
     nifty_trade_bias: str = "both"
     nifty_option_trade_mode: str = "selling"
+    hybrid_buy_gainer_loser_enabled: bool = True
     heuristic_advance_timeframe_minutes: int = 3
     heuristic_advance_min_2m_turnover: float = 10000000.0
     global_mtm_square_off_enabled: bool = False
@@ -581,6 +612,7 @@ class DashboardState(BaseModel):
     rulebook_job: RulebookJobState
     credentials: CredentialSummary
     stock_watchlist: list[StockWatchItem] = Field(default_factory=list)
+    hybrid: HybridModeState = Field(default_factory=HybridModeState)
     universe_warmup: UniverseWarmupState = Field(default_factory=UniverseWarmupState)
 
 

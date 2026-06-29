@@ -70,6 +70,7 @@ class CredentialStore:
         nifty_point_pyramiding_points: float | None = None,
         nifty_trade_bias: str | None = None,
         nifty_option_trade_mode: str | None = None,
+        hybrid_buy_gainer_loser_enabled: bool | None = None,
         global_mtm_square_off_enabled: bool | None = None,
         global_mtm_square_off_threshold: float | None = None,
         position_max_loss_enabled: bool | None = None,
@@ -302,6 +303,11 @@ class CredentialStore:
             if payload.get("nifty_option_trade_mode") != normalized:
                 payload["nifty_option_trade_mode"] = normalized
                 updated = True
+        if hybrid_buy_gainer_loser_enabled is not None:
+            normalized = bool(hybrid_buy_gainer_loser_enabled)
+            if payload.get("hybrid_buy_gainer_loser_enabled") != normalized:
+                payload["hybrid_buy_gainer_loser_enabled"] = normalized
+                updated = True
         if global_mtm_square_off_enabled is not None:
             normalized = bool(global_mtm_square_off_enabled)
             if payload.get("global_mtm_square_off_enabled") != normalized:
@@ -337,6 +343,8 @@ class CredentialStore:
         selected_stock_symbol: str | None = None,
         stock_watchlist_symbols: list[str] | tuple[str, ...] | None = None,
         stock_watchlist_biases: dict[str, str] | None = None,
+        hybrid_watchlist_symbols: list[str] | tuple[str, ...] | None = None,
+        selected_hybrid_symbol: str | None = None,
     ) -> None:
         payload = self.load()
         updated = False
@@ -345,7 +353,7 @@ class CredentialStore:
             normalized_mode = (
                 instrument_mode.value if isinstance(instrument_mode, InstrumentMode) else str(instrument_mode).strip().lower()
             )
-            if normalized_mode in {InstrumentMode.nifty.value, InstrumentMode.stock.value}:
+            if normalized_mode in {InstrumentMode.nifty.value, InstrumentMode.stock.value, InstrumentMode.hybrid.value}:
                 if payload.get("instrument_mode") != normalized_mode:
                     payload["instrument_mode"] = normalized_mode
                     updated = True
@@ -375,6 +383,23 @@ class CredentialStore:
             }
             if payload.get("stock_watchlist_biases") != normalized_biases:
                 payload["stock_watchlist_biases"] = normalized_biases
+                updated = True
+
+        if hybrid_watchlist_symbols is not None:
+            normalized_hybrid = [
+                str(symbol).strip().upper()
+                for symbol in hybrid_watchlist_symbols
+                if str(symbol).strip()
+            ]
+            normalized_hybrid = list(dict.fromkeys(normalized_hybrid))
+            if payload.get("hybrid_watchlist_symbols") != normalized_hybrid:
+                payload["hybrid_watchlist_symbols"] = normalized_hybrid
+                updated = True
+
+        if selected_hybrid_symbol is not None:
+            normalized_hybrid_symbol = str(selected_hybrid_symbol).strip().upper()
+            if payload.get("selected_hybrid_symbol") != normalized_hybrid_symbol:
+                payload["selected_hybrid_symbol"] = normalized_hybrid_symbol
                 updated = True
 
         if not updated:
@@ -630,6 +655,10 @@ class CredentialStore:
         payload = self.load()
         return self._normalize_nifty_option_trade_mode(payload.get("nifty_option_trade_mode") or settings.nifty_option_trade_mode)
 
+    def get_hybrid_buy_gainer_loser_enabled(self, settings: Settings) -> bool:
+        payload = self.load()
+        return self._coerce_bool(payload.get("hybrid_buy_gainer_loser_enabled"), True)
+
     def get_nifty_point_pyramiding_enabled(self, settings: Settings) -> bool:
         payload = self.load()
         return self._coerce_bool(
@@ -681,7 +710,12 @@ class CredentialStore:
     def get_ui_preferences(self) -> tuple[InstrumentMode, str | None, list[str]]:
         payload = self.load()
         raw_mode = str(payload.get("instrument_mode") or InstrumentMode.nifty.value).strip().lower()
-        instrument_mode = InstrumentMode.stock if raw_mode == InstrumentMode.stock.value else InstrumentMode.nifty
+        if raw_mode == InstrumentMode.stock.value:
+            instrument_mode = InstrumentMode.stock
+        elif raw_mode == InstrumentMode.hybrid.value:
+            instrument_mode = InstrumentMode.hybrid
+        else:
+            instrument_mode = InstrumentMode.nifty
         selected_stock_symbol = str(payload.get("selected_stock_symbol") or "").strip().upper() or None
         raw_watchlist = payload.get("stock_watchlist_symbols")
         if isinstance(raw_watchlist, list):
@@ -694,6 +728,21 @@ class CredentialStore:
         else:
             stock_watchlist_symbols = []
         return instrument_mode, selected_stock_symbol, stock_watchlist_symbols
+
+    def get_hybrid_ui_preferences(self) -> tuple[str | None, list[str]]:
+        payload = self.load()
+        selected_symbol = str(payload.get("selected_hybrid_symbol") or "").strip().upper() or None
+        raw_watchlist = payload.get("hybrid_watchlist_symbols")
+        if isinstance(raw_watchlist, list):
+            symbols = [
+                str(symbol).strip().upper()
+                for symbol in raw_watchlist
+                if str(symbol).strip()
+            ]
+            symbols = list(dict.fromkeys(symbols))
+        else:
+            symbols = []
+        return selected_symbol, symbols
 
     def get_stock_watchlist_biases(self) -> dict[str, str]:
         payload = self.load()
@@ -764,6 +813,7 @@ class CredentialStore:
             nifty_point_pyramiding_points=self.get_nifty_point_pyramiding_points(settings),
             nifty_trade_bias=self.get_nifty_trade_bias(settings),
             nifty_option_trade_mode=self.get_nifty_option_trade_mode(settings),
+            hybrid_buy_gainer_loser_enabled=self.get_hybrid_buy_gainer_loser_enabled(settings),
             global_mtm_square_off_enabled=self.get_global_mtm_square_off_enabled(settings),
             global_mtm_square_off_threshold=self.get_global_mtm_square_off_threshold(settings),
             position_max_loss_enabled=self.get_position_max_loss_enabled(settings),

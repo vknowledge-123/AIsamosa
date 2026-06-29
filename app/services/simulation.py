@@ -8,7 +8,7 @@ import re
 import threading
 import uuid
 from dataclasses import dataclass, field
-from datetime import date, datetime, time as datetime_time, timedelta
+from datetime import date, datetime, time as datetime_time, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -20,6 +20,8 @@ from app.schemas import (
     DashboardState,
     ExecutionState,
     FullAIProvider,
+    HybridModeState,
+    HybridWatchItem,
     IntegratedPnlState,
     InstrumentMode,
     LiveFeedState,
@@ -131,6 +133,9 @@ class SimulationEngine:
         self.companion_instrument_spec = BANKNIFTY_INSTRUMENT
         self.live_feed_adapter: DhanMarketFeedAdapter | None = None
         self.order_update_adapter: DhanOrderUpdateAdapter | None = None
+        self._live_connect_mutex = threading.Lock()
+        self._live_connect_in_progress = False
+        self._live_connect_started_at: datetime | None = None
         self.live_feed = self._build_live_feed_state()
         self.execution_state = ExecutionState()
         self._stock_execution_feedback: dict[str, dict] = {}
@@ -192,6 +197,12 @@ class SimulationEngine:
         self.stock_watchlist: dict[str, InstrumentSpec] = {}
         self.stock_watch_meta: dict[str, dict] = {}
         self.stock_sessions: dict[str, StockRuntimeSession] = {}
+        self.hybrid_watchlist: dict[str, InstrumentSpec] = {}
+        self.selected_hybrid_symbol: str | None = None
+        self.hybrid_last_driver_action: str | None = None
+        self.hybrid_last_driver_reason: str | None = None
+        self.hybrid_last_trade_symbol: str | None = None
+        self.hybrid_message = "Hybrid mode is idle."
         self.universe_warmup_path = Path("app/data/universe_warmup_cache.json")
         self.universe_warmup_history_path = Path("app/data/universe_warmup_history_cache.json")
         self.universe_warmup_symbols: list[str] = self._load_universe_warmup_symbols()
@@ -289,6 +300,7 @@ class SimulationEngine:
                     "open_quantity": active_trade.open_quantity if active_trade else None,
                 },
                 "stock_watchlist_count": len(self.stock_watchlist),
+                "hybrid": self._build_hybrid_state_locked().model_dump(mode="json"),
                 "universe_warmup": self.universe_warmup_state.model_dump(mode="json"),
             }
 
@@ -404,20 +416,13 @@ class SimulationEngine:
         return "NSE regular market is closed now; live feed/LTP is marked stale until the next session."
 
     def _display_live_feed_state_locked(self) -> LiveFeedState:
-        live_feed = self.live_feed.model_copy(deep=True)
-        if self._is_nse_regular_session_now():
-            return live_feed
-        if live_feed.status in {"connecting", "connected", "reconnecting"} or live_feed.connected:
-            live_feed.connected = False
-            live_feed.status = "market_closed"
-            live_feed.status_message = self._market_closed_live_message()
-            live_feed.error = None
-            live_feed.next_retry_at = None
-            live_feed.last_ltp = None
-        return live_feed
+        return self.live_feed.model_copy(deep=True)
 
     def instrument_state(self):
-        return self.instrument_spec.to_state(self._display_lot_size())
+        state = self.instrument_spec.to_state(self._display_lot_size())
+        if self.instrument_mode == InstrumentMode.hybrid:
+            return state.model_copy(update={"mode": InstrumentMode.hybrid})
+        return state
 
     def _display_lot_size(self) -> int:
         if self.instrument_spec.supports_options:
@@ -1225,38 +1230,16 @@ class SimulationEngine:
         loaded = 0
         latest_sync: datetime | None = None
         for raw_symbol, raw_session in sessions.items():
-            if not isinstance(raw_session, dict):
-                continue
             symbol = str(raw_symbol).strip().upper()
-            spec_payload = raw_session.get("spec") if isinstance(raw_session.get("spec"), dict) else {}
-            try:
-                spec = build_stock_instrument(
-                    str(spec_payload.get("symbol") or symbol),
-                    str(spec_payload.get("security_id") or ""),
-                    label=str(spec_payload.get("label") or symbol),
-                    exchange_segment=str(spec_payload.get("exchange_segment") or "NSE_EQ"),
-                    instrument_type=str(spec_payload.get("instrument_type") or "EQUITY"),
-                )
-                candles = [Candle.model_validate(candle) for candle in raw_session.get("candles", []) if isinstance(candle, dict)]
-                live_raw = raw_session.get("live_current_candle")
-                live_current_candle = Candle.model_validate(live_raw) if isinstance(live_raw, dict) else None
-                data_sync_raw = raw_session.get("data_sync")
-                data_sync = DataSyncState.model_validate(data_sync_raw) if isinstance(data_sync_raw, dict) else DataSyncState()
-            except Exception:
+            session = self._stock_session_from_warmup_payload(symbol, raw_session)
+            if session is None:
                 continue
-            if not candles and live_current_candle is None:
-                continue
-            session = self._build_stock_runtime_session(spec)
-            session.candles = candles
-            session.current_index = min(max(int(raw_session.get("current_index", len(candles) - 1)), -1), len(candles) - 1)
-            session.live_current_candle = live_current_candle
-            session.data_sync = data_sync
             self.stock_sessions[symbol] = session
-            if spec.security_id:
-                self._stock_symbol_by_security_id[spec.security_id] = symbol
+            if session.spec.security_id:
+                self._stock_symbol_by_security_id[session.spec.security_id] = symbol
             loaded += 1
-            if data_sync.last_synced_at and (latest_sync is None or data_sync.last_synced_at > latest_sync):
-                latest_sync = data_sync.last_synced_at
+            if session.data_sync.last_synced_at and (latest_sync is None or session.data_sync.last_synced_at > latest_sync):
+                latest_sync = session.data_sync.last_synced_at
         if loaded:
             self.universe_warmup_state = UniverseWarmupState(
                 symbols=list(self.universe_warmup_symbols),
@@ -1267,6 +1250,71 @@ class SimulationEngine:
                 message=f"Loaded {loaded} persisted warmed stock history session(s). Run warmup again to refresh.",
                 last_warmed_at=latest_sync,
             )
+
+    def _stock_session_from_warmup_payload(self, symbol: str, raw_session: object) -> StockRuntimeSession | None:
+        if not isinstance(raw_session, dict):
+            return None
+        spec_payload = raw_session.get("spec") if isinstance(raw_session.get("spec"), dict) else {}
+        try:
+            spec = build_stock_instrument(
+                str(spec_payload.get("symbol") or symbol),
+                str(spec_payload.get("security_id") or ""),
+                label=str(spec_payload.get("label") or symbol),
+                exchange_segment=str(spec_payload.get("exchange_segment") or "NSE_EQ"),
+                instrument_type=str(spec_payload.get("instrument_type") or "EQUITY"),
+            )
+            candles = [Candle.model_validate(candle) for candle in raw_session.get("candles", []) if isinstance(candle, dict)]
+            live_raw = raw_session.get("live_current_candle")
+            live_current_candle = Candle.model_validate(live_raw) if isinstance(live_raw, dict) else None
+            data_sync_raw = raw_session.get("data_sync")
+            data_sync = DataSyncState.model_validate(data_sync_raw) if isinstance(data_sync_raw, dict) else DataSyncState()
+        except Exception:
+            return None
+        if not candles and live_current_candle is None:
+            return None
+        session = self._build_stock_runtime_session(spec)
+        session.candles = candles
+        session.current_index = min(max(int(raw_session.get("current_index", len(candles) - 1)), -1), len(candles) - 1)
+        session.live_current_candle = live_current_candle
+        session.data_sync = data_sync
+        return session
+
+    def _restore_warmed_stock_session_locked(self, symbol: str) -> bool:
+        normalized = (symbol or "").strip().upper()
+        if not normalized:
+            return False
+        current = self.stock_sessions.get(normalized)
+        if (
+            current is not None
+            and current.data_sync.status == "ready"
+            and (current.candles or current.live_current_candle is not None)
+            and current.data_sync.source != "sample"
+        ):
+            return True
+        try:
+            if not self.universe_warmup_history_path.exists():
+                return False
+            payload = json.loads(self.universe_warmup_history_path.read_text(encoding="utf-8"))
+        except Exception:
+            return False
+        sessions = payload.get("sessions") if isinstance(payload, dict) else None
+        if not isinstance(sessions, dict):
+            return False
+        restored = self._stock_session_from_warmup_payload(normalized, sessions.get(normalized))
+        if restored is None:
+            return False
+        watch_spec = self.stock_watchlist.get(normalized)
+        if watch_spec is not None:
+            restored.spec = watch_spec
+        self.stock_sessions[normalized] = restored
+        if restored.spec.security_id:
+            self._stock_symbol_by_security_id[restored.spec.security_id] = normalized
+        meta = self.stock_watch_meta.setdefault(normalized, {})
+        meta["history_status"] = "ready"
+        meta["previous_day_candles"] = restored.data_sync.previous_day_candles
+        meta["intraday_candles"] = restored.data_sync.intraday_candles
+        meta["total_loaded"] = restored.data_sync.total_loaded
+        return True
 
     def _stock_historical_bundles_from_warmup_cache_locked(
         self,
@@ -1482,6 +1530,7 @@ class SimulationEngine:
 
     def _restore_persisted_ui_preferences_locked(self) -> None:
         instrument_mode, selected_symbol, persisted_watchlist = self.credential_store.get_ui_preferences()
+        selected_hybrid_symbol, persisted_hybrid_watchlist = self.credential_store.get_hybrid_ui_preferences()
         persisted_biases = self.credential_store.get_stock_watchlist_biases()
         for symbol in persisted_watchlist:
             if symbol in self.stock_watchlist:
@@ -1509,12 +1558,23 @@ class SimulationEngine:
                 selected_symbol = None
         if selected_symbol and selected_symbol in self.stock_watchlist:
             self.selected_stock_symbol = selected_symbol
+        for symbol in persisted_hybrid_watchlist:
+            try:
+                spec = self._add_hybrid_stock_locked(symbol, make_selected=False)
+            except ValueError:
+                continue
+            self.stock_sessions.setdefault(spec.symbol, self._build_stock_runtime_session(spec))
+        if selected_hybrid_symbol and selected_hybrid_symbol in self.hybrid_watchlist:
+            self.selected_hybrid_symbol = selected_hybrid_symbol
         if instrument_mode == InstrumentMode.stock:
             self.instrument_mode = InstrumentMode.stock
             if self.selected_stock_symbol and self.selected_stock_symbol in self.stock_watchlist:
                 self.instrument_spec = self.stock_watchlist[self.selected_stock_symbol]
             else:
                 self.instrument_spec = self._stock_watchlist_placeholder_spec()
+        elif instrument_mode == InstrumentMode.hybrid:
+            self.instrument_mode = InstrumentMode.hybrid
+            self.instrument_spec = NIFTY_INSTRUMENT
 
     def _persist_ui_preferences_locked(self) -> None:
         self.credential_store.save_ui_preferences(
@@ -1525,6 +1585,8 @@ class SimulationEngine:
                 symbol: self._normalize_stock_trade_bias(self.stock_watch_meta.get(symbol, {}).get("trade_bias", "both"))
                 for symbol in self.stock_watchlist
             },
+            hybrid_watchlist_symbols=list(self.hybrid_watchlist.keys()),
+            selected_hybrid_symbol=self.selected_hybrid_symbol or "",
         )
 
     def _build_stock_runtime_session(self, spec: InstrumentSpec) -> StockRuntimeSession:
@@ -1696,6 +1758,7 @@ class SimulationEngine:
             meta.setdefault("trade_bias", "both")
         if not spec.security_id:
             meta["history_status"] = "resolving"
+        self._restore_warmed_stock_session_locked(spec.symbol)
         session = self.stock_sessions.setdefault(spec.symbol, self._build_stock_runtime_session(spec))
         session.spec = spec
         if make_selected or self.selected_stock_symbol is None:
@@ -1723,17 +1786,13 @@ class SimulationEngine:
             spec = self._add_stock_to_watchlist_locked(symbol, make_selected=True)
             self._load_stock_session_locked(spec.symbol)
         if had_live_feed and previous_mode != InstrumentMode.stock:
-            client, token = self._available_dhan_credentials()
-            self.disconnect_live_feed()
-            if client and token:
-                self.connect_live_feed(client_id=client, access_token=token)
-                with self.lock:
-                    self.rulebook_service.learning_log.insert(
-                        0,
-                        f"Moved the live feed from {previous_mode.value} mode into the stock watchlist feed.",
-                    )
-                    self._mark_state_dirty_locked()
-                    return self.get_state()
+            self._schedule_watchlist_subscription_refresh()
+            with self.lock:
+                self.rulebook_service.learning_log.insert(
+                    0,
+                    f"Moved the live feed from {previous_mode.value} mode into the stock watchlist feed without reconnecting.",
+                )
+                self._mark_state_dirty_locked()
         self._schedule_watchlist_subscription_refresh()
         self._auto_prepare_watchlist_symbols_async([spec.symbol])
         with self.lock:
@@ -1809,17 +1868,13 @@ class SimulationEngine:
                 self.selected_stock_symbol = selected_symbol
                 self._load_stock_session_locked(selected_symbol)
         if had_live_feed and previous_mode != InstrumentMode.stock:
-            client, token = self._available_dhan_credentials()
-            self.disconnect_live_feed()
-            if client and token:
-                self.connect_live_feed(client_id=client, access_token=token)
-                with self.lock:
-                    self.rulebook_service.learning_log.insert(
-                        0,
-                        f"Moved the live feed from {previous_mode.value} mode into the stock watchlist feed.",
-                    )
-                    self._mark_state_dirty_locked()
-                    return self.get_state(), added_symbols, skipped
+            self._schedule_watchlist_subscription_refresh()
+            with self.lock:
+                self.rulebook_service.learning_log.insert(
+                    0,
+                    f"Moved the live feed from {previous_mode.value} mode into the stock watchlist feed without reconnecting.",
+                )
+                self._mark_state_dirty_locked()
         self._schedule_watchlist_subscription_refresh()
         self._auto_prepare_watchlist_symbols_async(added_symbols)
         with self.lock:
@@ -1832,6 +1887,47 @@ class SimulationEngine:
             self._persist_ui_preferences_locked()
             self._mark_state_dirty_locked()
             return self.get_state(), added_symbols, skipped
+
+    def _add_hybrid_stock_locked(self, symbol: str, *, make_selected: bool = False) -> InstrumentSpec:
+        spec = self._add_stock_to_watchlist_locked(symbol, make_selected=False, trade_bias="both")
+        self.hybrid_watchlist[spec.symbol] = spec
+        self.stock_watch_meta.setdefault(spec.symbol, {})["hybrid"] = True
+        self.stock_sessions.setdefault(spec.symbol, self._build_stock_runtime_session(spec)).spec = spec
+        if make_selected or self.selected_hybrid_symbol is None:
+            self.selected_hybrid_symbol = spec.symbol
+        return spec
+
+    def add_bulk_hybrid_stocks(
+        self,
+        raw_text: str,
+    ) -> tuple[DashboardState, list[str], list[str]]:
+        symbols, skipped = self.extract_bulk_stock_symbols(raw_text)
+        if not symbols:
+            raise ValueError("No valid stock symbols were found in the pasted hybrid NIFTY 50 list.")
+        added_symbols: list[str] = []
+        with self.lock:
+            for symbol in symbols:
+                spec = self._add_hybrid_stock_locked(symbol, make_selected=False)
+                added_symbols.append(spec.symbol)
+            if self.selected_hybrid_symbol is None and added_symbols:
+                self.selected_hybrid_symbol = added_symbols[0]
+            self.hybrid_message = f"Saved {len(added_symbols)} hybrid stock(s) for NIFTY-driver trading."
+            self._persist_ui_preferences_locked()
+            self._mark_state_dirty_locked()
+        self._schedule_watchlist_subscription_refresh()
+        self._auto_prepare_watchlist_symbols_async(added_symbols)
+        return self.get_state(), added_symbols, skipped
+
+    def select_hybrid_stock(self, symbol: str) -> DashboardState:
+        normalized = (symbol or "").strip().upper()
+        with self.lock:
+            if normalized not in self.hybrid_watchlist:
+                raise ValueError(f"{normalized or 'Symbol'} is not in the hybrid stock list.")
+            self.selected_hybrid_symbol = normalized
+            self.hybrid_message = f"Hybrid fixed-stock selection set to {normalized}."
+            self._persist_ui_preferences_locked()
+            self._mark_state_dirty_locked()
+            return self.get_state()
 
     def remove_stock_from_watchlist(self, symbol: str) -> DashboardState:
         normalized = (symbol or "").strip().upper()
@@ -1966,17 +2062,13 @@ class SimulationEngine:
             self.selected_stock_symbol = spec.symbol
             self._load_stock_session_locked(spec.symbol)
         if had_live_feed and previous_mode != InstrumentMode.stock:
-            client, token = self._available_dhan_credentials()
-            self.disconnect_live_feed()
-            if client and token:
-                self.connect_live_feed(client_id=client, access_token=token)
-                with self.lock:
-                    self.rulebook_service.learning_log.insert(
-                        0,
-                        f"Moved the live feed from {previous_mode.value} mode into the stock watchlist feed.",
-                    )
-                    self._mark_state_dirty_locked()
-                    return self.get_state()
+            self._schedule_watchlist_subscription_refresh()
+            with self.lock:
+                self.rulebook_service.learning_log.insert(
+                    0,
+                    f"Moved the live feed from {previous_mode.value} mode into the stock watchlist feed without reconnecting.",
+                )
+                self._mark_state_dirty_locked()
         self._schedule_watchlist_subscription_refresh()
         self._auto_prepare_watchlist_symbols_async([spec.symbol])
         with self.lock:
@@ -1998,14 +2090,28 @@ class SimulationEngine:
             unique_symbols = [symbol for symbol in dict.fromkeys(symbols) if symbol]
             selected_symbol = self.selected_stock_symbol
             if selected_symbol:
+                self._restore_warmed_stock_session_locked(selected_symbol)
                 selected_spec = self.stock_watchlist.get(selected_symbol)
-                status_text = (
+                selected_session = self.stock_sessions.get(selected_symbol)
+                selected_ready = (
+                    selected_session is not None
+                    and selected_session.data_sync.status == "ready"
+                    and (selected_session.candles or selected_session.live_current_candle is not None)
+                )
+                needs_today_fill = (
+                    selected_ready
+                    and bool(client and token)
+                    and self._stock_session_needs_current_day_fill_locked(selected_symbol, self._market_now())
+                )
+                status_text = "ready" if selected_ready and not needs_today_fill else (
                     "syncing"
                     if selected_spec and (provider == "zerodha" or selected_spec.security_id) and client and token
                     else ("queued" if selected_spec and (provider == "zerodha" or selected_spec.security_id) else "resolving")
                 )
                 self.stock_watch_meta.setdefault(selected_symbol, {})["history_status"] = status_text
-                if not client or not token:
+                if selected_ready and not needs_today_fill:
+                    self.data_sync = selected_session.data_sync.model_copy(deep=True)
+                elif not client or not token:
                     self._clear_active_session_locked()
                     self.data_sync = DataSyncState(
                         status="idle",
@@ -2051,6 +2157,8 @@ class SimulationEngine:
         try:
             self._resolve_watchlist_symbol_if_needed(symbol)
             self._schedule_watchlist_subscription_refresh()
+            with self.lock:
+                self._restore_warmed_stock_session_locked(symbol)
             if self._stock_session_has_ready_history(symbol):
                 if client_id and access_token:
                     now = self._market_now()
@@ -2446,6 +2554,7 @@ class SimulationEngine:
         session.heuristic_engine = self.heuristic_engine
 
     def _load_stock_session_locked(self, symbol: str) -> None:
+        self._restore_warmed_stock_session_locked(symbol)
         session = self.stock_sessions.setdefault(symbol, self._build_stock_runtime_session(self.stock_watchlist[symbol]))
         self.instrument_mode = InstrumentMode.stock
         self.instrument_spec = session.spec
@@ -2587,6 +2696,57 @@ class SimulationEngine:
             )
         items.sort(key=lambda item: (not item.selected, item.symbol))
         return items
+
+    def _build_hybrid_state_locked(self) -> HybridModeState:
+        items: list[HybridWatchItem] = []
+        broker = self._selected_broker_provider()
+        reference_time = (
+            self.live_current_candle.timestamp
+            if self.live_current_candle is not None
+            else self.candles[self.current_index].timestamp
+            if self.candles and 0 <= self.current_index < len(self.candles)
+            else datetime.now()
+        )
+        for symbol, spec in self.hybrid_watchlist.items():
+            session = self.stock_sessions.get(symbol)
+            meta = self.stock_watch_meta.get(symbol, {})
+            previous_close = self._session_previous_close_for_time(session, reference_time) if session is not None else None
+            latest_price = meta.get("last_ltp") or (self._session_latest_price_for_time(session, reference_time) if session is not None else None)
+            change_pct = None
+            if previous_close and previous_close > 0 and latest_price is not None:
+                change_pct = round(((float(latest_price) - previous_close) / previous_close) * 100.0, 2)
+            active_trade_pnl = self._trade_pnl_for_session_locked(session) if session is not None else None
+            feed_security_id = self._live_feed_security_id_for_spec(spec, broker)
+            items.append(
+                HybridWatchItem(
+                    symbol=symbol,
+                    label=spec.label,
+                    security_id=spec.security_id,
+                    selected=symbol == self.selected_hybrid_symbol,
+                    subscribed=bool(feed_security_id and feed_security_id in self._stock_quote_subscriptions),
+                    last_ltp=latest_price,
+                    previous_close=previous_close,
+                    change_pct=change_pct,
+                    ticks_received=int(meta.get("ticks_received") or 0),
+                    history_status=str(meta.get("history_status") or (session.data_sync.status if session else "idle")),
+                    has_active_trade=bool(session and session.active_trade and session.active_trade.status == "OPEN"),
+                    active_trade_direction=session.active_trade.direction if session and session.active_trade else None,
+                    active_trade_pnl=active_trade_pnl,
+                    trade_count=len(session.trade_history) if session is not None else 0,
+                    realized_pnl=round(float(session.realized_pnl), 2) if session is not None else 0.0,
+                )
+            )
+        items.sort(key=lambda item: (item.change_pct is None, -(item.change_pct or 0.0), item.symbol))
+        return HybridModeState(
+            enabled=self.instrument_mode == InstrumentMode.hybrid,
+            buy_gainer_loser_enabled=self._hybrid_buy_gainer_loser_enabled(),
+            selected_symbol=self.selected_hybrid_symbol,
+            last_driver_action=self.hybrid_last_driver_action,
+            last_driver_reason=self.hybrid_last_driver_reason,
+            last_trade_symbol=self.hybrid_last_trade_symbol,
+            message=self.hybrid_message,
+            watchlist=items,
+        )
 
     def _last_completed_5m_window(self, reference_time: datetime) -> tuple[datetime, datetime]:
         minute_floor = reference_time.replace(second=0, microsecond=0)
@@ -3197,7 +3357,7 @@ class SimulationEngine:
                 return bool(is_running())
             except Exception:
                 return False
-        return self.live_feed.status in {"connecting", "connected", "reconnecting"}
+        return self.live_feed.status in {"connecting", "connected", "reconnecting", "cooldown"}
 
     def _sync_watchlist_subscriptions(self) -> None:
         plan = self._build_watchlist_subscription_plan()
@@ -3241,11 +3401,15 @@ class SimulationEngine:
 
     def _build_watchlist_subscription_plan(self):
         with self.lock:
-            if self.live_feed_adapter is None or self.instrument_mode != InstrumentMode.stock:
+            if self.live_feed_adapter is None or self.instrument_mode not in {InstrumentMode.stock, InstrumentMode.hybrid}:
                 return None
             adapter = self.live_feed_adapter
             broker = self._selected_broker_provider()
-            specs = list(self.stock_watchlist.values())
+            specs = (
+                list(self.hybrid_watchlist.values())
+                if self.instrument_mode == InstrumentMode.hybrid
+                else list(self.stock_watchlist.values())
+            )
             current = dict(self._stock_quote_subscriptions)
         desired: dict[str, tuple] = {}
         desired_symbols: dict[str, str] = {}
@@ -3314,6 +3478,8 @@ class SimulationEngine:
                     self.instrument_spec = self.stock_watchlist[self.selected_stock_symbol]
                 else:
                     self.instrument_spec = self._stock_watchlist_placeholder_spec()
+            elif normalized_mode == InstrumentMode.hybrid:
+                self.instrument_spec = NIFTY_INSTRUMENT
             else:
                 self.instrument_spec = get_instrument_spec(normalized_mode)
             self.live_feed = self._build_live_feed_state()
@@ -3491,6 +3657,34 @@ class SimulationEngine:
                 raise ValueError("Dhan client ID and access token are required to start the live feed")
         if client and token:
             self._remember_dhan_credentials(client, token)
+        if broker == "dhan":
+            cooldown_until = DhanMarketFeedAdapter.cooldown_until_for_client(client)
+            if isinstance(cooldown_until, datetime):
+                retry_seconds = max(1, int((cooldown_until - datetime.now(timezone.utc)).total_seconds()))
+                with self.lock:
+                    self.live_feed = self._build_live_feed_state(
+                        connected=False,
+                        status="cooldown",
+                        source="dhan-websocket",
+                        status_message=f"Dhan websocket is cooling down after HTTP 429. Retrying in {retry_seconds}s.",
+                    )
+                    self.live_feed.retry_attempt = max(self.live_feed.retry_attempt, 1)
+                    self.live_feed.next_retry_at = cooldown_until
+                    self.live_feed.error = self.live_feed.status_message
+                    self._mark_state_dirty_locked()
+                    return self.get_state() if return_state else self.get_state_summary()
+        now = datetime.now()
+        with self.lock:
+            if (
+                self._live_connect_in_progress
+                and self._live_connect_started_at is not None
+                and (now - self._live_connect_started_at).total_seconds() < 15
+            ):
+                self.live_feed.status_message = self.live_feed.status_message or "Live feed connection is already starting."
+                self._mark_state_dirty_locked()
+                return self.get_state() if return_state else self.get_state_summary()
+            self._live_connect_in_progress = True
+            self._live_connect_started_at = now
         stale_adapter = None
         with self.lock:
             if self.live_feed_adapter is not None and self._live_feed_adapter_running_locked():
@@ -3505,6 +3699,9 @@ class SimulationEngine:
             else:
                 state = None
         if state is not None:
+            with self.lock:
+                self._live_connect_in_progress = False
+                self._live_connect_started_at = None
             return state
 
         if stale_adapter is not None:
@@ -3524,11 +3721,20 @@ class SimulationEngine:
             active_spec = self.instrument_spec
             companion_spec = self._active_companion_instrument_spec()
             use_banknifty_companion = self._use_banknifty_companion()
-            resolved_specs = [
-                spec
-                for spec in self.stock_watchlist.values()
-                if broker == "zerodha" or spec.security_id
-            ] if instrument_mode == InstrumentMode.stock else []
+            if instrument_mode == InstrumentMode.stock:
+                resolved_specs = [
+                    spec
+                    for spec in self.stock_watchlist.values()
+                    if broker == "zerodha" or spec.security_id
+                ]
+            elif instrument_mode == InstrumentMode.hybrid:
+                resolved_specs = [
+                    spec
+                    for spec in self.hybrid_watchlist.values()
+                    if broker == "zerodha" or spec.security_id
+                ]
+            else:
+                resolved_specs = []
             self._mark_state_dirty_locked()
         subscription_manager = SubscriptionManager(
             dhan_quote_builder=resolve_quote_subscription,
@@ -3544,6 +3750,16 @@ class SimulationEngine:
             instruments = plan.instruments
             if not instruments:
                 raise ValueError("No stock in the watchlist has a resolved security id yet. Search once or wait a moment, then retry.")
+        elif instrument_mode == InstrumentMode.hybrid:
+            plan = subscription_manager.stock_watchlist_plan(
+                specs=resolved_specs,
+                broker=broker,
+                companion_spec=None,
+            )
+            nifty_plan = subscription_manager.single_instrument_plan(spec=active_spec, broker=broker)
+            instruments = nifty_plan.instruments + plan.instruments
+            if not plan.instruments:
+                raise ValueError("Paste at least one hybrid stock with a resolved security id before connecting hybrid mode.")
         else:
             plan = subscription_manager.single_instrument_plan(
                 spec=active_spec,
@@ -3564,7 +3780,7 @@ class SimulationEngine:
         with self.lock:
             self.live_feed_adapter = adapter
             self._stock_quote_subscriptions = {}
-            if instrument_mode == InstrumentMode.stock:
+            if instrument_mode in {InstrumentMode.stock, InstrumentMode.hybrid}:
                 self._stock_quote_subscriptions.update(plan.security_to_subscription)
                 self._stock_symbol_by_security_id.update(plan.security_to_symbol)
             self._mark_state_dirty_locked()
@@ -3581,8 +3797,12 @@ class SimulationEngine:
             )
             self._mark_state_dirty_locked()
             if return_state:
-                return self.get_state()
-            return self.get_state_summary()
+                state = self.get_state()
+            else:
+                state = self.get_state_summary()
+            self._live_connect_in_progress = False
+            self._live_connect_started_at = None
+            return state
 
     def start_live_trading(self) -> DashboardState:
         if self.operating_mode not in {OperatingMode.heuristic, OperatingMode.heuristic_advance}:
@@ -3608,6 +3828,11 @@ class SimulationEngine:
                         cleared_symbols.append(symbol)
                 if selected_symbol and selected_symbol in self.stock_sessions:
                     self._load_stock_session_locked(selected_symbol)
+            elif self.instrument_mode == InstrumentMode.hybrid:
+                for symbol in self.hybrid_watchlist:
+                    session = self.stock_sessions.get(symbol)
+                    if session is not None and self._clear_simulated_active_trade_from_session(session):
+                        cleared_symbols.append(symbol)
             self.live_trading_enabled = True
             self.live_paper_trading_enabled = False
             self._global_mtm_square_off_triggered = False
@@ -3658,6 +3883,11 @@ class SimulationEngine:
                         cleared_symbols.append(symbol)
                 if selected_symbol and selected_symbol in self.stock_sessions:
                     self._load_stock_session_locked(selected_symbol)
+            elif self.instrument_mode == InstrumentMode.hybrid:
+                for symbol in self.hybrid_watchlist:
+                    session = self.stock_sessions.get(symbol)
+                    if session is not None and self._clear_simulated_active_trade_from_session(session):
+                        cleared_symbols.append(symbol)
             elif self.active_trade is not None and not self._trade_is_broker_backed(self.active_trade):
                 self.trade_history = [item for item in self.trade_history if item.trade_id != self.active_trade.trade_id]
                 self.active_trade = None
@@ -4315,10 +4545,12 @@ class SimulationEngine:
             if self.instrument_mode == InstrumentMode.stock:
                 _, _, normalized_scope = self._stock_replay_symbols_for_scope_locked(stock_replay_scope)
                 replay_label = f"stock {self._stock_replay_scope_label(normalized_scope)}"
+            elif self.instrument_mode == InstrumentMode.hybrid:
+                replay_label = "hybrid NIFTY-driver stock"
             elif self.instrument_mode == InstrumentMode.nifty and self.instrument_spec.symbol == "NIFTY":
                 replay_label = "NIFTY"
             else:
-                raise ValueError("Bulk historical replay is available for NIFTY mode or stock mode.")
+                raise ValueError("Bulk historical replay is available for NIFTY, stock, or hybrid mode.")
             self._operation_job_token = job_id
             self._set_operation_job_locked(
                 job_id=job_id,
@@ -4419,6 +4651,40 @@ class SimulationEngine:
                     self.selected_stock_symbol = selected
                     self._load_stock_session_locked(selected)
                     self._mark_state_dirty_locked()
+            return self.get_state()
+
+        if self.instrument_mode == InstrumentMode.hybrid:
+            watched_symbols = list(self.hybrid_watchlist.keys())
+            if watched_symbols:
+                bundles = self._fetch_stock_market_context_bundles(
+                    watched_symbols,
+                    client_id=client,
+                    access_token=token,
+                    provider=provider,
+                )
+                with self.lock:
+                    for symbol, (_, stock_bundle) in bundles.items():
+                        self._load_hybrid_stock_bundle_for_replay_locked(symbol, stock_bundle)
+            bundle = self._fetch_market_context_for_spec(
+                provider,
+                client,
+                token,
+                NIFTY_INSTRUMENT,
+                prefer_last_closed_session_before_open=True,
+            )
+            with self.lock:
+                evaluation_index = self._load_dhan_bundle(bundle)
+                self.rulebook_service.learning_log.insert(
+                    0,
+                    (
+                        f"Synced hybrid NIFTY driver context and {len(watched_symbols)} stock candidate(s): "
+                        f"{len(bundle.previous_day_candles)} NIFTY previous-day candles, "
+                        f"{len(bundle.intraday_candles)} NIFTY intraday candles."
+                    ),
+                )
+                self._mark_state_dirty_locked()
+            if evaluation_index is not None:
+                self._evaluate_index(evaluation_index, source="sync")
             return self.get_state()
 
         if self._use_banknifty_companion():
@@ -4694,6 +4960,114 @@ class SimulationEngine:
                     self.selected_stock_symbol = selected
                     self._load_stock_session_locked(selected)
                     self._mark_state_dirty_locked()
+            return self.get_state()
+
+        if self.instrument_mode == InstrumentMode.hybrid:
+            with self.lock:
+                watched_symbols = list(self.hybrid_watchlist.keys())
+            if not watched_symbols:
+                raise ValueError("Paste stocks into the Hybrid NIFTY 50 list before running hybrid replay.")
+            stock_bundles = self._fetch_stock_historical_bundles(
+                watched_symbols,
+                client_id=client,
+                access_token=token,
+                replay_session_day=replay_session_day,
+                previous_day=previous_day,
+                provider=provider,
+            )
+            bundle = self._fetch_market_context_for_spec_days(
+                provider,
+                client,
+                token,
+                NIFTY_INSTRUMENT,
+                session_day=replay_session_day,
+                previous_context_day=previous_day,
+            )
+            self._begin_replay_simulation()
+            try:
+                with self.lock:
+                    replayed_hybrid_symbols = []
+                    for symbol, (_, stock_bundle) in stock_bundles.items():
+                        if not stock_bundle.intraday_candles:
+                            continue
+                        self._load_hybrid_stock_bundle_for_replay_locked(symbol, stock_bundle)
+                        replayed_hybrid_symbols.append(symbol)
+                    if not replayed_hybrid_symbols:
+                        raise ValueError("No hybrid stock candles were returned for the selected historical replay day.")
+                    intraday_count = len(bundle.intraday_candles)
+                    if intraday_count == 0:
+                        raise ValueError("No NIFTY candles were returned for the selected historical replay day.")
+                    start_index, end_index = self._load_dhan_bundle(bundle, replay_from_session_start=True)
+                    self.data_sync = DataSyncState(
+                        status="syncing",
+                        source=self._history_source_label(provider),
+                        message=(
+                            f"Hybrid replay running: {replay_session_day.isoformat()} NIFTY driver "
+                            f"with {len(replayed_hybrid_symbols)} stock candidate(s)."
+                        ),
+                        last_synced_at=datetime.now(),
+                        replay_session_day=replay_session_day,
+                        previous_context_day=previous_day,
+                        previous_day_candles=len(bundle.previous_day_candles),
+                        intraday_candles=intraday_count,
+                        total_loaded=len(bundle.previous_day_candles) + intraday_count,
+                        has_live_open_candle=False,
+                    )
+                    self._mark_state_dirty_locked()
+                for evaluation_index in range(start_index, end_index + 1):
+                    self._evaluate_index(
+                        evaluation_index,
+                        source="replay",
+                        replay_decision_duration_minutes=replay_decision_duration_minutes,
+                    )
+                with self.lock:
+                    last_candle = self.candles[end_index] if 0 <= end_index < len(self.candles) else None
+                    if self.active_trade and last_candle and bundle.live_open_candle is None:
+                        exit_decision = TradeDecision(action=TradeAction.exit, reason="Hybrid replay completed at the final available session candle.")
+                        self._apply_hybrid_trade_logic(last_candle, exit_decision, source="replay")
+                    aggregate_trades: list[SimulatedTrade] = []
+                    for symbol in watched_symbols:
+                        session = self.stock_sessions.get(symbol)
+                        if session is not None:
+                            aggregate_trades.extend(trade.model_copy(deep=True) for trade in session.trade_history)
+                    aggregate_trades.sort(key=lambda trade: trade.entry_time)
+                    self._bulk_replay_trade_history = [trade.model_copy(deep=True) for trade in aggregate_trades]
+                    self.trade_history = []
+                    self.active_trade = None
+                    self.realized_pnl = round(sum(float(trade.booked_pnl or 0.0) for trade in aggregate_trades), 2)
+                    self.balance = round(self.settings.simulation_starting_balance + self.realized_pnl, 2)
+                    self.replay_pnl_summary = self._build_replay_pnl_summary(
+                        aggregate_trades,
+                        replayed_days=[replay_session_day],
+                        skipped_count=0,
+                        use_daily_cap=False,
+                    )
+                    self.data_sync = DataSyncState(
+                        status="ready",
+                        source=self._history_source_label(provider),
+                        message=(
+                            f"Hybrid replay completed for {replay_session_day.isoformat()}: "
+                            f"{len(aggregate_trades)} stock trade(s)."
+                        ),
+                        last_synced_at=datetime.now(),
+                        replay_session_day=replay_session_day,
+                        previous_context_day=previous_day,
+                        previous_day_candles=len(bundle.previous_day_candles),
+                        intraday_candles=len(bundle.intraday_candles),
+                        total_loaded=len(bundle.previous_day_candles) + len(bundle.intraday_candles),
+                        has_live_open_candle=False,
+                    )
+                    self.hybrid_message = f"Hybrid replay finished with {len(aggregate_trades)} stock trade(s)."
+                    self.rulebook_service.learning_log.insert(
+                        0,
+                        (
+                            f"Hybrid replay completed {replay_session_day.isoformat()}: "
+                            f"NIFTY driver, {len(aggregate_trades)} stock trade(s)."
+                        ),
+                    )
+                    self._mark_state_dirty_locked()
+            finally:
+                self._end_replay_simulation()
             return self.get_state()
 
         if self._use_banknifty_companion():
@@ -5020,6 +5394,15 @@ class SimulationEngine:
                 stock_replay_scope=stock_replay_scope,
             )
 
+        if self.instrument_mode == InstrumentMode.hybrid:
+            return self._simulate_hybrid_historical_range_session(
+                client_id=client,
+                access_token=token,
+                provider=provider,
+                replay_days=replay_days,
+                replay_decision_duration_minutes=replay_decision_duration_minutes,
+            )
+
         if self.instrument_mode != InstrumentMode.nifty or self.instrument_spec.symbol != "NIFTY":
             raise ValueError("Bulk historical replay is available for NIFTY mode or stock mode.")
 
@@ -5154,6 +5537,172 @@ class SimulationEngine:
             self._mark_state_dirty_locked()
         return self.get_state()
 
+    def _load_hybrid_stock_bundle_for_replay_locked(self, symbol: str, bundle: DhanSessionBundle) -> None:
+        spec = self.hybrid_watchlist[symbol]
+        session = self.stock_sessions.setdefault(symbol, self._build_stock_runtime_session(spec))
+        session.spec = spec
+        session.candles = list(bundle.previous_day_candles + bundle.intraday_candles)
+        session.current_index = len(session.candles) - 1
+        session.live_current_candle = None
+        session.pending_setup = None
+        session.active_trade = None
+        session.trade_history = []
+        session.decision = None
+        session.realized_pnl = 0.0
+        session.balance = self.settings.simulation_starting_balance
+        session.data_sync = DataSyncState(
+            status="ready",
+            source=self._history_source_label(self._selected_broker_provider()),
+            message=f"Loaded hybrid replay candles for {symbol}.",
+            last_synced_at=datetime.now(),
+            replay_session_day=bundle.replay_session_day,
+            previous_context_day=bundle.previous_context_day,
+            previous_day_candles=len(bundle.previous_day_candles),
+            intraday_candles=len(bundle.intraday_candles),
+            total_loaded=len(bundle.previous_day_candles) + len(bundle.intraday_candles),
+            has_live_open_candle=False,
+        )
+        self.stock_watch_meta.setdefault(symbol, {}).update(
+            {
+                "history_status": "ready",
+                "previous_day_candles": len(bundle.previous_day_candles),
+                "intraday_candles": len(bundle.intraday_candles),
+                "total_loaded": len(bundle.previous_day_candles) + len(bundle.intraday_candles),
+                "last_ltp": bundle.intraday_candles[-1].close if bundle.intraday_candles else None,
+            }
+        )
+
+    def _simulate_hybrid_historical_range_session(
+        self,
+        *,
+        client_id: str,
+        access_token: str,
+        provider: str,
+        replay_days: list[date],
+        replay_decision_duration_minutes: int,
+    ) -> DashboardState:
+        with self.lock:
+            watched_symbols = list(self.hybrid_watchlist.keys())
+        if not watched_symbols:
+            raise ValueError("Paste stocks into the Hybrid NIFTY 50 list before running hybrid replay.")
+        aggregate_trades: list[SimulatedTrade] = []
+        replayed_days: list[date] = []
+        skipped_days: list[str] = []
+        last_bundle: DhanSessionBundle | None = None
+        last_end_index: int | None = None
+        self._begin_replay_simulation()
+        try:
+            for replay_day in replay_days:
+                try:
+                    nifty_bundle = self._fetch_historical_bundle_with_previous_fallback(
+                        client_id=client_id,
+                        access_token=access_token,
+                        replay_session_day=replay_day,
+                        spec=NIFTY_INSTRUMENT,
+                        provider=provider,
+                    )
+                except DhanChartEmptyDataError as exc:
+                    skipped_days.append(f"{replay_day.isoformat()} no NIFTY candles ({exc})")
+                    continue
+                try:
+                    stock_bundles, stock_skips = self._fetch_stock_historical_bundles_with_previous_fallback(
+                        watched_symbols,
+                        client_id=client_id,
+                        access_token=access_token,
+                        replay_session_day=replay_day,
+                        provider=provider,
+                    )
+                except DhanChartEmptyDataError as exc:
+                    skipped_days.append(f"{replay_day.isoformat()} no hybrid stock candles ({exc})")
+                    continue
+                with self.lock:
+                    for symbol, (_, stock_bundle) in stock_bundles.items():
+                        if stock_bundle.intraday_candles:
+                            self._load_hybrid_stock_bundle_for_replay_locked(symbol, stock_bundle)
+                    intraday_count = len(nifty_bundle.intraday_candles)
+                    if intraday_count == 0:
+                        skipped_days.append(f"{replay_day.isoformat()} no NIFTY intraday candles")
+                        continue
+                    start_index, end_index = self._load_dhan_bundle(nifty_bundle, replay_from_session_start=True)
+                    self.data_sync = DataSyncState(
+                        status="syncing",
+                        source=self._history_source_label(provider),
+                        message=f"Hybrid replay running: {replay_day.isoformat()} NIFTY driver with {len(stock_bundles)} stock candidate(s).",
+                        last_synced_at=datetime.now(),
+                        replay_session_day=replay_day,
+                        previous_context_day=nifty_bundle.previous_context_day,
+                        previous_day_candles=len(nifty_bundle.previous_day_candles),
+                        intraday_candles=intraday_count,
+                        total_loaded=len(nifty_bundle.previous_day_candles) + intraday_count,
+                        has_live_open_candle=False,
+                    )
+                    self._mark_state_dirty_locked()
+                for evaluation_index in range(start_index, end_index + 1):
+                    self._evaluate_index(
+                        evaluation_index,
+                        source="replay",
+                        replay_decision_duration_minutes=replay_decision_duration_minutes,
+                    )
+                with self.lock:
+                    last_candle = self.candles[end_index] if 0 <= end_index < len(self.candles) else None
+                    if self.active_trade and last_candle:
+                        exit_decision = TradeDecision(action=TradeAction.exit, reason="Hybrid replay completed at the final available session candle.")
+                        self._apply_hybrid_trade_logic(last_candle, exit_decision, source="replay")
+                    for symbol in watched_symbols:
+                        session = self.stock_sessions.get(symbol)
+                        if session is not None:
+                            aggregate_trades.extend(trade.model_copy(deep=True) for trade in session.trade_history)
+                    replayed_days.append(replay_day)
+                    last_bundle = nifty_bundle
+                    last_end_index = end_index
+                    if stock_skips:
+                        skipped_days.extend(stock_skips[:3])
+                    self.rulebook_service.learning_log.insert(
+                        0,
+                        f"Hybrid replay completed {replay_day.isoformat()}: NIFTY driver, {len(aggregate_trades)} aggregate stock trade(s).",
+                    )
+                    self._mark_state_dirty_locked()
+        finally:
+            self._end_replay_simulation()
+        if not replayed_days:
+            skipped_text = "; ".join(skipped_days[:4]) if skipped_days else "No replayable candles found."
+            raise ValueError(f"No hybrid trading days were replayed in the selected range. {skipped_text}")
+        aggregate_trades.sort(key=lambda trade: trade.entry_time)
+        with self.lock:
+            self._bulk_replay_trade_history = [trade.model_copy(deep=True) for trade in aggregate_trades]
+            self.trade_history = []
+            self.active_trade = None
+            self.realized_pnl = round(sum(float(trade.booked_pnl or 0.0) for trade in aggregate_trades), 2)
+            self.balance = round(self.settings.simulation_starting_balance + self.realized_pnl, 2)
+            self.replay_pnl_summary = self._build_replay_pnl_summary(
+                aggregate_trades,
+                replayed_days=replayed_days,
+                skipped_count=len(skipped_days),
+            )
+            previous_count = len(last_bundle.previous_day_candles) if last_bundle else 0
+            intraday_count = len(last_bundle.intraday_candles) if last_bundle else 0
+            self.data_sync = DataSyncState(
+                status="ready",
+                source=self._history_source_label(provider),
+                message=(
+                    f"Hybrid replay completed for {len(replayed_days)} trading day(s): "
+                    f"{replayed_days[0].isoformat()} to {replayed_days[-1].isoformat()}, "
+                    f"{len(aggregate_trades)} stock trade(s)."
+                ),
+                last_synced_at=datetime.now(),
+                replay_session_day=replayed_days[-1],
+                previous_context_day=last_bundle.previous_context_day if last_bundle else None,
+                previous_day_candles=previous_count,
+                intraday_candles=intraday_count,
+                total_loaded=previous_count + intraday_count,
+                has_live_open_candle=False,
+            )
+            if last_end_index is not None:
+                self.current_index = last_end_index
+            self.hybrid_message = f"Hybrid replay finished with {len(aggregate_trades)} stock trade(s)."
+            self._mark_state_dirty_locked()
+        return self.get_state()
+
     def _weekday_range(self, start_day: date, end_day: date) -> list[date]:
         days: list[date] = []
         current = start_day
@@ -5277,6 +5826,7 @@ class SimulationEngine:
         nifty_point_pyramiding_points: float | None = None,
         nifty_trade_bias: str | None = None,
         nifty_option_trade_mode: str | None = None,
+        hybrid_buy_gainer_loser_enabled: bool | None = None,
         global_mtm_square_off_enabled: bool | None = None,
         global_mtm_square_off_threshold: float | None = None,
         position_max_loss_enabled: bool | None = None,
@@ -5329,6 +5879,7 @@ class SimulationEngine:
                 nifty_point_pyramiding_points=nifty_point_pyramiding_points,
                 nifty_trade_bias=nifty_trade_bias,
                 nifty_option_trade_mode=nifty_option_trade_mode,
+                hybrid_buy_gainer_loser_enabled=hybrid_buy_gainer_loser_enabled,
                 global_mtm_square_off_enabled=global_mtm_square_off_enabled,
                 global_mtm_square_off_threshold=global_mtm_square_off_threshold,
                 position_max_loss_enabled=position_max_loss_enabled,
@@ -5557,6 +6108,7 @@ class SimulationEngine:
             learning_log = list(self.rulebook_service.learning_log[:10])
             rulebook = self.rulebook_service.get_rulebook()
             stock_watchlist = self._build_stock_watchlist_state_locked()
+            hybrid_state = self._build_hybrid_state_locked()
             operating_mode = self.operating_mode
             balance = self.balance
             realized_pnl = self.realized_pnl
@@ -5687,6 +6239,7 @@ class SimulationEngine:
             rulebook_job=rulebook_job,
             credentials=self.get_credential_summary(),
             stock_watchlist=stock_watchlist,
+            hybrid=hybrid_state,
             universe_warmup=universe_warmup,
         )
         with self.lock:
@@ -5711,7 +6264,7 @@ class SimulationEngine:
             self.live_feed.instrument_label = self.instrument_spec.label
             self.live_feed.security_id = self.instrument_spec.security_id
             self.live_feed.status_message = message
-            self.live_feed.error = message if status in {"error", "reconnecting"} else None
+            self.live_feed.error = message if status in {"error", "reconnecting", "cooldown"} else None
             self.live_feed.retry_attempt = retry_attempt
             self.live_feed.next_retry_at = next_retry_at
             if status == "connected":
@@ -5719,6 +6272,8 @@ class SimulationEngine:
                 self._sync_active_trade_subscription_locked()
                 if self.instrument_mode == InstrumentMode.stock:
                     fill_symbols = list(self.stock_watchlist.keys())
+                elif self.instrument_mode == InstrumentMode.hybrid:
+                    fill_symbols = list(self.hybrid_watchlist.keys())
             self._mark_state_dirty_locked()
         if fill_symbols:
             self._start_current_day_stock_fill_async(
@@ -5889,7 +6444,7 @@ class SimulationEngine:
             volume_delta = self._live_volume_delta_locked(security_id, tick_time, raw_volume)
             packet_type = str(packet.get("type", "Unknown"))
             feed_source = str(packet.get("source") or self.live_feed.source or "dhan-websocket")
-            if self.instrument_mode == InstrumentMode.stock:
+            if self.instrument_mode in {InstrumentMode.stock, InstrumentMode.hybrid}:
                 matched_symbol = self._stock_symbol_by_security_id.get(security_id)
                 companion_spec = self._active_companion_instrument_spec()
                 if companion_spec is not None and security_id == companion_spec.security_id:
@@ -5904,6 +6459,9 @@ class SimulationEngine:
                     if self._stock_session_needs_current_day_fill_locked(matched_symbol, tick_time):
                         current_day_fill_symbol = matched_symbol
                     self._mark_state_dirty_locked()
+                if self.instrument_mode == InstrumentMode.hybrid and matched_symbol is not None:
+                    self._update_nonselected_stock_tick(matched_symbol, tick_time, ltp, volume_delta)
+                    return
                 if matched_symbol is not None and matched_symbol != self.selected_stock_symbol:
                     self._update_nonselected_stock_tick(matched_symbol, tick_time, ltp, volume_delta)
                     return
@@ -5911,6 +6469,8 @@ class SimulationEngine:
             elif self._use_banknifty_companion() and security_id == self.companion_instrument_spec.security_id:
                 self._update_companion_live_candle_locked(tick_time, ltp, volume_delta)
                 self._mark_state_dirty_locked()
+                return
+            if self.instrument_mode == InstrumentMode.hybrid and security_id != self.instrument_spec.security_id:
                 return
             if (
                 self.active_trade is not None
@@ -6008,6 +6568,8 @@ class SimulationEngine:
         if self._check_position_max_loss(tick_time):
             return
         self._check_global_mtm_square_off(tick_time)
+        if self.instrument_mode == InstrumentMode.hybrid:
+            return
         if evaluation_index is None:
             return
         self._queue_live_evaluation(symbol, evaluation_index)
@@ -6109,6 +6671,8 @@ class SimulationEngine:
             heuristic_decision = self.heuristic_decision(snapshot)
             if self.operating_mode == OperatingMode.heuristic_advance:
                 decision = heuristic_decision
+            elif self.instrument_mode == InstrumentMode.hybrid:
+                decision = heuristic_decision
             elif source == "replay" and self.instrument_mode == InstrumentMode.nifty and self.instrument_spec.symbol == "NIFTY":
                 decision = heuristic_decision
             else:
@@ -6125,6 +6689,11 @@ class SimulationEngine:
                 decision = self._apply_stock_turnover_filter_locked(snapshot.current_candle, decision)
                 decision = self._apply_nifty_daily_loss_cap_filter_locked(snapshot.current_candle, decision, source)
                 self.decision = decision
+                if self.instrument_mode == InstrumentMode.hybrid:
+                    self._record_signal_events_locked(snapshot.signal_events)
+                    self._apply_hybrid_trade_logic(snapshot.current_candle, decision, source=source)
+                    self._mark_state_dirty_locked()
+                    return
                 self.apply_pending_setup_decision(snapshot.current_candle, decision)
                 self._record_signal_events_locked(snapshot.signal_events)
                 self.apply_trade_logic(snapshot.current_candle, decision, source=source)
@@ -7656,6 +8225,16 @@ class SimulationEngine:
         current_trade_price = None
         if context.active_trade is not None:
             current_trade_price = self.current_trade_market_price(context.current_candle.close, context.active_trade)
+        if self.instrument_mode == InstrumentMode.hybrid:
+            decision = decide_nifty(
+                self.heuristic_engine,
+                context,
+                current_trade_price=current_trade_price,
+            )
+            decision.decision_source = "hybrid-nifty-heuristic"
+            if context.instrument.supports_options and decision.action in {TradeAction.enter_call, TradeAction.enter_put}:
+                decision.strike = decision.strike or self.select_itm_strike(context.current_candle.close, decision.option_type or "CE")
+            return decision
         if self.operating_mode == OperatingMode.heuristic_advance:
             if context.active_trade is not None:
                 decision = decide_stock(
@@ -7683,6 +8262,240 @@ class SimulationEngine:
         if context.instrument.supports_options and decision.action in {TradeAction.enter_call, TradeAction.enter_put}:
             decision.strike = decision.strike or self.select_itm_strike(context.current_candle.close, decision.option_type or "CE")
         return decision
+
+    def _hybrid_buy_gainer_loser_enabled(self) -> bool:
+        return self.credential_store.get_hybrid_buy_gainer_loser_enabled(self.settings)
+
+    def _session_previous_close_for_time(self, session: StockRuntimeSession, timestamp: datetime) -> float | None:
+        candles = session.candles
+        if not candles:
+            return None
+        previous = [candle for candle in candles if candle.timestamp.date() < timestamp.date()]
+        if previous:
+            return previous[-1].close
+        levels = calculate_previous_day_levels_for_timestamp(candles, timestamp)
+        return levels.close or None
+
+    def _session_latest_price_for_time(self, session: StockRuntimeSession, timestamp: datetime) -> float | None:
+        if session.live_current_candle is not None and session.live_current_candle.timestamp <= timestamp:
+            return session.live_current_candle.close
+        same_or_before = [candle for candle in session.candles if candle.timestamp <= timestamp]
+        if same_or_before:
+            return same_or_before[-1].close
+        return None
+
+    def _hybrid_change_pct_locked(self, symbol: str, timestamp: datetime) -> float | None:
+        session = self.stock_sessions.get(symbol)
+        if session is None:
+            return None
+        previous_close = self._session_previous_close_for_time(session, timestamp)
+        latest_price = self.stock_watch_meta.get(symbol, {}).get("last_ltp") or self._session_latest_price_for_time(session, timestamp)
+        if previous_close is None or previous_close <= 0 or latest_price is None:
+            return None
+        return round(((float(latest_price) - previous_close) / previous_close) * 100.0, 4)
+
+    def _select_hybrid_symbol_for_decision_locked(self, decision: TradeDecision, timestamp: datetime) -> str | None:
+        if not self.hybrid_watchlist:
+            return None
+        if not self._hybrid_buy_gainer_loser_enabled():
+            return self.selected_hybrid_symbol if self.selected_hybrid_symbol in self.hybrid_watchlist else next(iter(self.hybrid_watchlist))
+        ranked: list[tuple[float, str]] = []
+        for symbol in self.hybrid_watchlist:
+            change_pct = self._hybrid_change_pct_locked(symbol, timestamp)
+            if change_pct is not None:
+                ranked.append((change_pct, symbol))
+        if not ranked:
+            return self.selected_hybrid_symbol if self.selected_hybrid_symbol in self.hybrid_watchlist else next(iter(self.hybrid_watchlist))
+        if decision.action == TradeAction.enter_call:
+            return max(ranked, key=lambda item: item[0])[1]
+        if decision.action == TradeAction.enter_put:
+            return min(ranked, key=lambda item: item[0])[1]
+        return self.hybrid_last_trade_symbol or self.selected_hybrid_symbol
+
+    def _hybrid_stock_candle_locked(self, symbol: str, driver_candle: Candle) -> Candle | None:
+        session = self.stock_sessions.get(symbol)
+        if session is None:
+            return None
+        if session.live_current_candle is not None and session.live_current_candle.timestamp <= driver_candle.timestamp:
+            return session.live_current_candle.model_copy(deep=True)
+        for candle in reversed(session.candles):
+            if candle.timestamp <= driver_candle.timestamp:
+                return candle.model_copy(deep=True)
+        latest_price = self.stock_watch_meta.get(symbol, {}).get("last_ltp")
+        if latest_price is None:
+            return None
+        return Candle(
+            timestamp=driver_candle.timestamp,
+            open=float(latest_price),
+            high=float(latest_price),
+            low=float(latest_price),
+            close=float(latest_price),
+            volume=0.0,
+        )
+
+    def _execute_hybrid_stock_decision(self, symbol: str, stock_candle: Candle, decision: TradeDecision, *, source: str) -> None:
+        with self.lock:
+            if symbol not in self.stock_watchlist:
+                return
+            backup = {
+                "instrument_mode": self.instrument_mode,
+                "instrument_spec": self.instrument_spec,
+                "candles": self.candles,
+                "current_index": self.current_index,
+                "live_current_candle": self.live_current_candle,
+                "signal_history": self.signal_history,
+                "signal_history_keys": self._signal_history_keys,
+                "pending_setup": self.pending_setup,
+                "active_trade": self.active_trade,
+                "trade_history": self.trade_history,
+                "bulk_replay_trade_history": self._bulk_replay_trade_history,
+                "decision": self.decision,
+                "realized_pnl": self.realized_pnl,
+                "balance": self.balance,
+                "data_sync": self.data_sync,
+                "heuristic_engine": self.heuristic_engine,
+            }
+            self._load_stock_session_locked(symbol)
+            if not self.candles:
+                self.candles = [stock_candle.model_copy(deep=True)]
+                self.current_index = 0
+            elif self.current_index < 0:
+                self.current_index = len(self.candles) - 1
+        try:
+            stock_decision = decision.model_copy(deep=True)
+            if stock_decision.action == TradeAction.enter_call:
+                stock_decision.option_type = "CE"
+            elif stock_decision.action == TradeAction.enter_put:
+                stock_decision.option_type = "PE"
+            stock_decision.decision_source = f"hybrid-nifty-driver:{decision.decision_source}"
+            stock_decision.reason = f"Hybrid NIFTY driver: {decision.reason}"
+            self.apply_trade_logic(stock_candle, stock_decision, source=source)
+        finally:
+            with self.lock:
+                self._capture_stock_session_locked(symbol)
+                self.instrument_mode = backup["instrument_mode"]
+                self.instrument_spec = backup["instrument_spec"]
+                self.candles = backup["candles"]
+                self.current_index = backup["current_index"]
+                self.live_current_candle = backup["live_current_candle"]
+                self.signal_history = backup["signal_history"]
+                self._signal_history_keys = backup["signal_history_keys"]
+                self.pending_setup = backup["pending_setup"]
+                self.active_trade = backup["active_trade"]
+                self.trade_history = backup["trade_history"]
+                self._bulk_replay_trade_history = backup["bulk_replay_trade_history"]
+                self.decision = backup["decision"]
+                self.realized_pnl = backup["realized_pnl"]
+                self.balance = backup["balance"]
+                self.data_sync = backup["data_sync"]
+                self.heuristic_engine = backup["heuristic_engine"]
+
+    def _close_hybrid_stock_trade(self, symbol: str, stock_candle: Candle, reason: str) -> bool:
+        with self.lock:
+            if symbol not in self.stock_watchlist:
+                return False
+            backup = {
+                "instrument_mode": self.instrument_mode,
+                "instrument_spec": self.instrument_spec,
+                "candles": self.candles,
+                "current_index": self.current_index,
+                "live_current_candle": self.live_current_candle,
+                "signal_history": self.signal_history,
+                "signal_history_keys": self._signal_history_keys,
+                "pending_setup": self.pending_setup,
+                "active_trade": self.active_trade,
+                "trade_history": self.trade_history,
+                "bulk_replay_trade_history": self._bulk_replay_trade_history,
+                "decision": self.decision,
+                "realized_pnl": self.realized_pnl,
+                "balance": self.balance,
+                "data_sync": self.data_sync,
+                "heuristic_engine": self.heuristic_engine,
+            }
+            self._load_stock_session_locked(symbol)
+            closed = False
+            try:
+                if self.active_trade is None:
+                    return False
+                exit_candle = stock_candle.model_copy(deep=True)
+                self.close_active_trade(
+                    exit_candle,
+                    f"Hybrid NIFTY driver: {reason}",
+                    exit_price_override=round(exit_candle.close, 2),
+                )
+                closed = True
+                return True
+            finally:
+                self._capture_stock_session_locked(symbol)
+                self.instrument_mode = backup["instrument_mode"]
+                self.instrument_spec = backup["instrument_spec"]
+                self.candles = backup["candles"]
+                self.current_index = backup["current_index"]
+                self.live_current_candle = backup["live_current_candle"]
+                self.signal_history = backup["signal_history"]
+                self._signal_history_keys = backup["signal_history_keys"]
+                self.pending_setup = backup["pending_setup"]
+                self.active_trade = backup["active_trade"]
+                self.trade_history = backup["trade_history"]
+                self._bulk_replay_trade_history = backup["bulk_replay_trade_history"]
+                self.decision = backup["decision"]
+                self.realized_pnl = backup["realized_pnl"]
+                self.balance = backup["balance"]
+                self.data_sync = backup["data_sync"]
+                self.heuristic_engine = backup["heuristic_engine"]
+                if closed:
+                    self._mark_state_dirty_locked()
+
+    def _apply_hybrid_trade_logic(self, driver_candle: Candle, decision: TradeDecision, *, source: str) -> None:
+        if source not in {"live", "replay"}:
+            with self.lock:
+                self.hybrid_last_driver_action = decision.action.value
+                self.hybrid_last_driver_reason = decision.reason
+                self.hybrid_message = "Hybrid driver evaluated in sync/manual mode; stock execution waits for live, demo, or replay."
+                self._mark_state_dirty_locked()
+            return
+        if decision.action in {TradeAction.enter_call, TradeAction.enter_put}:
+            with self.lock:
+                symbol = self._select_hybrid_symbol_for_decision_locked(decision, driver_candle.timestamp)
+                stock_candle = self._hybrid_stock_candle_locked(symbol, driver_candle) if symbol else None
+            if symbol is None or stock_candle is None:
+                with self.lock:
+                    self.hybrid_message = "Hybrid signal skipped: no stock candle/price is ready for the selected basket."
+                    self.decision = decision.model_copy(update={"action": TradeAction.no_trade, "reason": self.hybrid_message})
+                    self._mark_state_dirty_locked()
+                return
+            self.apply_trade_logic(driver_candle, decision, source="replay")
+            self._execute_hybrid_stock_decision(symbol, stock_candle, decision, source=source)
+            with self.lock:
+                self.hybrid_last_trade_symbol = symbol
+                self.hybrid_last_driver_action = decision.action.value
+                self.hybrid_last_driver_reason = decision.reason
+                self.hybrid_message = f"NIFTY driver opened {symbol} from {decision.action.value}."
+                self._mark_state_dirty_locked()
+            return
+        if decision.action in {TradeAction.add_position, TradeAction.exit_pyramid_leg, TradeAction.partial_exit, TradeAction.exit, TradeAction.update_stop, TradeAction.update_target}:
+            with self.lock:
+                symbol = self.hybrid_last_trade_symbol or self.selected_hybrid_symbol
+                stock_candle = self._hybrid_stock_candle_locked(symbol, driver_candle) if symbol else None
+            self.apply_trade_logic(driver_candle, decision, source="replay")
+            if symbol and stock_candle is not None:
+                if decision.action == TradeAction.exit:
+                    self._close_hybrid_stock_trade(symbol, stock_candle, decision.reason)
+                else:
+                    self._execute_hybrid_stock_decision(symbol, stock_candle, decision, source=source)
+            with self.lock:
+                self.hybrid_last_driver_action = decision.action.value
+                self.hybrid_last_driver_reason = decision.reason
+                if decision.action == TradeAction.exit:
+                    self.hybrid_message = f"NIFTY driver exited hybrid stock {symbol or '-'}."
+                    self.hybrid_last_trade_symbol = None
+                elif decision.action == TradeAction.add_position:
+                    self.hybrid_message = f"NIFTY driver pyramiding add mirrored to {symbol or '-'}."
+                self._mark_state_dirty_locked()
+            return
+        with self.lock:
+            self.hybrid_last_driver_action = decision.action.value
+            self.hybrid_last_driver_reason = decision.reason
 
     def _block_nifty_advance_carry_forward_decision(
         self,
@@ -8723,6 +9536,10 @@ class SimulationEngine:
         self.active_trade.notes = note
         self.realized_pnl = round(self.realized_pnl + self.active_trade.pnl, 2)
         self.balance = round(self.settings.simulation_starting_balance + self.realized_pnl, 2)
+        for index, trade in enumerate(self.trade_history):
+            if trade.trade_id == self.active_trade.trade_id:
+                self.trade_history[index] = self.active_trade.model_copy(deep=True)
+                break
         self.active_trade = None
         self._sync_active_trade_subscription_locked()
         self._mark_state_dirty_locked()

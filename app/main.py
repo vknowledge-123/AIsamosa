@@ -257,6 +257,32 @@ async def remove_all_stocks_from_watchlist():
     return {"message": "Removed all stocks from the stock watchlist.", "state": state}
 
 
+@app.post("/api/hybrid/watchlist/bulk-add")
+async def bulk_add_hybrid_stocks(bulk_text: str = Form(...)):
+    try:
+        state, added_symbols, skipped_symbols = await run_in_threadpool(engine.add_bulk_hybrid_stocks, bulk_text)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    message = f"Saved {len(added_symbols)} hybrid stock(s): {', '.join(added_symbols)}."
+    if skipped_symbols:
+        message += f" Skipped: {', '.join(skipped_symbols)}."
+    return {
+        "message": message,
+        "state": state,
+        "added_symbols": added_symbols,
+        "skipped_symbols": skipped_symbols,
+    }
+
+
+@app.post("/api/hybrid/watchlist/select")
+async def select_hybrid_stock(symbol: str = Form(...)):
+    try:
+        state = await run_in_threadpool(engine.select_hybrid_stock, symbol)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"message": f"Selected {symbol.strip().upper()} for fixed-stock hybrid trading.", "state": state}
+
+
 @app.post("/api/stocks/watchlist/square-off")
 async def square_off_stock_position(symbol: str = Form(...)):
     try:
@@ -589,6 +615,7 @@ async def save_credentials(
     nifty_point_pyramiding_points: float = Form(default=50.0),
     nifty_trade_bias: str = Form(default="both"),
     nifty_option_trade_mode: str = Form(default="selling"),
+    hybrid_buy_gainer_loser_enabled: str = Form(default="true"),
     global_mtm_square_off_enabled: str = Form(default="false"),
     global_mtm_square_off_threshold: float = Form(default=0.0),
     position_max_loss_enabled: str = Form(default="false"),
@@ -608,6 +635,7 @@ async def save_credentials(
     stock_percent_pyramid_enabled = stock_percent_pyramiding_enabled.strip().lower() in {"1", "true", "yes", "on"}
     stock_cost_after_pyramid_enabled = stock_cost_sl_after_pyramid_enabled.strip().lower() in {"1", "true", "yes", "on"}
     nifty_point_pyramid_enabled = nifty_point_pyramiding_enabled.strip().lower() in {"1", "true", "yes", "on"}
+    hybrid_gainer_loser_enabled = hybrid_buy_gainer_loser_enabled.strip().lower() in {"1", "true", "yes", "on"}
     global_mtm_enabled = global_mtm_square_off_enabled.strip().lower() in {"1", "true", "yes", "on"}
     position_loss_enabled = position_max_loss_enabled.strip().lower() in {"1", "true", "yes", "on"}
     state = await run_in_threadpool(
@@ -656,6 +684,7 @@ async def save_credentials(
         nifty_point_pyramiding_points=nifty_point_pyramiding_points,
         nifty_trade_bias=nifty_trade_bias,
         nifty_option_trade_mode=nifty_option_trade_mode,
+        hybrid_buy_gainer_loser_enabled=hybrid_gainer_loser_enabled,
         global_mtm_square_off_enabled=global_mtm_enabled,
         global_mtm_square_off_threshold=global_mtm_square_off_threshold,
         position_max_loss_enabled=position_loss_enabled,

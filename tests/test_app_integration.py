@@ -4,6 +4,7 @@ import asyncio
 import base64
 import json
 import tempfile
+import threading
 import time
 import unittest
 from datetime import date, datetime, timedelta, timezone
@@ -31,6 +32,7 @@ from app.services.simulation import SimulationEngine
 from app.services.stock_universe import StockFutureContract, StockUniverseEntry, StockUniverseService
 from app.services.zerodha_adapter import ZerodhaMarketFeedAdapter
 from app.services.zerodha_execution import ZerodhaExecutionService, ZerodhaInstrument
+from app.strategies.heuristic_nifty import _ignore_open_round_liquidity
 
 
 class AppIntegrationTests(unittest.TestCase):
@@ -479,7 +481,7 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertNotIn("trade_history", payload)
         self.assertNotIn("heuristic_trace", payload)
 
-    def test_state_marks_connected_live_feed_stale_after_market_close(self) -> None:
+    def test_state_keeps_connected_live_feed_visible_after_market_close(self) -> None:
         with self.test_engine.lock:
             self.test_engine.live_feed = LiveFeedState(
                 connected=True,
@@ -498,12 +500,12 @@ class AppIntegrationTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         summary_feed = response.json()["live_feed"]
-        self.assertEqual(summary_feed["status"], "market_closed")
-        self.assertFalse(summary_feed["connected"])
-        self.assertIsNone(summary_feed["last_ltp"])
-        self.assertEqual(state.live_feed.status, "market_closed")
-        self.assertFalse(state.live_feed.connected)
-        self.assertIsNone(state.live_feed.last_ltp)
+        self.assertEqual(summary_feed["status"], "connected")
+        self.assertTrue(summary_feed["connected"])
+        self.assertEqual(summary_feed["last_ltp"], 24200.5)
+        self.assertEqual(state.live_feed.status, "connected")
+        self.assertTrue(state.live_feed.connected)
+        self.assertEqual(state.live_feed.last_ltp, 24200.5)
 
     def test_extract_bulk_stock_symbols_from_nse_style_table(self) -> None:
         raw_text = (
@@ -583,6 +585,41 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertEqual(len(restored.candles), 2)
         self.assertEqual(restored.data_sync.status, "ready")
         self.assertEqual(restored.data_sync.previous_context_day, date(2026, 6, 24))
+
+    def test_stock_watchlist_add_restores_persisted_warmup_history(self) -> None:
+        spec = build_stock_instrument("TCS", "11536", label="TATA CONSULTANCY SERV LT")
+        bundle = DhanSessionBundle(
+            previous_day_candles=[
+                Candle(timestamp=datetime(2026, 6, 24, 15, 29), open=100, high=101, low=99, close=100.5, volume=1000)
+            ],
+            intraday_candles=[
+                Candle(timestamp=datetime(2026, 6, 25, 9, 15), open=101, high=102, low=100, close=101.5, volume=1200)
+            ],
+            live_open_candle=None,
+            previous_day_source="intraday-fallback",
+            replay_session_day=date(2026, 6, 25),
+            previous_context_day=date(2026, 6, 24),
+        )
+
+        self.test_engine._apply_universe_warmup_bundle("TCS", spec, bundle, provider="dhan")
+        self.test_engine.universe_warmup_symbols = ["TCS"]
+        self.test_engine._persist_universe_warmup_history()
+        self.test_engine.stock_sessions.clear()
+        self.test_engine.stock_watchlist.clear()
+        self.test_engine.stock_watch_meta.clear()
+        self.test_engine.selected_stock_symbol = None
+
+        state, added, skipped = self.test_engine.add_bulk_stocks_to_watchlist("TCS", trade_bias="long")
+
+        self.assertEqual(added, ["TCS"])
+        self.assertEqual(skipped, [])
+        self.assertIn("TCS", self.test_engine.stock_sessions)
+        session = self.test_engine.stock_sessions["TCS"]
+        self.assertEqual(session.data_sync.status, "ready")
+        self.assertNotEqual(session.data_sync.source, "sample")
+        self.assertEqual(session.data_sync.previous_day_candles, 1)
+        self.assertEqual(session.data_sync.intraday_candles, 1)
+        self.assertEqual(state.data_sync.previous_day_candles, 1)
 
     def test_stock_bulk_historical_replay_uses_warmed_cache_when_replay_day_matches(self) -> None:
         self.test_engine.set_instrument_mode("stock")
@@ -3043,6 +3080,126 @@ class AppIntegrationTests(unittest.TestCase):
         feed.subscribe_symbols.assert_not_called()
         self.assertEqual(adapter.instruments, [("NSE_EQ", "1333", "Quote")])
 
+    def test_dhan_live_feed_serializes_subscribe_with_sdk_lock(self) -> None:
+        adapter = DhanMarketFeedAdapter("cid-123", "tok-456", [])
+        calls: list[list[tuple[str, str, str]]] = []
+
+        def subscribe_symbols(batch):
+            calls.append(list(batch))
+
+        feed = Mock()
+        feed.subscribe_symbols = Mock(side_effect=subscribe_symbols)
+        with adapter._feed_lock:
+            adapter._feed = feed
+        adapter.connected = True
+
+        with adapter._sdk_call_lock:
+            thread = threading.Thread(
+                target=lambda: adapter.subscribe_symbols([("NSE_EQ", "1333", "Quote")]),
+                daemon=True,
+            )
+            thread.start()
+            time.sleep(0.05)
+            self.assertFalse(calls)
+        thread.join(timeout=2)
+
+        self.assertEqual(calls, [[("NSE_EQ", "1333", "Quote")]])
+
+    def test_dhan_live_feed_uses_official_run_forever_then_get_data_pattern(self) -> None:
+        adapter = DhanMarketFeedAdapter("cid-123", "tok-456", [])
+        calls: list[str] = []
+
+        class Feed:
+            def run_forever(self):
+                calls.append("run_forever")
+
+            def get_data(self):
+                calls.append("get_data")
+                return {"security_id": "11536", "LTP": 100.5}
+
+        feed = Feed()
+
+        loop = asyncio.new_event_loop()
+        try:
+            adapter._loop = loop
+            adapter._start_feed_on_loop(feed, loop)
+            packet = adapter._receive_feed_packet(feed)
+        finally:
+            loop.close()
+            adapter._loop = None
+
+        self.assertEqual(calls, ["run_forever", "get_data"])
+        self.assertEqual(packet, {"security_id": "11536", "LTP": 100.5})
+
+    def test_dhan_live_feed_times_out_stalled_async_receive(self) -> None:
+        adapter = DhanMarketFeedAdapter("cid-123", "tok-456", [], stale_packet_timeout=0.01)
+
+        async def get_instrument_data():
+            await asyncio.sleep(1)
+
+        class Feed:
+            pass
+
+        feed = Feed()
+        feed.get_instrument_data = get_instrument_data
+        loop = asyncio.new_event_loop()
+        try:
+            adapter._loop = loop
+            with self.assertRaises(TimeoutError):
+                adapter._receive_feed_packet(feed)
+        finally:
+            loop.close()
+            adapter._loop = None
+
+    def test_dhan_timeout_error_has_clear_reconnect_message(self) -> None:
+        adapter = DhanMarketFeedAdapter("cid-123", "tok-456", [], stale_packet_timeout=30)
+
+        event = adapter._classify_error(TimeoutError(), 1)
+
+        self.assertEqual(event.status, "reconnecting")
+        self.assertIn("No Dhan market-feed packet arrived for 30s", event.message)
+
+    def test_dhan_live_feed_falls_back_to_connect_when_run_forever_missing(self) -> None:
+        adapter = DhanMarketFeedAdapter("cid-123", "tok-456", [])
+        calls: list[str] = []
+
+        async def connect():
+            calls.append("connect")
+
+        class Feed:
+            pass
+
+        feed = Feed()
+        feed.connect = connect
+        loop = asyncio.new_event_loop()
+        try:
+            adapter._start_feed_on_loop(feed, loop)
+        finally:
+            loop.close()
+
+        self.assertEqual(calls, ["connect"])
+
+    def test_dhan_live_feed_falls_back_to_get_instrument_data_when_get_data_missing(self) -> None:
+        adapter = DhanMarketFeedAdapter("cid-123", "tok-456", [])
+
+        async def get_instrument_data():
+            return {"security_id": "11536", "LTP": 100.5}
+
+        class Feed:
+            pass
+
+        feed = Feed()
+        feed.get_instrument_data = get_instrument_data
+        loop = asyncio.new_event_loop()
+        try:
+            adapter._loop = loop
+            packet = adapter._receive_feed_packet(feed)
+        finally:
+            loop.close()
+            adapter._loop = None
+
+        self.assertEqual(packet, {"security_id": "11536", "LTP": 100.5})
+
     def test_dhan_live_feed_creates_marketfeed_with_initial_instruments(self) -> None:
         instruments = [("NSE_EQ", "1333", "Quote"), ("NSE_EQ", "11536", "Quote")]
         adapter = DhanMarketFeedAdapter("cid-123", "tok-456", instruments)
@@ -3056,6 +3213,45 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertIs(created, fake_feed)
         context_mock.assert_called_once_with("cid-123", "tok-456")
         marketfeed_mock.assert_called_once_with(fake_context, instruments, version="v2")
+        self.assertEqual(fake_feed.on_connect, adapter._handle_sdk_connect)
+        self.assertEqual(fake_feed.on_message, adapter._handle_sdk_message)
+        self.assertEqual(fake_feed.on_error, adapter._handle_sdk_error)
+        self.assertEqual(fake_feed.on_close, adapter._handle_sdk_close)
+        self.assertEqual(fake_feed.on_ticks, adapter._handle_sdk_message)
+
+
+    def test_dhan_live_connect_respects_rate_limit_cooldown_without_new_handshake(self) -> None:
+        self.test_engine.save_credentials(client_id="cid-123", access_token="tok-456")
+        self.test_engine.set_instrument_mode("stock")
+        self.test_engine.stock_watchlist = {
+            "TCS": build_stock_instrument("TCS", "11536", label="TATA CONSULTANCY SERV LT")
+        }
+        self.test_engine.selected_stock_symbol = "TCS"
+        self.test_engine._load_stock_session_locked("TCS")
+        cooldown_until = datetime.now(timezone.utc) + timedelta(seconds=90)
+
+        with patch.object(self.test_engine, "_is_nse_regular_session_now", return_value=True):
+            with patch("app.services.simulation.DhanMarketFeedAdapter.cooldown_until_for_client", return_value=cooldown_until):
+                with patch("app.services.simulation.DhanMarketFeedAdapter.__init__", return_value=None) as adapter_init_mock:
+                    state = self.test_engine.connect_live_feed(client_id="cid-123", access_token="tok-456")
+
+        adapter_init_mock.assert_not_called()
+        self.assertEqual(state.live_feed.status, "cooldown")
+        self.assertIn("cooling down", state.live_feed.status_message)
+
+    def test_connect_live_feed_returns_existing_state_when_start_already_in_progress(self) -> None:
+        self.test_engine.save_credentials(client_id="cid-123", access_token="tok-456")
+        self.test_engine._live_connect_in_progress = True
+        self.test_engine._live_connect_started_at = datetime.now()
+        self.test_engine.live_feed.status = "connecting"
+        self.test_engine.live_feed.status_message = "Connecting to Dhan market feed."
+
+        with patch("app.services.simulation.DhanMarketFeedAdapter") as adapter_mock:
+            state = self.test_engine.connect_live_feed(client_id="cid-123", access_token="tok-456")
+
+        adapter_mock.assert_not_called()
+        self.assertEqual(state.live_feed.status, "connecting")
+        self.assertIn("Connecting", state.live_feed.status_message)
 
     def test_dhan_live_feed_creates_legacy_dhanfeed_with_initial_instruments(self) -> None:
         instruments = [("NSE_EQ", "1333", "Quote"), ("NSE_EQ", "11536", "Quote")]
@@ -3069,6 +3265,10 @@ class AppIntegrationTests(unittest.TestCase):
 
         self.assertIs(created, fake_feed)
         legacy_feed_mock.assert_called_once_with("cid-123", "tok-456", instruments, version="v2")
+        self.assertEqual(fake_feed.on_connect, adapter._handle_sdk_connect)
+        self.assertEqual(fake_feed.on_message, adapter._handle_sdk_message)
+        self.assertEqual(fake_feed.on_error, adapter._handle_sdk_error)
+        self.assertEqual(fake_feed.on_close, adapter._handle_sdk_close)
 
     def test_dhan_sdk_429_breaks_internal_retry_loop_for_outer_backoff(self) -> None:
         adapter = DhanMarketFeedAdapter("cid-123", "tok-456", [])
@@ -3083,7 +3283,36 @@ class AppIntegrationTests(unittest.TestCase):
 
         self.assertIs(adapter._last_sdk_error, error)
         self.assertFalse(feed._running)
-        feed.disconnect.assert_called_once()
+        feed.disconnect.assert_not_called()
+
+    def test_dhan_sdk_callback_packet_is_dispatched(self) -> None:
+        adapter = DhanMarketFeedAdapter("cid-123", "tok-456", [])
+        packets: list[dict] = []
+        adapter._packet_callback = packets.append
+
+        adapter._handle_sdk_connect()
+        adapter._handle_sdk_message({"security_id": "11536", "LTP": 100.5})
+
+        self.assertTrue(adapter.connected)
+        self.assertEqual(packets, [{"security_id": "11536", "LTP": 100.5}])
+
+    def test_dhan_market_feed_rejects_second_active_client_socket(self) -> None:
+        first = DhanMarketFeedAdapter("cid-dup", "tok-456", [])
+        second = DhanMarketFeedAdapter("cid-dup", "tok-456", [])
+        statuses: list[tuple[str, str | None]] = []
+        DhanMarketFeedAdapter._active_clients.discard("cid-dup")
+        try:
+            with DhanMarketFeedAdapter._active_client_lock:
+                DhanMarketFeedAdapter._active_clients.add("cid-dup")
+            second.start(lambda _packet: None, lambda status, message, *_args: statuses.append((status, message)))
+        finally:
+            DhanMarketFeedAdapter._active_clients.discard("cid-dup")
+            first.stop()
+            second.stop()
+
+        self.assertTrue(statuses)
+        self.assertEqual(statuses[0][0], "cooldown")
+        self.assertIn("already active", statuses[0][1])
 
     def test_dhan_disconnect_uses_disconnect_not_unsafe_close_connection(self) -> None:
         adapter = DhanMarketFeedAdapter("cid-123", "tok-456", [])
@@ -3103,6 +3332,56 @@ class AppIntegrationTests(unittest.TestCase):
 
         self.assertEqual(calls, ["disconnect"])
         feed.close_connection.assert_not_called()
+
+    def test_dhan_close_connection_awaitable_is_executed(self) -> None:
+        adapter = DhanMarketFeedAdapter("cid-123", "tok-456", [])
+        calls: list[str] = []
+
+        async def close_connection():
+            calls.append("close_connection")
+
+        feed = Mock()
+        del feed.disconnect
+        feed.close_connection = Mock(side_effect=close_connection)
+        loop = asyncio.new_event_loop()
+        try:
+            adapter._disconnect_feed(feed, loop=loop, wait=True)
+        finally:
+            loop.close()
+
+        self.assertEqual(calls, ["close_connection"])
+
+    def test_dhan_close_active_feed_waits_for_async_disconnect_on_running_loop(self) -> None:
+        adapter = DhanMarketFeedAdapter("cid-123", "tok-456", [])
+        calls: list[str] = []
+        loop = asyncio.new_event_loop()
+        ready = threading.Event()
+
+        async def disconnect():
+            calls.append("disconnect")
+
+        def run_loop() -> None:
+            asyncio.set_event_loop(loop)
+            ready.set()
+            loop.run_forever()
+
+        thread = threading.Thread(target=run_loop, daemon=True)
+        thread.start()
+        ready.wait(timeout=2)
+        feed = Mock()
+        feed.disconnect = Mock(side_effect=disconnect)
+        with adapter._feed_lock:
+            adapter._feed = feed
+        adapter._loop = loop
+
+        try:
+            adapter._close_active_feed()
+        finally:
+            loop.call_soon_threadsafe(loop.stop)
+            thread.join(timeout=2)
+            loop.close()
+
+        self.assertEqual(calls, ["disconnect"])
 
     def test_watchlist_subscription_refresh_batches_dhan_updates(self) -> None:
         self.test_engine.set_instrument_mode("stock")
@@ -5614,18 +5893,19 @@ class AppIntegrationTests(unittest.TestCase):
         self.test_engine.operating_mode = OperatingMode.heuristic
         session = [
             Candle(timestamp=datetime(2026, 5, 14, 9, 15), open=24010, high=24020, low=23980, close=23990, volume=1000),
-            Candle(timestamp=datetime(2026, 5, 14, 9, 18), open=23990, high=23996, low=23940, close=23960, volume=1300),
+            Candle(timestamp=datetime(2026, 5, 14, 9, 18), open=23990, high=23996, low=23870, close=23910, volume=1300),
+            Candle(timestamp=datetime(2026, 5, 14, 9, 21), open=23910, high=24005, low=23905, close=23920, volume=1500),
         ]
         previous = [
-            Candle(timestamp=datetime(2026, 5, 9, 15, 20), open=24000, high=24110, low=23920, close=24020, volume=1000),
-            Candle(timestamp=datetime(2026, 5, 10, 15, 20), open=24020, high=24140, low=23950, close=24040, volume=1000),
-            Candle(timestamp=datetime(2026, 5, 11, 15, 20), open=24040, high=24120, low=23970, close=24010, volume=1000),
-            Candle(timestamp=datetime(2026, 5, 12, 15, 20), open=24010, high=24090, low=23980, close=24000, volume=1000),
-            Candle(timestamp=datetime(2026, 5, 13, 15, 20), open=24000, high=24100, low=23950, close=24000, volume=1000),
+            Candle(timestamp=datetime(2026, 5, 9, 15, 20), open=24000, high=24110, low=23890, close=24020, volume=1000),
+            Candle(timestamp=datetime(2026, 5, 10, 15, 20), open=24020, high=24140, low=23900, close=24040, volume=1000),
+            Candle(timestamp=datetime(2026, 5, 11, 15, 20), open=24040, high=24120, low=23900, close=24010, volume=1000),
+            Candle(timestamp=datetime(2026, 5, 12, 15, 20), open=24010, high=24090, low=23900, close=24000, volume=1000),
+            Candle(timestamp=datetime(2026, 5, 13, 15, 20), open=24000, high=24100, low=23900, close=24000, volume=1000),
         ]
         context = self._build_context(session).model_copy(
             update={
-                "previous_day": PreviousDayLevels(high=24100, low=23950, close=24000),
+                "previous_day": PreviousDayLevels(high=24100, low=23900, close=24000),
                 "previous_day_candles": previous,
             }
         )
@@ -5635,7 +5915,111 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertEqual(decision.action, TradeAction.enter_call)
         self.assertEqual(decision.setup_type, "nifty_5session_sellside_sweep_reclaim")
         self.assertIn("sellers trapped", decision.reason)
-        self.assertIn("last 5 trading sessions", decision.reason)
+        self.assertIn("last 4 trading sessions", decision.reason)
+
+    def test_nifty_heuristic_gap_up_pdc_fill_reclaim_long_with_round_confluence(self) -> None:
+        self.test_engine.set_instrument_mode("nifty")
+        self.test_engine.operating_mode = OperatingMode.heuristic
+        session = [
+            Candle(timestamp=datetime(2026, 5, 14, 9, 15), open=24080, high=24110, low=24060, close=24090, volume=1000),
+            Candle(timestamp=datetime(2026, 5, 14, 9, 18), open=24090, high=24096, low=24002, close=24010, volume=1300),
+            Candle(timestamp=datetime(2026, 5, 14, 9, 21), open=24010, high=24102, low=24005, close=24058, volume=1500),
+        ]
+        previous = [
+            Candle(timestamp=datetime(2026, 5, 13, 13, 15), open=23900, high=23980, low=23880, close=23940, volume=1000),
+            Candle(timestamp=datetime(2026, 5, 13, 14, 15), open=23940, high=24020, low=23930, close=23980, volume=1000),
+            Candle(timestamp=datetime(2026, 5, 13, 15, 25), open=23980, high=24150, low=23970, close=24000, volume=1000),
+        ]
+        context = self._build_context(session).model_copy(
+            update={
+                "previous_day": PreviousDayLevels(high=24150, low=23880, close=24000),
+                "previous_day_candles": previous,
+            }
+        )
+
+        decision = self.test_engine.heuristic_decision(context)
+
+        self.assertEqual(decision.action, TradeAction.enter_call)
+        self.assertEqual(decision.setup_type, "nifty_gap_fill_previous_close_reclaim_long")
+        self.assertIn("gap-fill liquidity", decision.reason)
+        self.assertIn("filled and reclaimed", decision.reason)
+
+    def test_nifty_heuristic_gap_down_pdc_fill_rejection_short_with_round_confluence(self) -> None:
+        self.test_engine.set_instrument_mode("nifty")
+        self.test_engine.operating_mode = OperatingMode.heuristic
+        session = [
+            Candle(timestamp=datetime(2026, 5, 14, 9, 15), open=23920, high=23945, low=23890, close=23915, volume=1000),
+            Candle(timestamp=datetime(2026, 5, 14, 9, 18), open=23915, high=24008, low=23910, close=24002, volume=1300),
+            Candle(timestamp=datetime(2026, 5, 14, 9, 21), open=24002, high=24004, low=23908, close=23955, volume=1500),
+        ]
+        previous = [
+            Candle(timestamp=datetime(2026, 5, 13, 13, 15), open=24100, high=24120, low=24020, close=24070, volume=1000),
+            Candle(timestamp=datetime(2026, 5, 13, 14, 15), open=24070, high=24080, low=23980, close=24030, volume=1000),
+            Candle(timestamp=datetime(2026, 5, 13, 15, 25), open=24030, high=24040, low=23850, close=24000, volume=1000),
+        ]
+        context = self._build_context(session).model_copy(
+            update={
+                "previous_day": PreviousDayLevels(high=24120, low=23850, close=24000),
+                "previous_day_candles": previous,
+            }
+        )
+
+        decision = self.test_engine.heuristic_decision(context)
+
+        self.assertEqual(decision.action, TradeAction.enter_put)
+        self.assertEqual(decision.setup_type, "nifty_gap_fill_previous_close_rejection_short")
+        self.assertIn("gap-fill liquidity", decision.reason)
+        self.assertIn("filled and rejected", decision.reason)
+
+    def test_nifty_heuristic_gap_fill_requires_previous_close_round_confluence(self) -> None:
+        self.test_engine.set_instrument_mode("nifty")
+        self.test_engine.operating_mode = OperatingMode.heuristic
+        session = [
+            Candle(timestamp=datetime(2026, 5, 14, 9, 15), open=24120, high=24140, low=24090, close=24110, volume=1000),
+            Candle(timestamp=datetime(2026, 5, 14, 9, 18), open=24110, high=24118, low=24035, close=24055, volume=1300),
+        ]
+        previous = [
+            Candle(timestamp=datetime(2026, 5, 13, 13, 15), open=23900, high=23980, low=23820, close=23960, volume=1000),
+            Candle(timestamp=datetime(2026, 5, 13, 14, 15), open=23960, high=24020, low=23950, close=24010, volume=1000),
+            Candle(timestamp=datetime(2026, 5, 13, 15, 25), open=24010, high=24180, low=23990, close=24040, volume=1000),
+        ]
+        context = self._build_context(session).model_copy(
+            update={
+                "previous_day": PreviousDayLevels(high=24180, low=23820, close=24040),
+                "previous_day_candles": previous,
+            }
+        )
+
+        decision = self.test_engine.heuristic_decision(context)
+
+        self.assertNotEqual(decision.setup_type, "nifty_gap_fill_previous_close_reclaim_long")
+        self.assertNotIn("gap-fill liquidity", decision.reason)
+
+    def test_nifty_heuristic_waits_for_last_opposite_candle_break(self) -> None:
+        self.test_engine.set_instrument_mode("nifty")
+        self.test_engine.operating_mode = OperatingMode.heuristic
+        session = [
+            Candle(timestamp=datetime(2026, 5, 14, 9, 15), open=24080, high=24110, low=24060, close=24090, volume=1000),
+            Candle(timestamp=datetime(2026, 5, 14, 9, 18), open=24090, high=24096, low=24002, close=24010, volume=1300),
+            Candle(timestamp=datetime(2026, 5, 14, 9, 21), open=24010, high=24090, low=24005, close=24050, volume=1500),
+        ]
+        previous = [
+            Candle(timestamp=datetime(2026, 5, 13, 13, 15), open=23900, high=23980, low=23880, close=23940, volume=1000),
+            Candle(timestamp=datetime(2026, 5, 13, 14, 15), open=23940, high=24020, low=23930, close=23980, volume=1000),
+            Candle(timestamp=datetime(2026, 5, 13, 15, 25), open=23980, high=24150, low=23970, close=24000, volume=1000),
+        ]
+        context = self._build_context(session).model_copy(
+            update={
+                "previous_day": PreviousDayLevels(high=24150, low=23880, close=24000),
+                "previous_day_candles": previous,
+            }
+        )
+
+        decision = self.test_engine.heuristic_decision(context)
+
+        self.assertEqual(decision.action, TradeAction.no_trade)
+        self.assertEqual(decision.setup_type, "nifty_liquidity_trigger_wait")
+        self.assertIn("last red candle high", decision.reason)
 
     def test_nifty_heuristic_simplified_liquidity_does_not_chase_higher_highs_without_sweep(self) -> None:
         self.test_engine.set_instrument_mode("nifty")
@@ -5665,6 +6049,7 @@ class AppIntegrationTests(unittest.TestCase):
         session = [
             Candle(timestamp=datetime(2026, 5, 14, 9, 15), open=24240, high=24262, low=24220, close=24255, volume=1000),
             Candle(timestamp=datetime(2026, 5, 14, 9, 18), open=24255, high=24292, low=24248, close=24280, volume=1300),
+            Candle(timestamp=datetime(2026, 5, 14, 9, 21), open=24290, high=24294, low=24240, close=24278, volume=1500),
         ]
         previous = [
             Candle(timestamp=datetime(2026, 5, 9, 15, 20), open=24100, high=24400, low=24050, close=24200, volume=1000),
@@ -5684,6 +6069,111 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertEqual(decision.setup_type, "nifty_5session_buyside_sweep_rejection")
         self.assertIn("24300", decision.reason)
         self.assertIn("buyers trapped", decision.reason)
+
+    def test_nifty_heuristic_round_rejection_accepts_close_thirty_points_below(self) -> None:
+        self.test_engine.set_instrument_mode("nifty")
+        self.test_engine.operating_mode = OperatingMode.heuristic
+        session = [
+            Candle(timestamp=datetime(2026, 6, 24, 9, 15), open=23795.8, high=23842.0, low=23789.25, close=23841.4, volume=5335362),
+            Candle(timestamp=datetime(2026, 6, 24, 9, 40), open=23878.75, high=23893.45, low=23876.1, close=23892.25, volume=1051061),
+            Candle(timestamp=datetime(2026, 6, 24, 9, 41), open=23892.75, high=23895.3, low=23877.5, close=23881.0, volume=1054911),
+            Candle(timestamp=datetime(2026, 6, 24, 9, 42), open=23880.35, high=23885.8, low=23872.65, close=23881.05, volume=805714),
+            Candle(timestamp=datetime(2026, 6, 24, 9, 43), open=23880.25, high=23882.75, low=23867.7, close=23870.1, volume=996833),
+        ]
+        previous = [
+            Candle(timestamp=datetime(2026, 6, 23, 9, 15), open=24070, high=24100, low=23750, close=23795, volume=1000),
+            Candle(timestamp=datetime(2026, 6, 23, 15, 25), open=23900, high=23920, low=23780, close=23795, volume=1000),
+        ]
+        context = self._build_context(session).model_copy(
+            update={
+                "previous_day": PreviousDayLevels(high=24100, low=23750, close=23795),
+                "previous_day_candles": previous,
+            }
+        )
+
+        decision = self.test_engine.heuristic_decision(context)
+
+        self.assertEqual(decision.action, TradeAction.enter_put)
+        self.assertIn("23900", decision.reason)
+
+    def test_nifty_heuristic_round_reclaim_accepts_close_thirty_points_above(self) -> None:
+        self.test_engine.set_instrument_mode("nifty")
+        self.test_engine.operating_mode = OperatingMode.heuristic
+        session = [
+            Candle(timestamp=datetime(2026, 6, 24, 11, 16), open=23795.8, high=23820.0, low=23789.25, close=23810.4, volume=5335362),
+            Candle(timestamp=datetime(2026, 6, 24, 11, 51), open=23822.4, high=23824.1, low=23816.55, close=23818.15, volume=1011955),
+            Candle(timestamp=datetime(2026, 6, 24, 11, 52), open=23818.15, high=23821.0, low=23810.65, close=23814.1, volume=859105),
+            Candle(timestamp=datetime(2026, 6, 24, 11, 54), open=23813.75, high=23831.45, low=23813.75, close=23826.4, volume=829553),
+        ]
+        previous = [
+            Candle(timestamp=datetime(2026, 6, 23, 9, 15), open=24070, high=24100, low=23750, close=23795, volume=1000),
+            Candle(timestamp=datetime(2026, 6, 23, 15, 25), open=23900, high=23920, low=23780, close=23795, volume=1000),
+        ]
+        context = self._build_context(session).model_copy(
+            update={
+                "previous_day": PreviousDayLevels(high=24100, low=23750, close=23795),
+                "previous_day_candles": previous,
+            }
+        )
+
+        decision = self.test_engine.heuristic_decision(context)
+
+        self.assertEqual(decision.action, TradeAction.enter_call)
+        self.assertIn("23800", decision.reason)
+
+    def test_nifty_heuristic_bullish_opening_fib_retracement_long(self) -> None:
+        self.test_engine.set_instrument_mode("nifty")
+        self.test_engine.operating_mode = OperatingMode.heuristic
+        session = [
+            Candle(timestamp=datetime(2026, 5, 14, 9, 15), open=24005, high=24070, low=24000, close=24065, volume=1000),
+            Candle(timestamp=datetime(2026, 5, 14, 9, 18), open=24065, high=24120, low=24060, close=24110, volume=1200),
+            Candle(timestamp=datetime(2026, 5, 14, 9, 29), open=24110, high=24160, low=24105, close=24145, volume=1200),
+            Candle(timestamp=datetime(2026, 5, 14, 9, 33), open=24145, high=24108, low=24092, close=24096, volume=1300),
+            Candle(timestamp=datetime(2026, 5, 14, 9, 36), open=24096, high=24112, low=24094, close=24105, volume=1500),
+        ]
+        previous = [
+            Candle(timestamp=datetime(2026, 5, 13, 9, 15), open=23920, high=24020, low=23900, close=23980, volume=1000),
+            Candle(timestamp=datetime(2026, 5, 13, 15, 25), open=23980, high=24020, low=23970, close=24000, volume=1000),
+        ]
+        context = self._build_context(session).model_copy(
+            update={
+                "previous_day": PreviousDayLevels(high=24020, low=23900, close=24000),
+                "previous_day_candles": previous,
+            }
+        )
+
+        decision = self.test_engine.heuristic_decision(context)
+
+        self.assertEqual(decision.action, TradeAction.enter_call)
+        self.assertIn("38.2% fib retracement", decision.reason)
+        self.assertIn("near round 24100", decision.reason)
+
+    def test_nifty_heuristic_bearish_opening_fib_retracement_short(self) -> None:
+        self.test_engine.set_instrument_mode("nifty")
+        self.test_engine.operating_mode = OperatingMode.heuristic
+        session = [
+            Candle(timestamp=datetime(2026, 5, 14, 9, 15), open=23995, high=24000, low=23930, close=23935, volume=1000),
+            Candle(timestamp=datetime(2026, 5, 14, 9, 18), open=23935, high=23940, low=23880, close=23890, volume=1200),
+            Candle(timestamp=datetime(2026, 5, 14, 9, 29), open=23890, high=23895, low=23840, close=23855, volume=1200),
+            Candle(timestamp=datetime(2026, 5, 14, 9, 33), open=23855, high=23908, low=23850, close=23904, volume=1300),
+            Candle(timestamp=datetime(2026, 5, 14, 9, 36), open=23904, high=23906, low=23848, close=23895, volume=1500),
+        ]
+        previous = [
+            Candle(timestamp=datetime(2026, 5, 13, 9, 15), open=24080, high=24100, low=23980, close=24020, volume=1000),
+            Candle(timestamp=datetime(2026, 5, 13, 15, 25), open=24020, high=24040, low=23970, close=24000, volume=1000),
+        ]
+        context = self._build_context(session).model_copy(
+            update={
+                "previous_day": PreviousDayLevels(high=24100, low=23970, close=24000),
+                "previous_day_candles": previous,
+            }
+        )
+
+        decision = self.test_engine.heuristic_decision(context)
+
+        self.assertEqual(decision.action, TradeAction.enter_put)
+        self.assertIn("38.2% fib retracement", decision.reason)
+        self.assertIn("near round 23900", decision.reason)
 
     def test_nifty_heuristic_blocks_round_band_when_current_auction_is_range_farming(self) -> None:
         self.test_engine.set_instrument_mode("nifty")
@@ -5790,6 +6280,7 @@ class AppIntegrationTests(unittest.TestCase):
         session = [
             Candle(timestamp=datetime(2026, 5, 14, 9, 15), open=24180, high=24208, low=24162, close=24178, volume=1000),
             Candle(timestamp=datetime(2026, 5, 14, 9, 18), open=24178, high=24292, low=24170, close=24280, volume=1200),
+            Candle(timestamp=datetime(2026, 5, 14, 9, 21), open=24290, high=24294, low=24160, close=24278, volume=1500),
         ]
         previous = [
             Candle(timestamp=datetime(2026, 5, 13, 15, 20), open=24400, high=24450, low=23900, close=24200, volume=1000),
@@ -5826,6 +6317,45 @@ class AppIntegrationTests(unittest.TestCase):
         decision = self.test_engine.heuristic_decision(context)
 
         self.assertNotIn("24100", decision.reason)
+
+    def test_nifty_round_near_open_is_allowed_when_outside_first_candle_range(self) -> None:
+        first_candle = Candle(
+            timestamp=datetime(2026, 5, 14, 9, 15),
+            open=24180,
+            high=24190,
+            low=24170,
+            close=24182,
+            volume=1000,
+        )
+
+        self.assertFalse(_ignore_open_round_liquidity(24200.0, first_candle))
+        self.assertFalse(_ignore_open_round_liquidity(24100.0, first_candle))
+        self.assertTrue(_ignore_open_round_liquidity(24180.0, first_candle, current_time=datetime(2026, 5, 14, 9, 34).time()))
+        self.assertFalse(_ignore_open_round_liquidity(24180.0, first_candle, current_time=datetime(2026, 5, 14, 9, 35).time()))
+
+    def test_nifty_heuristic_reconsiders_first_candle_round_after_0935(self) -> None:
+        self.test_engine.set_instrument_mode("nifty")
+        self.test_engine.operating_mode = OperatingMode.heuristic
+        session = [
+            Candle(timestamp=datetime(2026, 5, 14, 9, 15), open=24320, high=24370, low=24280, close=24350, volume=1000),
+            Candle(timestamp=datetime(2026, 5, 14, 9, 30), open=24340, high=24346, low=24302, close=24308, volume=1200),
+            Candle(timestamp=datetime(2026, 5, 14, 9, 36), open=24308, high=24352, low=24292, close=24318, volume=1500),
+        ]
+        previous = [
+            Candle(timestamp=datetime(2026, 5, 13, 9, 15), open=24100, high=24400, low=24080, close=24200, volume=1000),
+            Candle(timestamp=datetime(2026, 5, 13, 15, 20), open=24200, high=24400, low=24080, close=24340, volume=1000),
+        ]
+        context = self._build_context(session).model_copy(
+            update={
+                "previous_day": PreviousDayLevels(high=24400, low=24080, close=24340),
+                "previous_day_candles": previous,
+            }
+        )
+
+        decision = self.test_engine.heuristic_decision(context)
+
+        self.assertEqual(decision.action, TradeAction.enter_call)
+        self.assertIn("24300", decision.reason)
 
     def test_nifty_heuristic_ignores_pdl_near_ignored_opening_round(self) -> None:
         self.test_engine.set_instrument_mode("nifty")
@@ -5932,12 +6462,97 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertEqual(decision.setup_type, "nifty_first_two_hour_bias_block")
         self.assertIn("blocks short", decision.reason)
 
+    def test_nifty_first_five_red_candles_turn_long_bias_both_side_from_0920(self) -> None:
+        self.test_engine.set_instrument_mode("nifty")
+        self.test_engine.operating_mode = OperatingMode.heuristic
+        session = [
+            Candle(timestamp=datetime(2026, 5, 14, 9, 15), open=24010, high=24035, low=23995, close=24000, volume=1000),
+            Candle(timestamp=datetime(2026, 5, 14, 9, 16), open=24000, high=24012, low=23988, close=23992, volume=1000),
+            Candle(timestamp=datetime(2026, 5, 14, 9, 17), open=23992, high=24020, low=23990, close=24008, volume=1000),
+            Candle(timestamp=datetime(2026, 5, 14, 9, 18), open=24008, high=24018, low=23996, close=24002, volume=1000),
+            Candle(timestamp=datetime(2026, 5, 14, 9, 19), open=24002, high=24100, low=23998, close=24095, volume=1200),
+            Candle(timestamp=datetime(2026, 5, 14, 9, 20), open=24110, high=24128, low=23990, close=24076, volume=1500),
+        ]
+        previous = [
+            Candle(timestamp=datetime(2026, 5, 13, 13, 15), open=23920, high=23970, low=23910, close=23955, volume=1000),
+            Candle(timestamp=datetime(2026, 5, 13, 14, 15), open=23955, high=24020, low=23945, close=24005, volume=1000),
+            Candle(timestamp=datetime(2026, 5, 13, 15, 25), open=24005, high=24100, low=23995, close=24020, volume=1000),
+        ]
+        context = self._build_context(session).model_copy(
+            update={
+                "previous_day": PreviousDayLevels(high=24100, low=23910, close=24020),
+                "previous_day_candles": previous,
+            }
+        )
+
+        decision = self.test_engine.heuristic_decision(context)
+
+        self.assertEqual(decision.action, TradeAction.enter_put)
+        self.assertIn("first-five-candle contradiction override", decision.reason)
+        self.assertIn("changes to both-side", decision.reason)
+
+    def test_nifty_first_five_green_candles_turn_short_bias_both_side_from_0920(self) -> None:
+        self.test_engine.set_instrument_mode("nifty")
+        self.test_engine.operating_mode = OperatingMode.heuristic
+        session = [
+            Candle(timestamp=datetime(2026, 5, 14, 9, 15), open=24010, high=24090, low=23990, close=24022, volume=1000),
+            Candle(timestamp=datetime(2026, 5, 14, 9, 16), open=24022, high=24120, low=24010, close=24035, volume=1000),
+            Candle(timestamp=datetime(2026, 5, 14, 9, 17), open=24035, high=24042, low=24005, close=24018, volume=1000),
+            Candle(timestamp=datetime(2026, 5, 14, 9, 18), open=24018, high=24095, low=24012, close=24036, volume=1000),
+            Candle(timestamp=datetime(2026, 5, 14, 9, 19), open=24036, high=24042, low=24000, close=24010, volume=1200),
+            Candle(timestamp=datetime(2026, 5, 14, 9, 20), open=23990, high=24005, low=23872, close=23925, volume=1500),
+            Candle(timestamp=datetime(2026, 5, 14, 9, 21), open=23925, high=24050, low=23920, close=24008, volume=1500),
+        ]
+        previous = [
+            Candle(timestamp=datetime(2026, 5, 13, 13, 15), open=24140, high=24160, low=24060, close=24100, volume=1000),
+            Candle(timestamp=datetime(2026, 5, 13, 14, 15), open=24100, high=24120, low=24020, close=24050, volume=1000),
+            Candle(timestamp=datetime(2026, 5, 13, 15, 25), open=24050, high=24080, low=23900, close=24000, volume=1000),
+        ]
+        context = self._build_context(session).model_copy(
+            update={
+                "previous_day": PreviousDayLevels(high=24160, low=23900, close=24000),
+                "previous_day_candles": previous,
+            }
+        )
+
+        decision = self.test_engine.heuristic_decision(context)
+
+        self.assertEqual(decision.action, TradeAction.enter_call)
+        self.assertIn("first-five-candle contradiction override", decision.reason)
+        self.assertIn("changes to both-side", decision.reason)
+
+    def test_nifty_opening_expansion_override_allows_both_sides_for_whole_day(self) -> None:
+        self.test_engine.set_instrument_mode("nifty")
+        self.test_engine.operating_mode = OperatingMode.heuristic
+        session = [
+            Candle(timestamp=datetime(2026, 5, 14, 9, 15), open=24245, high=24282, low=24230, close=24260, volume=1000),
+            Candle(timestamp=datetime(2026, 5, 14, 9, 18), open=24290, high=24292, low=24220, close=24278, volume=1500),
+        ]
+        previous = [
+            Candle(timestamp=datetime(2026, 5, 13, 13, 15), open=23920, high=23970, low=23910, close=23955, volume=1000),
+            Candle(timestamp=datetime(2026, 5, 13, 14, 15), open=23955, high=24020, low=23945, close=24005, volume=1000),
+            Candle(timestamp=datetime(2026, 5, 13, 15, 25), open=24005, high=24100, low=23995, close=24020, volume=1000),
+        ]
+        context = self._build_context(session).model_copy(
+            update={
+                "previous_day": PreviousDayLevels(high=24100, low=23910, close=24020),
+                "previous_day_candles": previous,
+            }
+        )
+
+        decision = self.test_engine.heuristic_decision(context)
+
+        self.assertEqual(decision.action, TradeAction.enter_put)
+        self.assertNotEqual(decision.setup_type, "nifty_first_two_hour_bias_block")
+        self.assertIn("opening expansion override", decision.reason)
+
     def test_nifty_first_two_hour_green_day_bearish_last2h_gapdown_flips_short(self) -> None:
         self.test_engine.set_instrument_mode("nifty")
         self.test_engine.operating_mode = OperatingMode.heuristic
         session = [
             Candle(timestamp=datetime(2026, 5, 14, 9, 15), open=23930, high=24005, low=23920, close=23980, volume=1000),
-            Candle(timestamp=datetime(2026, 5, 14, 9, 18), open=24095, high=24128, low=24070, close=24076, volume=1400),
+            Candle(timestamp=datetime(2026, 5, 14, 9, 18), open=24095, high=24128, low=24070, close=24110, volume=1400),
+            Candle(timestamp=datetime(2026, 5, 14, 9, 21), open=24110, high=24118, low=24062, close=24076, volume=1500),
         ]
         previous = [
             Candle(timestamp=datetime(2026, 5, 13, 10, 15), open=23900, high=24180, low=23880, close=24150, volume=1000),
@@ -6965,7 +7580,7 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         state = response.json()["state"]
         self.assertEqual(state["instrument"]["mode"], "stock")
-        self.assertEqual(state["instrument"]["label"], "SBIN")
+        self.assertEqual(state["instrument"]["label"], "STATE BANK OF INDIA")
         self.assertEqual(state["instrument"]["security_id"], "3045")
         self.assertFalse(state["instrument"]["supports_options"])
         self.assertTrue(state["stock_watchlist"])
@@ -6990,6 +7605,87 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertEqual(state["instrument"]["symbol"], "TCS")
         self.assertEqual(state["instrument"]["security_id"], "11536")
         self.assertTrue(any(item["symbol"] == "TCS" and item["selected"] for item in state["stock_watchlist"]))
+
+    def test_hybrid_bulk_add_and_select_updates_dashboard_state(self) -> None:
+        entries = {
+            "TCS": StockUniverseEntry(symbol="TCS", label="TATA CONSULTANCY SERV LT", security_id="11536"),
+            "INFY": StockUniverseEntry(symbol="INFY", label="INFOSYS LIMITED", security_id="1594"),
+        }
+
+        def fake_preview(symbol: str) -> StockUniverseEntry:
+            return entries[symbol.strip().upper()]
+
+        self.client.post("/api/instrument-mode", data={"instrument_mode": "hybrid"})
+        with patch.object(self.test_engine.stock_universe, "preview", side_effect=fake_preview):
+            with patch.object(self.test_engine, "_auto_prepare_watchlist_symbols_async", return_value=None):
+                response = self.client.post("/api/hybrid/watchlist/bulk-add", data={"bulk_text": "TCS\nINFY"})
+
+        self.assertEqual(response.status_code, 200)
+        state = response.json()["state"]
+        self.assertEqual(state["instrument"]["mode"], "hybrid")
+        self.assertEqual(state["instrument"]["symbol"], "NIFTY")
+        self.assertEqual({item["symbol"] for item in state["hybrid"]["watchlist"]}, {"TCS", "INFY"})
+        self.assertIn(state["hybrid"]["selected_symbol"], {"TCS", "INFY"})
+
+        select_response = self.client.post("/api/hybrid/watchlist/select", data={"symbol": "INFY"})
+
+        self.assertEqual(select_response.status_code, 200)
+        selected_state = select_response.json()["state"]
+        self.assertEqual(selected_state["hybrid"]["selected_symbol"], "INFY")
+        self.assertTrue(any(item["symbol"] == "INFY" and item["selected"] for item in selected_state["hybrid"]["watchlist"]))
+
+    def test_hybrid_gainer_loser_toggle_is_saved_in_credentials(self) -> None:
+        response = self.client.post(
+            "/api/settings/credentials",
+            data={"hybrid_buy_gainer_loser_enabled": "false"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        summary = self.client.get("/api/settings/credentials").json()
+        self.assertFalse(summary["hybrid_buy_gainer_loser_enabled"])
+
+    def test_hybrid_driver_exit_closes_stock_trade_with_stock_price_and_time(self) -> None:
+        self.test_engine.set_instrument_mode("hybrid")
+        _, added, _ = self.test_engine.add_bulk_hybrid_stocks("TCS")
+        symbol = added[0]
+        entry_candle = Candle(timestamp=datetime(2026, 5, 14, 9, 30), open=100.0, high=101.0, low=99.8, close=100.0, volume=1000)
+        stock_exit_candle = Candle(timestamp=datetime(2026, 5, 14, 9, 45), open=104.0, high=105.0, low=103.5, close=104.5, volume=1200)
+        driver_exit_candle = Candle(timestamp=datetime(2026, 5, 14, 9, 45), open=24100.0, high=24120.0, low=24080.0, close=24105.0, volume=1500)
+
+        with self.test_engine.lock:
+            self.test_engine._load_stock_session_locked(symbol)
+            self.test_engine.candles = [entry_candle, stock_exit_candle]
+            self.test_engine.current_index = 1
+            self.test_engine.apply_trade_logic(
+                entry_candle,
+                TradeDecision(
+                    action=TradeAction.enter_call,
+                    reason="Hybrid test stock entry.",
+                    option_type="CE",
+                    invalidation_level=98.0,
+                    target_spot_price=110.0,
+                    first_target_price=105.0,
+                ),
+                source="replay",
+            )
+            self.test_engine._capture_stock_session_locked(symbol)
+            self.test_engine.instrument_mode = InstrumentMode.hybrid
+            self.test_engine.hybrid_last_trade_symbol = symbol
+
+        self.test_engine._apply_hybrid_trade_logic(
+            driver_exit_candle,
+            TradeDecision(action=TradeAction.exit, reason="NIFTY driver exit."),
+            source="replay",
+        )
+
+        session = self.test_engine.stock_sessions[symbol]
+        self.assertIsNone(session.active_trade)
+        self.assertEqual(len(session.trade_history), 1)
+        trade = session.trade_history[0]
+        self.assertEqual(trade.status, "CLOSED")
+        self.assertEqual(trade.exit_time, stock_exit_candle.timestamp)
+        self.assertEqual(trade.exit_price, 104.5)
+        self.assertEqual(trade.exit_notes, "Hybrid NIFTY driver: NIFTY driver exit.")
 
     def test_adding_stock_with_credentials_uses_background_selected_sync(self) -> None:
         preview = StockUniverseEntry(symbol="TCS", label="TCS", security_id="")
@@ -7149,6 +7845,36 @@ class AppIntegrationTests(unittest.TestCase):
         instruments = adapter_mock.call_args.args[2]
         self.assertEqual({instrument[1] for instrument in instruments}, {"13", "3045", "11536"})
 
+    def test_connect_live_feed_in_hybrid_mode_subscribes_nifty_and_hybrid_basket(self) -> None:
+        fake_adapter = Mock()
+        fake_adapter.start = Mock()
+        entries = {
+            "TCS": StockUniverseEntry(symbol="TCS", label="TATA CONSULTANCY SERV LT", security_id="11536"),
+            "INFY": StockUniverseEntry(symbol="INFY", label="INFOSYS LIMITED", security_id="1594"),
+        }
+
+        def fake_preview(symbol: str) -> StockUniverseEntry:
+            return entries[symbol.strip().upper()]
+
+        self.test_engine.set_instrument_mode("hybrid")
+        with patch.object(self.test_engine.stock_universe, "preview", side_effect=fake_preview):
+            with patch.object(self.test_engine, "_auto_prepare_watchlist_symbols_async", return_value=None):
+                self.test_engine.add_bulk_hybrid_stocks("TCS\nINFY")
+
+        with patch.object(self.test_engine, "sync_dhan_context", return_value=self.test_engine.get_state()) as sync_mock:
+            with patch(
+                "app.services.simulation.resolve_quote_subscription",
+                side_effect=lambda security_id, segment: (segment, security_id, "Quote"),
+            ):
+                with patch("app.services.simulation.DhanMarketFeedAdapter", return_value=fake_adapter) as adapter_mock:
+                    response = self.client.post("/api/live/connect", data={"client_id": "cid", "access_token": "tok"})
+
+        self.assertEqual(response.status_code, 200)
+        sync_mock.assert_not_called()
+        fake_adapter.start.assert_called_once()
+        instruments = adapter_mock.call_args.args[2]
+        self.assertEqual({instrument[1] for instrument in instruments}, {"13", "11536", "1594"})
+
     def test_connect_live_feed_in_stock_mode_maps_only_resolved_watchlist_subscriptions(self) -> None:
         fake_adapter = Mock()
         fake_adapter.start = Mock()
@@ -7188,6 +7914,26 @@ class AppIntegrationTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         refresh_mock.assert_called_once()
+        prepare_mock.assert_called_once_with(["TCS"])
+
+    def test_adding_stock_while_nifty_feed_running_does_not_reconnect_websocket(self) -> None:
+        adapter = Mock()
+        adapter.is_running.return_value = True
+        self.test_engine.live_feed_adapter = adapter
+        self.test_engine.instrument_mode = InstrumentMode.nifty
+        resolved = StockUniverseEntry(symbol="TCS", label="TATA CONSULTANCY SERV LT", security_id="11536")
+
+        with patch.object(self.test_engine.stock_universe, "preview", return_value=resolved):
+            with patch.object(self.test_engine, "disconnect_live_feed") as disconnect_mock:
+                with patch.object(self.test_engine, "connect_live_feed") as connect_mock:
+                    with patch.object(self.test_engine, "_schedule_watchlist_subscription_refresh") as refresh_mock:
+                        with patch.object(self.test_engine, "_auto_prepare_watchlist_symbols_async") as prepare_mock:
+                            response = self.client.post("/api/stocks/watchlist/add", data={"symbol": "TCS"})
+
+        self.assertEqual(response.status_code, 200)
+        disconnect_mock.assert_not_called()
+        connect_mock.assert_not_called()
+        refresh_mock.assert_called()
         prepare_mock.assert_called_once_with(["TCS"])
 
     def test_bulk_add_while_live_feed_running_prepares_symbols_and_schedules_refresh(self) -> None:
@@ -8742,7 +9488,7 @@ class AppIntegrationTests(unittest.TestCase):
         )
         trade.entry_notes = (
             "NIFTY simplified liquidity heuristic starts with trap map. "
-            "100-point round band 24100 +/-25 at 24100.00 was swept/front-run below and reclaimed."
+            "100-point round band 24100 +/-30 at 24100.00 was swept/front-run below and reclaimed."
         )
         trade.base_quantity = 32
         trade.quantity = 32
