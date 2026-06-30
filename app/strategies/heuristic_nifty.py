@@ -77,6 +77,10 @@ def _decide_simplified_liquidity_nifty(context: StrategyContext) -> TradeDecisio
             "nifty_liquidity_no_sweep",
         )
 
+    exhaustion_reason = _exhaustive_trend_entry_block_reason(context, selected)
+    if exhaustion_reason:
+        return _no_trade(exhaustion_reason, "nifty_exhaustive_trend_entry_filter")
+
     weak_reason = _weak_operator_intent_reason(context, selected, pools)
     if weak_reason:
         return _no_trade(weak_reason, "nifty_liquidity_weak_operator_intent")
@@ -770,6 +774,38 @@ def _entry_trigger_confirmation_block_reason(context: StrategyContext, candidate
         return (
             f"NIFTY short setup formed, but latest candle has not broken the last green candle low "
             f"{reference.low:.2f} from {reference.timestamp.strftime('%H:%M')}."
+        )
+    return None
+
+
+def _exhaustive_trend_entry_block_reason(context: StrategyContext, candidate: SweepCandidate) -> str | None:
+    window = context.session_candles[-7:]
+    if len(window) < 7:
+        return None
+    first_open = window[0].open
+    latest_close = context.current_candle.close
+    movement = latest_close - first_open
+    green_count = sum(1 for candle in window if candle.close > candle.open)
+    red_count = sum(1 for candle in window if candle.close < candle.open)
+    if candidate.side == "long" and movement >= 50.0:
+        return (
+            f"NIFTY long setup skipped because the last 7 candles already moved up {movement:.2f} points "
+            "before entry. Avoiding exhaustive trend entry after the move is mature."
+        )
+    if candidate.side == "long" and green_count >= 6:
+        return (
+            f"NIFTY long setup skipped because {green_count}/7 recent candles are green. "
+            "Avoiding exhaustive trend entry after one-sided buying."
+        )
+    if candidate.side == "short" and movement <= -50.0:
+        return (
+            f"NIFTY short setup skipped because the last 7 candles already fell {abs(movement):.2f} points "
+            "before entry. Avoiding exhaustive trend entry after the move is mature."
+        )
+    if candidate.side == "short" and red_count >= 6:
+        return (
+            f"NIFTY short setup skipped because {red_count}/7 recent candles are red. "
+            "Avoiding exhaustive trend entry after one-sided selling."
         )
     return None
 

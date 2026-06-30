@@ -6147,6 +6147,122 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertEqual(decision.action, TradeAction.no_trade)
         self.assertIn("Avoiding trend-chase", decision.reason)
 
+    def test_nifty_heuristic_blocks_exhaustive_long_after_50_point_rise(self) -> None:
+        self.test_engine.set_instrument_mode("nifty")
+        self.test_engine.operating_mode = OperatingMode.heuristic
+        session = [
+            Candle(timestamp=datetime(2026, 5, 14, 10, 1), open=23780, high=23786, low=23776, close=23784, volume=1000),
+            Candle(timestamp=datetime(2026, 5, 14, 10, 2), open=23784, high=23792, low=23782, close=23790, volume=1000),
+            Candle(timestamp=datetime(2026, 5, 14, 10, 3), open=23790, high=23800, low=23788, close=23798, volume=1000),
+            Candle(timestamp=datetime(2026, 5, 14, 10, 4), open=23798, high=23808, low=23796, close=23806, volume=1000),
+            Candle(timestamp=datetime(2026, 5, 14, 10, 5), open=23806, high=23814, low=23804, close=23812, volume=1000),
+            Candle(timestamp=datetime(2026, 5, 14, 10, 6), open=23812, high=23818, low=23798, close=23802, volume=1000),
+            Candle(timestamp=datetime(2026, 5, 14, 10, 7), open=23802, high=23835, low=23796, close=23830, volume=1000),
+        ]
+        previous = [
+            Candle(timestamp=datetime(2026, 5, 13, 9, 15), open=23700, high=23950, low=23700, close=23800, volume=1000),
+            Candle(timestamp=datetime(2026, 5, 13, 15, 25), open=23800, high=23950, low=23780, close=23800, volume=1000),
+        ]
+        context = self._build_context(session).model_copy(
+            update={
+                "previous_day": PreviousDayLevels(high=23950, low=23700, close=23800),
+                "previous_day_candles": previous,
+            }
+        )
+
+        decision = self.test_engine.heuristic_decision(context)
+
+        self.assertEqual(decision.action, TradeAction.no_trade)
+        self.assertEqual(decision.setup_type, "nifty_exhaustive_trend_entry_filter")
+        self.assertIn("already moved up", decision.reason)
+
+    def test_nifty_heuristic_blocks_exhaustive_short_after_50_point_fall(self) -> None:
+        self.test_engine.set_instrument_mode("nifty")
+        self.test_engine.operating_mode = OperatingMode.heuristic
+        session = [
+            Candle(timestamp=datetime(2026, 5, 14, 10, 1), open=23830, high=23834, low=23824, close=23826, volume=1000),
+            Candle(timestamp=datetime(2026, 5, 14, 10, 2), open=23826, high=23828, low=23816, close=23818, volume=1000),
+            Candle(timestamp=datetime(2026, 5, 14, 10, 3), open=23818, high=23820, low=23806, close=23808, volume=1000),
+            Candle(timestamp=datetime(2026, 5, 14, 10, 4), open=23808, high=23810, low=23796, close=23798, volume=1000),
+            Candle(timestamp=datetime(2026, 5, 14, 10, 5), open=23798, high=23802, low=23790, close=23792, volume=1000),
+            Candle(timestamp=datetime(2026, 5, 14, 10, 6), open=23792, high=23804, low=23788, close=23798, volume=1000),
+            Candle(timestamp=datetime(2026, 5, 14, 10, 7), open=23798, high=23804, low=23774, close=23778, volume=1000),
+        ]
+        previous = [
+            Candle(timestamp=datetime(2026, 5, 13, 9, 15), open=23800, high=23950, low=23700, close=23800, volume=1000),
+            Candle(timestamp=datetime(2026, 5, 13, 15, 25), open=23800, high=23950, low=23700, close=23800, volume=1000),
+        ]
+        context = self._build_context(session).model_copy(
+            update={
+                "previous_day": PreviousDayLevels(high=23950, low=23700, close=23800),
+                "previous_day_candles": previous,
+            }
+        )
+
+        decision = self.test_engine.heuristic_decision(context)
+
+        self.assertEqual(decision.action, TradeAction.no_trade)
+        self.assertEqual(decision.setup_type, "nifty_exhaustive_trend_entry_filter")
+        self.assertIn("already fell", decision.reason)
+
+    def test_nifty_heuristic_blocks_long_after_six_green_candles(self) -> None:
+        self.test_engine.set_instrument_mode("nifty")
+        self.test_engine.operating_mode = OperatingMode.heuristic
+        session = [
+            Candle(timestamp=datetime(2026, 5, 14, 10, 1), open=23795, high=23799, low=23792, close=23798, volume=1000),
+            Candle(timestamp=datetime(2026, 5, 14, 10, 2), open=23798, high=23802, low=23796, close=23801, volume=1000),
+            Candle(timestamp=datetime(2026, 5, 14, 10, 3), open=23801, high=23805, low=23799, close=23804, volume=1000),
+            Candle(timestamp=datetime(2026, 5, 14, 10, 4), open=23804, high=23809, low=23802, close=23808, volume=1000),
+            Candle(timestamp=datetime(2026, 5, 14, 10, 5), open=23808, high=23813, low=23806, close=23812, volume=1000),
+            Candle(timestamp=datetime(2026, 5, 14, 10, 6), open=23812, high=23816, low=23800, close=23804, volume=1000),
+            Candle(timestamp=datetime(2026, 5, 14, 10, 7), open=23804, high=23830, low=23800, close=23828, volume=1000),
+        ]
+        previous = [
+            Candle(timestamp=datetime(2026, 5, 13, 9, 15), open=23700, high=23950, low=23700, close=23800, volume=1000),
+            Candle(timestamp=datetime(2026, 5, 13, 15, 25), open=23800, high=23950, low=23780, close=23800, volume=1000),
+        ]
+        context = self._build_context(session).model_copy(
+            update={
+                "previous_day": PreviousDayLevels(high=23950, low=23700, close=23800),
+                "previous_day_candles": previous,
+            }
+        )
+
+        decision = self.test_engine.heuristic_decision(context)
+
+        self.assertEqual(decision.action, TradeAction.no_trade)
+        self.assertEqual(decision.setup_type, "nifty_exhaustive_trend_entry_filter")
+        self.assertIn("6/7 recent candles are green", decision.reason)
+
+    def test_nifty_heuristic_blocks_short_after_six_red_candles(self) -> None:
+        self.test_engine.set_instrument_mode("nifty")
+        self.test_engine.operating_mode = OperatingMode.heuristic
+        session = [
+            Candle(timestamp=datetime(2026, 5, 14, 10, 1), open=23805, high=23807, low=23800, close=23802, volume=1000),
+            Candle(timestamp=datetime(2026, 5, 14, 10, 2), open=23802, high=23804, low=23798, close=23799, volume=1000),
+            Candle(timestamp=datetime(2026, 5, 14, 10, 3), open=23799, high=23801, low=23795, close=23796, volume=1000),
+            Candle(timestamp=datetime(2026, 5, 14, 10, 4), open=23796, high=23798, low=23792, close=23793, volume=1000),
+            Candle(timestamp=datetime(2026, 5, 14, 10, 5), open=23793, high=23795, low=23789, close=23790, volume=1000),
+            Candle(timestamp=datetime(2026, 5, 14, 10, 6), open=23790, high=23808, low=23788, close=23802, volume=1000),
+            Candle(timestamp=datetime(2026, 5, 14, 10, 7), open=23802, high=23806, low=23775, close=23776, volume=1000),
+        ]
+        previous = [
+            Candle(timestamp=datetime(2026, 5, 13, 9, 15), open=23800, high=23950, low=23700, close=23800, volume=1000),
+            Candle(timestamp=datetime(2026, 5, 13, 15, 25), open=23800, high=23950, low=23700, close=23800, volume=1000),
+        ]
+        context = self._build_context(session).model_copy(
+            update={
+                "previous_day": PreviousDayLevels(high=23950, low=23700, close=23800),
+                "previous_day_candles": previous,
+            }
+        )
+
+        decision = self.test_engine.heuristic_decision(context)
+
+        self.assertEqual(decision.action, TradeAction.no_trade)
+        self.assertEqual(decision.setup_type, "nifty_exhaustive_trend_entry_filter")
+        self.assertIn("6/7 recent candles are red", decision.reason)
+
     def test_nifty_heuristic_round_band_front_run_rejection_near_24300_allows_short(self) -> None:
         self.test_engine.set_instrument_mode("nifty")
         self.test_engine.operating_mode = OperatingMode.heuristic
