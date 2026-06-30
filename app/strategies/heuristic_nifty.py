@@ -23,6 +23,7 @@ class SweepCandidate:
     score: float
     sweep_extreme: float
     reason: str
+    entry_price_override: float | None = None
 
 
 def decide_nifty(
@@ -46,8 +47,8 @@ def _decide_simplified_liquidity_nifty(context: StrategyContext) -> TradeDecisio
     latest = context.current_candle
     recent = context.session_candles[-3:]
     opening_candle = context.session_candles[0]
-    long_candidate = _best_sweep_candidate(recent, pools, side="long", opening_candle=opening_candle)
-    short_candidate = _best_sweep_candidate(recent, pools, side="short", opening_candle=opening_candle)
+    long_candidate = _best_available_sweep_candidate(context, pools, side="long", opening_candle=opening_candle)
+    short_candidate = _best_available_sweep_candidate(context, pools, side="short", opening_candle=opening_candle)
     bias_side, bias_note = _first_two_hour_bias(context)
     if bias_side == "long" and long_candidate is not None:
         selected = long_candidate
@@ -88,8 +89,18 @@ def _decide_simplified_liquidity_nifty(context: StrategyContext) -> TradeDecisio
     if session_reason:
         return _no_trade(session_reason, "nifty_liquidity_late_session_filter")
 
-    opposite_room = _room_to_opposite_liquidity(latest.close, pools, selected.side)
-    minimum_room = max(_atr(context.session_candles[-20:]) * 0.8, 25.0)
+    entry_price = round(selected.entry_price_override if selected.entry_price_override is not None else latest.close, 2)
+    delayed_crossover_entry = selected.entry_price_override is not None
+    opposite_room = (
+        _room_to_major_opposite_liquidity(entry_price, pools, selected.side)
+        if delayed_crossover_entry
+        else _room_to_opposite_liquidity(entry_price, pools, selected.side)
+    )
+    minimum_room = (
+        max(_atr(context.session_candles[-20:]) * 0.5, 15.0)
+        if delayed_crossover_entry
+        else max(_atr(context.session_candles[-20:]) * 0.8, 25.0)
+    )
     if opposite_room < minimum_room:
         return _no_trade(
             f"NIFTY liquidity setup skipped: {selected.reason} but room to opposite liquidity is only "
@@ -101,7 +112,7 @@ def _decide_simplified_liquidity_nifty(context: StrategyContext) -> TradeDecisio
     buffer = max(atr * 0.25, 8.0)
     if selected.side == "long":
         invalidation = round(selected.sweep_extreme - buffer, 2)
-        risk = max(latest.close - invalidation, 25.0)
+        risk = max(entry_price - invalidation, 25.0)
         setup_type = (
             "nifty_gap_fill_previous_close_reclaim_long"
             if selected.pool.source == "gap-fill-pdc"
@@ -117,8 +128,9 @@ def _decide_simplified_liquidity_nifty(context: StrategyContext) -> TradeDecisio
             decision_source="heuristic-nifty-liquidity",
             option_type="CE",
             invalidation_level=invalidation,
-            target_spot_price=round(latest.close + max(opposite_room, risk * 2.0), 2),
-            first_target_price=round(latest.close + max(risk, min(opposite_room, risk * 1.2)), 2),
+            target_spot_price=round(entry_price + max(opposite_room, risk * 2.0), 2),
+            first_target_price=round(entry_price + max(risk, min(opposite_room, risk * 1.2)), 2),
+            entry_price_override=entry_price if selected.entry_price_override is not None else None,
             market_state="nifty_seller_trap_liquidity_reclaim",
             setup_score=round(selected.score, 1),
             setup_type=setup_type,
@@ -126,7 +138,7 @@ def _decide_simplified_liquidity_nifty(context: StrategyContext) -> TradeDecisio
         )
 
     invalidation = round(selected.sweep_extreme + buffer, 2)
-    risk = max(invalidation - latest.close, 25.0)
+    risk = max(invalidation - entry_price, 25.0)
     setup_type = (
         "nifty_gap_fill_previous_close_rejection_short"
         if selected.pool.source == "gap-fill-pdc"
@@ -142,8 +154,9 @@ def _decide_simplified_liquidity_nifty(context: StrategyContext) -> TradeDecisio
         decision_source="heuristic-nifty-liquidity",
         option_type="PE",
         invalidation_level=invalidation,
-        target_spot_price=round(latest.close - max(opposite_room, risk * 2.0), 2),
-        first_target_price=round(latest.close - max(risk, min(opposite_room, risk * 1.2)), 2),
+        target_spot_price=round(entry_price - max(opposite_room, risk * 2.0), 2),
+        first_target_price=round(entry_price - max(risk, min(opposite_room, risk * 1.2)), 2),
+        entry_price_override=entry_price if selected.entry_price_override is not None else None,
         market_state="nifty_buyer_trap_liquidity_rejection",
         setup_score=round(selected.score, 1),
         setup_type=setup_type,
@@ -154,11 +167,16 @@ def _decide_simplified_liquidity_nifty(context: StrategyContext) -> TradeDecisio
 def _entry_reason(candidate: SweepCandidate, context: StrategyContext, trap_text: str, bias_note: str | None = None) -> str:
     latest = context.current_candle
     bias_text = f" First-2-hour bias: {bias_note}." if bias_note else ""
+    entry_text = (
+        f" Replay/live entry is priced at crossover level {candidate.entry_price_override:.2f}, not candle close."
+        if candidate.entry_price_override is not None
+        else ""
+    )
     return (
         f"NIFTY simplified liquidity heuristic starts with trap map: {trap_text}. "
         f"{candidate.reason} Latest close {latest.close:.2f}; score {candidate.score:.1f}/100. "
         "Decision uses only last 4 trading sessions daily liquidity, 3-minute swing/equal liquidity, "
-        f"previous-day high/low, and 100-point round-number bands.{bias_text}"
+        f"previous-day high/low, and 100-point round-number bands.{entry_text}{bias_text}"
     )
 
 
@@ -587,6 +605,119 @@ def _best_sweep_candidate(recent: list[Candle], pools: list[LiquidityPool], *, s
     return max(candidates, key=lambda item: item.score)
 
 
+def _best_available_sweep_candidate(
+    context: StrategyContext,
+    pools: list[LiquidityPool],
+    *,
+    side: str,
+    opening_candle: Candle,
+) -> SweepCandidate | None:
+    direct = _best_sweep_candidate(context.session_candles[-3:], pools, side=side, opening_candle=opening_candle)
+    delayed = _delayed_opposite_candle_crossover_candidate(context, pools, side=side, opening_candle=opening_candle)
+    candidates = [candidate for candidate in (direct, delayed) if candidate is not None]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda item: item.score)
+
+
+def _delayed_opposite_candle_crossover_candidate(
+    context: StrategyContext,
+    pools: list[LiquidityPool],
+    *,
+    side: str,
+    opening_candle: Candle,
+) -> SweepCandidate | None:
+    candles = context.session_candles
+    if len(candles) < 3:
+        return None
+    latest_index = len(candles) - 1
+    latest = candles[-1]
+    candidates: list[SweepCandidate] = []
+    earliest_reference = max(0, latest_index - 8)
+    if side == "long":
+        for ref_index in range(latest_index - 2, earliest_reference - 1, -1):
+            reference = candles[ref_index]
+            if reference.close >= reference.open:
+                continue
+            if latest.high < reference.high:
+                continue
+            entry_price = round(reference.high, 2)
+            for response_index in range(ref_index + 1, latest_index):
+                response = candles[response_index]
+                if response.close <= response.open or response.high >= reference.high:
+                    continue
+                if not _crossover_entry_within_round_tolerance(entry_price, "long"):
+                    continue
+                response_candidate = _best_sweep_candidate(
+                    candles[max(0, response_index - 2) : response_index + 1],
+                    pools,
+                    side="long",
+                    opening_candle=opening_candle,
+                )
+                if response_candidate is None:
+                    continue
+                candidates.append(
+                    SweepCandidate(
+                        side="long",
+                        pool=response_candidate.pool,
+                        score=min(99.0, response_candidate.score + 2.0),
+                        sweep_extreme=response_candidate.sweep_extreme,
+                        reason=(
+                            f"{response_candidate.reason}; delayed long crossover triggered at last red candle high "
+                            f"{entry_price:.2f} after green response candle {response.timestamp.strftime('%H:%M')}"
+                        ),
+                        entry_price_override=entry_price,
+                    )
+                )
+                break
+    else:
+        for ref_index in range(latest_index - 2, earliest_reference - 1, -1):
+            reference = candles[ref_index]
+            if reference.close <= reference.open:
+                continue
+            if latest.low > reference.low:
+                continue
+            entry_price = round(reference.low, 2)
+            for response_index in range(ref_index + 1, latest_index):
+                response = candles[response_index]
+                if response.close >= response.open or response.low <= reference.low:
+                    continue
+                if not _crossover_entry_within_round_tolerance(entry_price, "short"):
+                    continue
+                response_candidate = _best_sweep_candidate(
+                    candles[max(0, response_index - 2) : response_index + 1],
+                    pools,
+                    side="short",
+                    opening_candle=opening_candle,
+                )
+                if response_candidate is None:
+                    continue
+                candidates.append(
+                    SweepCandidate(
+                        side="short",
+                        pool=response_candidate.pool,
+                        score=min(99.0, response_candidate.score + 2.0),
+                        sweep_extreme=response_candidate.sweep_extreme,
+                        reason=(
+                            f"{response_candidate.reason}; delayed short crossover triggered at last green candle low "
+                            f"{entry_price:.2f} after red response candle {response.timestamp.strftime('%H:%M')}"
+                        ),
+                        entry_price_override=entry_price,
+                    )
+                )
+                break
+    if not candidates:
+        return None
+    return max(candidates, key=lambda item: item.score)
+
+
+def _crossover_entry_within_round_tolerance(entry_price: float, side: str) -> bool:
+    nearest_round = round(entry_price / 100.0) * 100.0
+    if side == "long":
+        return nearest_round < entry_price <= nearest_round + 30.0
+    return nearest_round - 30.0 <= entry_price < nearest_round
+
+
 def _skip_primary_liquidity_pool_for_open_noise(pool: LiquidityPool, first_candle: Candle, *, current_time: dt_time) -> bool:
     if pool.source == "round":
         return False
@@ -613,6 +744,8 @@ def _skip_primary_liquidity_without_round_confluence(pool: LiquidityPool) -> boo
 
 
 def _entry_trigger_confirmation_block_reason(context: StrategyContext, candidate: SweepCandidate) -> str | None:
+    if candidate.entry_price_override is not None:
+        return None
     latest = context.current_candle
     previous_candles = context.session_candles[:-1]
     if candidate.side == "long":
@@ -657,12 +790,6 @@ def _weak_operator_intent_reason(context: StrategyContext, candidate: SweepCandi
     supporting_pool = _nearest_supporting_pool(pool, pools, candidate.side)
     if supporting_pool is not None:
         return None
-
-    if not _is_major_round(pool.price) and not _clean_round_sweep(candidate, latest, strict=True):
-        return (
-            f"NIFTY middle round-number setup skipped: {pool.label} at {pool.price:.2f} is not a major 300/500-point "
-            "shelf and has no nearby PDH/PDL/day-high/day-low/swing support. Waiting for stronger operator intent."
-        )
 
     close_distance = abs(latest.close - pool.price)
     intent_distance = max(_atr(context.session_candles[-12:]) * 0.35, 12.0)
@@ -762,6 +889,23 @@ def _room_to_opposite_liquidity(close: float, pools: list[LiquidityPool], side: 
         targets = [pool.price for pool in pools if pool.side == "buy" and pool.price > close]
         return min((price - close for price in targets), default=80.0)
     targets = [pool.price for pool in pools if pool.side == "sell" and pool.price < close]
+    return min((close - price for price in targets), default=80.0)
+
+
+def _room_to_major_opposite_liquidity(close: float, pools: list[LiquidityPool], side: str) -> float:
+    major_sources = {"daily", "pdh", "pdl", "day-high", "day-low", "round", "gap-fill-pdc", "opening-fib", "3m-swing"}
+    if side == "long":
+        targets = [
+            pool.price
+            for pool in pools
+            if pool.source in major_sources and pool.side == "buy" and pool.price > close
+        ]
+        return min((price - close for price in targets), default=80.0)
+    targets = [
+        pool.price
+        for pool in pools
+        if pool.source in major_sources and pool.side == "sell" and pool.price < close
+    ]
     return min((close - price for price in targets), default=80.0)
 
 

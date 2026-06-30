@@ -8895,14 +8895,19 @@ class SimulationEngine:
                 short_trade=use_option_selling,
             )
         else:
-            entry_price = round(current_candle.close, 2)
+            entry_spot_override = (
+                round(float(decision.entry_price_override), 2)
+                if decision.entry_price_override is not None
+                else round(current_candle.close, 2)
+            )
+            entry_price = entry_spot_override
             direction = "LONG_STOCK" if option_type == "CE" else "SHORT_STOCK"
             if use_stock_future_execution:
                 contract, quantity = self._resolve_stock_future_execution(current_candle)
                 trade_symbol = contract.trading_symbol
                 trade_security_id = contract.security_id
                 quote_exchange_segment = contract.exchange_segment
-                entry_price = round(current_candle.close, 2)
+                entry_price = entry_spot_override
             else:
                 trade_symbol = (
                     f"{self.instrument_spec.symbol} SPOT" if self.instrument_spec.supports_options else f"{self.instrument_spec.symbol} EQ"
@@ -8942,7 +8947,7 @@ class SimulationEngine:
             open_quantity=quantity,
             entry_time=entry_time,
             entry_price=entry_price,
-            entry_spot_price=current_candle.close,
+            entry_spot_price=round(float(decision.entry_price_override), 2) if decision.entry_price_override is not None else current_candle.close,
             entry_option_price=entry_price,
             execution_source=source,
             entry_quote_source=entry_quote.source if entry_quote else "simulated",

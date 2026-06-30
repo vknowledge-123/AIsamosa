@@ -290,6 +290,7 @@ class TradeDecision(BaseModel):
     invalidation_level: float | None = None
     target_spot_price: float | None = None
     first_target_price: float | None = None
+    entry_price_override: float | None = None
     partial_exit_quantity: int | None = None
     add_quantity: int | None = None
     pyramid_leg_ids: list[str] = Field(default_factory=list)
