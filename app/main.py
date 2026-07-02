@@ -143,7 +143,7 @@ async def get_ai_health():
 
 @app.on_event("shutdown")
 async def shutdown_event():
-    engine.disconnect_live_feed()
+    engine.shutdown()
 
 
 @app.post("/api/simulation/load-sample")
@@ -430,6 +430,7 @@ async def start_simulate_historical_range(
     replay_end_date: str = Form(...),
     decision_duration_minutes: int = Form(default=1),
     stock_replay_scope: str = Form(default="all"),
+    instrument_mode: str = Form(default=""),
 ):
     try:
         state = await run_in_threadpool(
@@ -440,6 +441,7 @@ async def start_simulate_historical_range(
             replay_end_date=replay_end_date,
             replay_decision_duration_minutes=decision_duration_minutes,
             stock_replay_scope=stock_replay_scope,
+            replay_instrument_mode=instrument_mode or None,
             return_state=False,
         )
     except Exception as exc:
@@ -613,6 +615,7 @@ async def save_credentials(
     stock_cost_sl_after_pyramid_enabled: str = Form(default="false"),
     nifty_point_pyramiding_enabled: str = Form(default="false"),
     nifty_point_pyramiding_points: float = Form(default=50.0),
+    nifty_middle_round_liquidity_enabled: str = Form(default="false"),
     nifty_trade_bias: str = Form(default="both"),
     nifty_option_trade_mode: str = Form(default="selling"),
     hybrid_buy_gainer_loser_enabled: str = Form(default="true"),
@@ -635,6 +638,7 @@ async def save_credentials(
     stock_percent_pyramid_enabled = stock_percent_pyramiding_enabled.strip().lower() in {"1", "true", "yes", "on"}
     stock_cost_after_pyramid_enabled = stock_cost_sl_after_pyramid_enabled.strip().lower() in {"1", "true", "yes", "on"}
     nifty_point_pyramid_enabled = nifty_point_pyramiding_enabled.strip().lower() in {"1", "true", "yes", "on"}
+    nifty_middle_round_enabled = nifty_middle_round_liquidity_enabled.strip().lower() in {"1", "true", "yes", "on"}
     hybrid_gainer_loser_enabled = hybrid_buy_gainer_loser_enabled.strip().lower() in {"1", "true", "yes", "on"}
     global_mtm_enabled = global_mtm_square_off_enabled.strip().lower() in {"1", "true", "yes", "on"}
     position_loss_enabled = position_max_loss_enabled.strip().lower() in {"1", "true", "yes", "on"}
@@ -682,6 +686,7 @@ async def save_credentials(
         stock_cost_sl_after_pyramid_enabled=stock_cost_after_pyramid_enabled,
         nifty_point_pyramiding_enabled=nifty_point_pyramid_enabled,
         nifty_point_pyramiding_points=nifty_point_pyramiding_points,
+        nifty_middle_round_liquidity_enabled=nifty_middle_round_enabled,
         nifty_trade_bias=nifty_trade_bias,
         nifty_option_trade_mode=nifty_option_trade_mode,
         hybrid_buy_gainer_loser_enabled=hybrid_gainer_loser_enabled,

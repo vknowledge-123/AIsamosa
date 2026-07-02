@@ -55,6 +55,7 @@ class DhanMarketFeedAdapter:
         max_reconnect_delay: float = 300.0,
         rate_limit_delay: float = 60.0,
         stale_packet_timeout: float = 45.0,
+        connect_timeout: float = 20.0,
     ) -> None:
         self.client_id = client_id
         self.access_token = access_token
@@ -62,6 +63,7 @@ class DhanMarketFeedAdapter:
         self.max_reconnect_delay = max_reconnect_delay
         self.rate_limit_delay = rate_limit_delay
         self.stale_packet_timeout = stale_packet_timeout
+        self.connect_timeout = connect_timeout
         self.connected = False
         self.status = "disconnected"
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -76,8 +78,11 @@ class DhanMarketFeedAdapter:
         self.instruments = _merge_instruments([], instruments)
         self._retry_attempt = 0
         self._connected_notified = False
+        self._sdk_closed = False
         self._last_sdk_error: Exception | None = None
         self._last_packet_monotonic: float | None = None
+        self._connection_attempt_started_at: datetime | None = None
+        self._feed_class_name: str | None = None
 
     def start(
         self,
@@ -172,9 +177,67 @@ class DhanMarketFeedAdapter:
         retry_attempt: int = 0,
         next_retry_at: datetime | None = None,
     ) -> None:
+        message = self._append_debug_detail(status, message, retry_attempt, next_retry_at)
         self.status = status
         if self._status_callback:
             self._status_callback(status, message, retry_attempt, next_retry_at)
+
+    def _append_debug_detail(
+        self,
+        status: str,
+        message: str | None,
+        retry_attempt: int,
+        next_retry_at: datetime | None,
+    ) -> str | None:
+        if status not in {"connecting", "reconnecting", "cooldown", "error"}:
+            return message
+        parts = self._debug_detail_parts(retry_attempt, next_retry_at)
+        if not parts:
+            return message
+        detail = "Debug: " + "; ".join(parts) + "."
+        return f"{message}\n{detail}" if message else detail
+
+    def _debug_detail_parts(self, retry_attempt: int, next_retry_at: datetime | None) -> list[str]:
+        with self._instrument_lock:
+            instruments = list(self.instruments)
+        first_ids = [str(item[1]) for item in instruments[:8]]
+        with self._active_client_lock:
+            active_client_count = len(self._active_clients)
+        feed_class = self._feed_class_name or self._available_sdk_label()
+        parts = [
+            f"sdk={feed_class}",
+            f"url={self._market_feed_url()}",
+            f"initial_subscriptions={len(instruments)}",
+            f"first_security_ids={','.join(first_ids) if first_ids else '-'}",
+            f"retry_attempt={retry_attempt}",
+            f"connect_timeout={int(self.connect_timeout)}s",
+            f"active_clients_in_process={active_client_count}",
+        ]
+        if self._connection_attempt_started_at is not None:
+            parts.append(f"attempt_started={self._connection_attempt_started_at.isoformat()}")
+            parts.append(f"attempt_started_ist={_format_ist(self._connection_attempt_started_at)}")
+        if next_retry_at is not None:
+            parts.append(f"next_retry_at={next_retry_at.isoformat()}")
+            parts.append(f"next_retry_at_ist={_format_ist(next_retry_at)}")
+        return parts
+
+    def _available_sdk_label(self) -> str:
+        if MarketFeed is not None and DhanContext is not None:
+            return "MarketFeed"
+        if LegacyDhanFeed is not None:
+            return "LegacyDhanFeed"
+        if legacy_marketfeed is not None:
+            return "legacy_marketfeed.DhanFeed"
+        return "missing"
+
+    def _market_feed_url(self) -> str:
+        for candidate in (MarketFeed, LegacyDhanFeed, getattr(legacy_marketfeed, "DhanFeed", None) if legacy_marketfeed else None):
+            if candidate is None:
+                continue
+            url = getattr(candidate, "market_feed_wss", None)
+            if url:
+                return str(url)
+        return "unknown"
 
     def _run(self) -> None:
         while not self._stop_event.is_set():
@@ -195,7 +258,9 @@ class DhanMarketFeedAdapter:
             self._loop = loop
             try:
                 self._connected_notified = False
+                self._sdk_closed = False
                 self._last_sdk_error = None
+                self._connection_attempt_started_at = _utcnow()
                 connect_status = "connecting" if self._retry_attempt == 0 else "reconnecting"
                 connect_message = "Connecting to Dhan market feed." if self._retry_attempt == 0 else "Reconnecting to Dhan market feed."
                 self._notify_status(connect_status, connect_message, self._retry_attempt)
@@ -205,11 +270,13 @@ class DhanMarketFeedAdapter:
                 with self._feed_lock:
                     self._feed = feed
                 self._start_feed_on_loop(feed, loop)
+                if self._last_sdk_error is not None:
+                    raise self._last_sdk_error
                 self._notify_connected()
                 self._last_packet_monotonic = time.monotonic()
                 while not self._stop_event.is_set():
                     packet = self._receive_feed_packet(feed)
-                    if getattr(feed, "on_close", False):
+                    if self._feed_reported_close():
                         raise RuntimeError("Dhan market feed reported a server-side disconnection.")
                     self._dispatch_sdk_message(packet)
                     self._last_packet_monotonic = time.monotonic()
@@ -263,6 +330,7 @@ class DhanMarketFeedAdapter:
                 instruments,
                 version="v2",
             )
+            self._feed_class_name = "MarketFeed"
             self._bind_feed_callbacks(feed)
             return feed
         if LegacyDhanFeed is not None:
@@ -272,6 +340,7 @@ class DhanMarketFeedAdapter:
                 instruments,
                 version="v2",
             )
+            self._feed_class_name = "LegacyDhanFeed"
             self._bind_feed_callbacks(feed)
             return feed
         if legacy_marketfeed is not None:
@@ -281,6 +350,7 @@ class DhanMarketFeedAdapter:
                 instruments,
                 version="v2",
             )
+            self._feed_class_name = "legacy_marketfeed.DhanFeed"
             self._bind_feed_callbacks(feed)
             return feed
         raise RuntimeError("dhanhq>=2.0.2,<2.3 with MarketFeed or DhanFeed is required for Dhan live feed.")
@@ -299,17 +369,21 @@ class DhanMarketFeedAdapter:
                 continue
 
     def _start_feed_on_loop(self, feed: Any, loop: asyncio.AbstractEventLoop) -> None:
+        connect = getattr(feed, "connect", None)
+        if callable(connect) and inspect.iscoroutinefunction(connect):
+            with self._sdk_call_lock:
+                loop.run_until_complete(asyncio.wait_for(connect(), timeout=self.connect_timeout))
+            return
         run_forever = getattr(feed, "run_forever", None)
         if callable(run_forever):
             with self._sdk_call_lock:
                 run_forever()
             return
-        connect = getattr(feed, "connect", None)
         if callable(connect):
             with self._sdk_call_lock:
                 result = connect()
                 if inspect.isawaitable(result):
-                    loop.run_until_complete(asyncio.wait_for(result, timeout=20))
+                    loop.run_until_complete(asyncio.wait_for(result, timeout=self.connect_timeout))
             return
         raise RuntimeError("Dhan feed object does not expose run_forever() or connect().")
 
@@ -395,7 +469,11 @@ class DhanMarketFeedAdapter:
         # is closed after a 429/error handshake.
 
     def _handle_sdk_close(self, *_args) -> None:
-        return
+        self._sdk_closed = True
+        self._request_sdk_loop_stop()
+
+    def _feed_reported_close(self) -> bool:
+        return self._sdk_closed
 
     def _classify_error(self, exc: Exception, retry_attempt: int) -> FeedStatusEvent:
         message = str(exc).strip() or exc.__class__.__name__
@@ -533,6 +611,10 @@ def resolve_quote_subscription(security_id: str, exchange_segment: str) -> tuple
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _format_ist(value: datetime) -> str:
+    return value.astimezone(timezone(timedelta(hours=5, minutes=30))).strftime("%Y-%m-%d %H:%M:%S IST")
 
 
 def _retry_delay_seconds(

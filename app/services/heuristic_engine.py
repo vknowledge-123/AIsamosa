@@ -391,6 +391,7 @@ class HeuristicDecisionEngine:
 
         extreme_last_2h_selloff = (
             previous_day_profile == "strong_bearish"
+            and len(previous_candles) >= 300
             and last_2h_flow == "selling_rally"
             and last_2h_move <= -max(session_atr * 6.0, day_range * 0.30, 100.0)
         )
@@ -3679,7 +3680,13 @@ class HeuristicDecisionEngine:
             return "Large gap-up range profile ignores equal-high/equal-low clusters inside the first candle auction range."
         if option_type == "PE" and self._nifty_near_first_candle_low(context, observation, entry_price) and not accepted_below:
             return "Large gap-up range profile blocks shorts near first-candle low unless price accepts below that auction low."
-        if option_type == "CE" and self._nifty_near_first_candle_high(context, observation, entry_price) and not accepted_above:
+        companion_sell_reclaim = label.startswith("companion round number") and event.side == "sell"
+        if (
+            option_type == "CE"
+            and self._nifty_near_first_candle_high(context, observation, entry_price)
+            and not accepted_above
+            and not companion_sell_reclaim
+        ):
             return "Large gap-up range profile blocks longs near first-candle high unless price accepts above that auction high."
         recent_trade_count = self._nifty_recent_closed_trade_count(context)
         if recent_trade_count >= 2 and not outside_acceptance and not (
@@ -4586,7 +4593,7 @@ class HeuristicDecisionEngine:
         )
         best = priority_best or self.select_best_candidate(candidates)
         if self._is_nifty_mode(context) and observation.nifty_mid_noise:
-            if priority_best is None:
+            if priority_best is None or not self._nifty_mid_noise_bypass_candidate(priority_best):
                 return TradeDecision(
                     action=TradeAction.no_trade,
                     confidence=0.44,
@@ -4626,7 +4633,7 @@ class HeuristicDecisionEngine:
                 decision_source="heuristic",
                 market_state=observation.day_type,
                 setup_score=round(best.score, 2),
-                setup_type=best.setup_type,
+                setup_type=self._decision_setup_type(best),
                 rule_ids_used=list(dict.fromkeys(best.rule_ids + ["R60", "R74", "R91", "R99"])),
             )
 
@@ -4645,11 +4652,12 @@ class HeuristicDecisionEngine:
                 first_target_price=round(best.first_target_price, 2),
                 market_state=observation.day_type,
                 setup_score=round(best.score, 2),
-                setup_type=best.setup_type,
+                setup_type=self._decision_setup_type(best),
                 rule_ids_used=list(dict.fromkeys(entry_rule_ids)),
             )
 
         if best.score >= arm_threshold and not allow_only_exceptional:
+            decision_setup_type = self._decision_setup_type(best)
             return TradeDecision(
                 action=TradeAction.no_trade,
                 confidence=min(0.9, best.score / 100),
@@ -4661,9 +4669,9 @@ class HeuristicDecisionEngine:
                 first_target_price=round(best.first_target_price, 2),
                 market_state=observation.day_type,
                 setup_score=round(best.score, 2),
-                setup_type=best.setup_type,
+                setup_type=decision_setup_type,
                 pending_setup_action="ARM",
-                pending_setup_type=best.setup_type,
+                pending_setup_type=decision_setup_type,
                 pending_setup_direction=best.direction,
                 pending_setup_trigger_price=round(best.trigger_price, 2),
                 pending_setup_invalidation_level=round(best.invalidation_level, 2),
@@ -4680,9 +4688,20 @@ class HeuristicDecisionEngine:
             decision_source="heuristic",
             market_state=observation.day_type,
             setup_score=round(best.score, 2),
-            setup_type=best.setup_type,
+            setup_type=self._decision_setup_type(best),
             rule_ids_used=list(dict.fromkeys(best.rule_ids + ["R95"])),
         )
+
+    def _decision_setup_type(self, candidate: SetupCandidate) -> str:
+        if candidate.setup_type == "nifty_stock_style_bullish_reclaim":
+            return "bullish_reclaim_watch"
+        if candidate.setup_type == "nifty_stock_style_bearish_rejection":
+            return "bearish_rejection_watch"
+        return candidate.setup_type
+
+    def _nifty_mid_noise_bypass_candidate(self, candidate: SetupCandidate) -> bool:
+        label = (candidate.event.level_label if candidate.event is not None else "").lower()
+        return label.startswith(("opening range high", "opening range low")) and candidate.score >= 80
 
     def build_candidates(self, context: StrategyContext, observation: Observation) -> list[SetupCandidate]:
         candidates: list[SetupCandidate] = []
@@ -4709,8 +4728,7 @@ class HeuristicDecisionEngine:
         )
         candidates.extend(previous_close_candidates)
         candidates.extend(self.build_stock_continuation_candidates(context, observation))
-        companion_candidates = [] if self._is_nifty_mode(context) else self.build_companion_index_candidates(context, observation)
-        candidates.extend(companion_candidates)
+        candidates.extend(self.build_companion_index_candidates(context, observation))
         if not context.instrument.supports_options:
             stock_bias = (context.stock_trade_bias or "both").strip().lower()
             if stock_bias == "long":
@@ -6171,6 +6189,15 @@ class HeuristicDecisionEngine:
             and not nifty_priority_reclaim
         ):
             score = min(score, 62.0)
+        if self._is_nifty_mode(context) and "round number" in level_label:
+            round_sweep_distance = abs(event.sweep_price - event.level_price)
+            if round_sweep_distance > 20.0:
+                score = min(score, 96.0)
+                notes.append("Round-number sweep was loose, so the final score is capped below a tight shelf sweep.")
+                rule_ids.extend(["R78", "R84", "R99"])
+        if self._is_nifty_mode(context) and retest_adjustment < 0:
+            score = min(score, 96.0)
+            rule_ids.extend(["R63", "R99"])
 
         return SetupCandidate(
             setup_type=setup_type,
@@ -6960,6 +6987,34 @@ class HeuristicDecisionEngine:
                         setup_type=same_side.setup_type,
                         rule_ids_used=list(dict.fromkeys(same_side.rule_ids + ["R41", "R42", "R43", "R63", "R74", "R99"])),
                     )
+
+        if (
+            nifty_mode_trade
+            and heuristic_early_exit_enabled
+            and observation.nifty_risk_mode == "fast_profit"
+            and trade.first_target_price is not None
+            and stop_is_protected_at_cost
+        ):
+            first_target_tagged = (
+                context.current_candle.high >= trade.first_target_price
+                if bullish_trade
+                else context.current_candle.low <= trade.first_target_price
+            )
+            if first_target_tagged:
+                return TradeDecision(
+                    action=TradeAction.exit,
+                    confidence=0.88,
+                    reason=(
+                        f"NIFTY fast-profit profile tagged first target {trade.first_target_price:.2f} "
+                        "after the stop was already protected at cost, so book the planned quick profit."
+                    ),
+                    decision_source="heuristic",
+                    option_type=trade.option_type,
+                    target_spot_price=round(trade.first_target_price, 2),
+                    market_state=observation.day_type,
+                    setup_type=trade.setup_type,
+                    rule_ids_used=["R41", "R42", "R44", "R45", "R74", "R99"],
+                )
 
         if trailing_stop_enabled and progress_r >= 1.0:
             latest_defense = self.latest_defended_zone(context, bullish_trade, observation)

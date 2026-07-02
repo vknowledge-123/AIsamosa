@@ -1,0 +1,4433 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+2 0 obj
+<< /Length 2428 >>
+stream
+BT
+/F1 10 Tf
+14 TL
+50 790 Td
+/F1 18 Tf
+(Python Trading Platform Interview Cookbook) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(Author: Amol Charpe) Tj
+T*
+/F1 10 Tf
+(Project context: AIsamosa / IONE ALGO trading dashboard) Tj
+T*
+/F1 10 Tf
+(Goal: Prepare for Python senior developer / team lead technical interviews.) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(---) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 14 Tf
+(How To Use This Book) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(Read this as a practical interview manual. You do not need to memorize every line, but you ) Tj
+T*
+/F1 10 Tf
+(should be able to explain:) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(* What the system does.) Tj
+T*
+/F1 10 Tf
+(* Why the architecture was chosen.) Tj
+T*
+/F1 10 Tf
+(* How live market data flows through the backend.) Tj
+T*
+/F1 10 Tf
+(* How replay is isolated from live trading.) Tj
+T*
+/F1 10 Tf
+(* How orders are placed safely.) Tj
+T*
+/F1 10 Tf
+(* How latency is reduced.) Tj
+T*
+/F1 10 Tf
+(* How to write core code if asked in interview.) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(Your one-minute project pitch:) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(Quote: I built an algo-trading platform using Python and FastAPI. It supports Dhan and ) Tj
+T*
+/F1 10 Tf
+(Zerodha brokers, live websocket market data, stock and NIFTY modes, replay and bulk ) Tj
+T*
+/F1 10 Tf
+(historical simulation, paper trading, order reconciliation, pyramiding, stop-loss ) Tj
+T*
+/F1 10 Tf
+(management, and a hybrid mode where NIFTY acts as the driver and stocks act as the traded ) Tj
+T*
+/F1 10 Tf
+(instruments. The architecture separates market data, candle building, strategy, order ) Tj
+T*
+/F1 10 Tf
+(execution, replay, and dashboard state so that live ticks and user requests do not block ) Tj
+T*
+/F1 10 Tf
+(each other.) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(---) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 14 Tf
+(Table Of Contents) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(1. Python Foundations) Tj
+T*
+/F1 10 Tf
+(2. Object Oriented Programming) Tj
+T*
+/F1 10 Tf
+(3. Data Structures And Algorithms For Trading) Tj
+T*
+/F1 10 Tf
+(4. FastAPI Basics To Advanced) Tj
+T*
+/F1 10 Tf
+(5. Databases And Persistence) Tj
+T*
+/F1 10 Tf
+(6. Authentication And JWT) Tj
+T*
+/F1 10 Tf
+(7. WebSockets And Market Data) Tj
+T*
+/F1 10 Tf
+(8. Algo Trading Latency) Tj
+T*
+/F1 10 Tf
+(9. Trading System Architecture) Tj
+T*
+/F1 10 Tf
+(10. Order Manager And Reconciliation) Tj
+T*
+/F1 8 Tf
+(Page 1 of 28) Tj
+ET
+endstream
+endobj
+3 0 obj
+<< /Type /Page /Parent 58 0 R /MediaBox [0 0 612 842] /Resources << /Font << /F1 1 0 R >> >> /Contents 2 0 R >>
+endobj
+4 0 obj
+<< /Length 2031 >>
+stream
+BT
+/F1 10 Tf
+14 TL
+50 790 Td
+/F1 10 Tf
+(11. Replay And Backtesting) Tj
+T*
+/F1 10 Tf
+(12. Hybrid Mode Design) Tj
+T*
+/F1 10 Tf
+(13. Multi-Client SaaS Design) Tj
+T*
+/F1 10 Tf
+(14. Google Cloud Deployment) Tj
+T*
+/F1 10 Tf
+(15. Code You Must Be Able To Write) Tj
+T*
+/F1 10 Tf
+(16. Interview Questions And Answers) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(---) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 14 Tf
+(1. Python Foundations) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 11 Tf
+(Core Python Concepts) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(Python is dynamically typed, interpreted, object-oriented, and high-level. In backend ) Tj
+T*
+/F1 10 Tf
+(trading applications we use it for:) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(* API servers.) Tj
+T*
+/F1 10 Tf
+(* Broker SDK integration.) Tj
+T*
+/F1 10 Tf
+(* Strategy calculation.) Tj
+T*
+/F1 10 Tf
+(* Candle generation.) Tj
+T*
+/F1 10 Tf
+(* Replay simulation.) Tj
+T*
+/F1 10 Tf
+(* Background workers.) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(Important concepts:) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(* Variables are references.) Tj
+T*
+/F1 10 Tf
+(* Lists and dictionaries are mutable.) Tj
+T*
+/F1 10 Tf
+(* Tuples, strings, integers, and floats are immutable.) Tj
+T*
+/F1 10 Tf
+(* Functions are first-class objects.) Tj
+T*
+/F1 10 Tf
+(* Exceptions should be used for abnormal flow, not ordinary business logic.) Tj
+T*
+/F1 10 Tf
+(* Type hints improve maintainability but are not enforced at runtime unless validated by ) Tj
+T*
+/F1 10 Tf
+(libraries like Pydantic.) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(Example:) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(    from dataclasses import dataclass) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(    @dataclass) Tj
+T*
+/F1 10 Tf
+(    class Tick:) Tj
+T*
+/F1 10 Tf
+(        symbol: str) Tj
+T*
+/F1 10 Tf
+(        ltp: float) Tj
+T*
+/F1 10 Tf
+(        volume: int) Tj
+T*
+/F1 10 Tf
+(        timestamp: str) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(    def normalize_symbol\(symbol: str\) -> str:) Tj
+T*
+/F1 10 Tf
+(        return symbol.strip\(\).upper\(\)) Tj
+T*
+/F1 8 Tf
+(Page 2 of 28) Tj
+ET
+endstream
+endobj
+5 0 obj
+<< /Type /Page /Parent 58 0 R /MediaBox [0 0 612 842] /Resources << /Font << /F1 1 0 R >> >> /Contents 4 0 R >>
+endobj
+6 0 obj
+<< /Length 2073 >>
+stream
+BT
+/F1 10 Tf
+14 TL
+50 790 Td
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(    tick = Tick\(symbol=normalize_symbol\(" tcs "\), ltp=2150.5, volume=1000, ) Tj
+T*
+/F1 10 Tf
+(    timestamp="2026-07-01 09:15:01"\)) Tj
+T*
+/F1 10 Tf
+(    print\(tick.symbol\)) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 11 Tf
+(Common Python Interview Questions) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(Question: What is the difference between list and tuple?) Tj
+T*
+/F1 10 Tf
+(Answer: A list is mutable and used when data changes. A tuple is immutable and useful for ) Tj
+T*
+/F1 10 Tf
+(fixed records or dictionary keys.) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(Question: What is a generator?) Tj
+T*
+/F1 10 Tf
+(Answer: A generator yields values lazily and does not load all data into memory.) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(    def candle_batches\(candles, batch_size\):) Tj
+T*
+/F1 10 Tf
+(        for i in range\(0, len\(candles\), batch_size\):) Tj
+T*
+/F1 10 Tf
+(            yield candles[i:i + batch_size]) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(Question: Why use type hints?) Tj
+T*
+/F1 10 Tf
+(Answer: Type hints make large codebases safer. IDEs and static checkers can detect wrong ) Tj
+T*
+/F1 10 Tf
+(calls before runtime.) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(---) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 14 Tf
+(2. Object Oriented Programming) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(OOP helps model real trading concepts:) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(* BrokerClient) Tj
+T*
+/F1 10 Tf
+(* MarketDataFeed) Tj
+T*
+/F1 10 Tf
+(* CandleBuilder) Tj
+T*
+/F1 10 Tf
+(* StrategyEngine) Tj
+T*
+/F1 10 Tf
+(* OrderManager) Tj
+T*
+/F1 10 Tf
+(* Position) Tj
+T*
+/F1 10 Tf
+(* ReplayEngine) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 11 Tf
+(Encapsulation) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(Keep internal state private and expose methods.) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(    class Position:) Tj
+T*
+/F1 10 Tf
+(        def __init__\(self, symbol: str, quantity: int, entry_price: float\):) Tj
+T*
+/F1 10 Tf
+(            self.symbol = symbol) Tj
+T*
+/F1 8 Tf
+(Page 3 of 28) Tj
+ET
+endstream
+endobj
+7 0 obj
+<< /Type /Page /Parent 58 0 R /MediaBox [0 0 612 842] /Resources << /Font << /F1 1 0 R >> >> /Contents 6 0 R >>
+endobj
+8 0 obj
+<< /Length 2237 >>
+stream
+BT
+/F1 10 Tf
+14 TL
+50 790 Td
+/F1 10 Tf
+(            self.quantity = quantity) Tj
+T*
+/F1 10 Tf
+(            self.entry_price = entry_price) Tj
+T*
+/F1 10 Tf
+(            self.open_quantity = quantity) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(        def pnl\(self, current_price: float\) -> float:) Tj
+T*
+/F1 10 Tf
+(            return round\(\(current_price - self.entry_price\) * self.open_quantity, 2\)) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 11 Tf
+(Inheritance) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(Useful for broker adapters, but avoid deep inheritance.) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(    from abc import ABC, abstractmethod) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(    class BrokerAdapter\(ABC\):) Tj
+T*
+/F1 10 Tf
+(        @abstractmethod) Tj
+T*
+/F1 10 Tf
+(        def place_order\(self, symbol: str, side: str, quantity: int\) -> str:) Tj
+T*
+/F1 10 Tf
+(            raise NotImplementedError) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(    class DhanBroker\(BrokerAdapter\):) Tj
+T*
+/F1 10 Tf
+(        def place_order\(self, symbol: str, side: str, quantity: int\) -> str:) Tj
+T*
+/F1 10 Tf
+(            return "dhan-order-id") Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(    class ZerodhaBroker\(BrokerAdapter\):) Tj
+T*
+/F1 10 Tf
+(        def place_order\(self, symbol: str, side: str, quantity: int\) -> str:) Tj
+T*
+/F1 10 Tf
+(            return "kite-order-id") Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 11 Tf
+(Composition) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(Prefer composition for production systems.) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(    class TradingEngine:) Tj
+T*
+/F1 10 Tf
+(        def __init__\(self, feed, strategy, order_manager\):) Tj
+T*
+/F1 10 Tf
+(            self.feed = feed) Tj
+T*
+/F1 10 Tf
+(            self.strategy = strategy) Tj
+T*
+/F1 10 Tf
+(            self.order_manager = order_manager) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(Interview answer:) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(Quote: I prefer composition over inheritance in this project because broker feeds, strategy ) Tj
+T*
+/F1 10 Tf
+(engines, and order managers are independently replaceable components.) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(---) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 8 Tf
+(Page 4 of 28) Tj
+ET
+endstream
+endobj
+9 0 obj
+<< /Type /Page /Parent 58 0 R /MediaBox [0 0 612 842] /Resources << /Font << /F1 1 0 R >> >> /Contents 8 0 R >>
+endobj
+10 0 obj
+<< /Length 2056 >>
+stream
+BT
+/F1 10 Tf
+14 TL
+50 790 Td
+/F1 14 Tf
+(3. Data Structures And Algorithms For Trading) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 11 Tf
+(Dictionaries For Symbol Lookup) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(    sessions: dict[str, StockSession] = {}) Tj
+T*
+/F1 10 Tf
+(    security_to_symbol: dict[str, str] = {}) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(Use dictionaries because symbol lookup must be O\(1\).) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 11 Tf
+(Deque For Recent Candles) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(    from collections import deque) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(    recent_ticks = deque\(maxlen=1000\)) Tj
+T*
+/F1 10 Tf
+(    recent_candles = deque\(maxlen=200\)) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 11 Tf
+(Priority Selection: Top Gainer / Loser) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(    def select_top_gainer\(changes: dict[str, float]\) -> str | None:) Tj
+T*
+/F1 10 Tf
+(        if not changes:) Tj
+T*
+/F1 10 Tf
+(            return None) Tj
+T*
+/F1 10 Tf
+(        return max\(changes, key=changes.get\)) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(    def select_top_loser\(changes: dict[str, float]\) -> str | None:) Tj
+T*
+/F1 10 Tf
+(        if not changes:) Tj
+T*
+/F1 10 Tf
+(            return None) Tj
+T*
+/F1 10 Tf
+(        return min\(changes, key=changes.get\)) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 11 Tf
+(Candle Builder) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(    from datetime import datetime) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(    def minute_key\(ts: datetime\) -> datetime:) Tj
+T*
+/F1 10 Tf
+(        return ts.replace\(second=0, microsecond=0\)) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(    def update_candle\(candle: dict | None, ltp: float, volume: int, ts: datetime\) -> dict:) Tj
+T*
+/F1 10 Tf
+(        key = minute_key\(ts\)) Tj
+T*
+/F1 10 Tf
+(        if candle is None or candle["timestamp"] != key:) Tj
+T*
+/F1 10 Tf
+(            return {) Tj
+T*
+/F1 10 Tf
+(                "timestamp": key,) Tj
+T*
+/F1 8 Tf
+(Page 5 of 28) Tj
+ET
+endstream
+endobj
+11 0 obj
+<< /Type /Page /Parent 58 0 R /MediaBox [0 0 612 842] /Resources << /Font << /F1 1 0 R >> >> /Contents 10 0 R >>
+endobj
+12 0 obj
+<< /Length 2017 >>
+stream
+BT
+/F1 10 Tf
+14 TL
+50 790 Td
+/F1 10 Tf
+(                "open": ltp,) Tj
+T*
+/F1 10 Tf
+(                "high": ltp,) Tj
+T*
+/F1 10 Tf
+(                "low": ltp,) Tj
+T*
+/F1 10 Tf
+(                "close": ltp,) Tj
+T*
+/F1 10 Tf
+(                "volume": volume,) Tj
+T*
+/F1 10 Tf
+(            }) Tj
+T*
+/F1 10 Tf
+(        candle["high"] = max\(candle["high"], ltp\)) Tj
+T*
+/F1 10 Tf
+(        candle["low"] = min\(candle["low"], ltp\)) Tj
+T*
+/F1 10 Tf
+(        candle["close"] = ltp) Tj
+T*
+/F1 10 Tf
+(        candle["volume"] += volume) Tj
+T*
+/F1 10 Tf
+(        return candle) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(Interview question: Why not store all ticks forever in memory?) Tj
+T*
+/F1 10 Tf
+(Answer: It increases memory and GC pressure. Store latest tick, candles, and bounded recent ) Tj
+T*
+/F1 10 Tf
+(buffers. Persist historical data separately.) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(---) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 14 Tf
+(4. FastAPI Basics To Advanced) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(FastAPI is used because it is fast, async-friendly, typed, and integrates with Pydantic.) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 11 Tf
+(Minimal API) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(    from fastapi import FastAPI) Tj
+T*
+/F1 10 Tf
+(    from pydantic import BaseModel) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(    app = FastAPI\(\)) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(    class OrderRequest\(BaseModel\):) Tj
+T*
+/F1 10 Tf
+(        symbol: str) Tj
+T*
+/F1 10 Tf
+(        side: str) Tj
+T*
+/F1 10 Tf
+(        quantity: int) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(    @app.post\("/orders"\)) Tj
+T*
+/F1 10 Tf
+(    def place_order\(request: OrderRequest\):) Tj
+T*
+/F1 10 Tf
+(        return {"status": "accepted", "symbol": request.symbol}) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 11 Tf
+(Async Endpoint) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(    import asyncio) Tj
+T*
+/F1 10 Tf
+(    from fastapi import FastAPI) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 8 Tf
+(Page 6 of 28) Tj
+ET
+endstream
+endobj
+13 0 obj
+<< /Type /Page /Parent 58 0 R /MediaBox [0 0 612 842] /Resources << /Font << /F1 1 0 R >> >> /Contents 12 0 R >>
+endobj
+14 0 obj
+<< /Length 2180 >>
+stream
+BT
+/F1 10 Tf
+14 TL
+50 790 Td
+/F1 10 Tf
+(    app = FastAPI\(\)) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(    @app.get\("/health"\)) Tj
+T*
+/F1 10 Tf
+(    async def health\(\):) Tj
+T*
+/F1 10 Tf
+(        await asyncio.sleep\(0\)) Tj
+T*
+/F1 10 Tf
+(        return {"ok": True}) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(Use `async def` for non-blocking I/O. Use thread pools for blocking SDK calls.) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 11 Tf
+(Background Jobs) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(    from fastapi import BackgroundTasks) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(    def warm_history\(symbols: list[str]\):) Tj
+T*
+/F1 10 Tf
+(        for symbol in symbols:) Tj
+T*
+/F1 10 Tf
+(            print\("warming", symbol\)) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(    @app.post\("/warmup"\)) Tj
+T*
+/F1 10 Tf
+(    def start_warmup\(background_tasks: BackgroundTasks\):) Tj
+T*
+/F1 10 Tf
+(        background_tasks.add_task\(warm_history, ["TCS", "INFY"]\)) Tj
+T*
+/F1 10 Tf
+(        return {"status": "started"}) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(For serious trading systems, a dedicated worker queue is better than simple BackgroundTasks.) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 11 Tf
+(Server Sent Events For Dashboard Updates) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(    from fastapi.responses import StreamingResponse) Tj
+T*
+/F1 10 Tf
+(    import asyncio) Tj
+T*
+/F1 10 Tf
+(    import json) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(    async def event_stream\(\):) Tj
+T*
+/F1 10 Tf
+(        while True:) Tj
+T*
+/F1 10 Tf
+(            yield f"data: {json.dumps\({'status': 'ok'}\)}\\n\\n") Tj
+T*
+/F1 10 Tf
+(            await asyncio.sleep\(1\)) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(    @app.get\("/state/stream"\)) Tj
+T*
+/F1 10 Tf
+(    async def state_stream\(\):) Tj
+T*
+/F1 10 Tf
+(        return StreamingResponse\(event_stream\(\), media_type="text/event-stream"\)) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 11 Tf
+(FastAPI Interview Questions) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(Question: What is ASGI?) Tj
+T*
+/F1 10 Tf
+(Answer: ASGI is the async server gateway interface used by FastAPI through servers like ) Tj
+T*
+/F1 8 Tf
+(Page 7 of 28) Tj
+ET
+endstream
+endobj
+15 0 obj
+<< /Type /Page /Parent 58 0 R /MediaBox [0 0 612 842] /Resources << /Font << /F1 1 0 R >> >> /Contents 14 0 R >>
+endobj
+16 0 obj
+<< /Length 2297 >>
+stream
+BT
+/F1 10 Tf
+14 TL
+50 790 Td
+/F1 10 Tf
+(Uvicorn. It supports async HTTP and websockets.) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(Question: When should you not use async?) Tj
+T*
+/F1 10 Tf
+(Answer: If the library is blocking, async does not help unless the blocking call is moved to) Tj
+T*
+/F1 10 Tf
+( a thread pool.) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(Question: How do you prevent heavy `/api/state` calls from slowing the system?) Tj
+T*
+/F1 10 Tf
+(Answer: Cache dashboard state and update it from events. API should read cached snapshots, ) Tj
+T*
+/F1 10 Tf
+(not recompute strategy on every poll.) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(---) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 14 Tf
+(5. Databases And Persistence) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(For a production multi-client version, use:) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(* PostgreSQL for users, brokers, strategies, settings, audit logs.) Tj
+T*
+/F1 10 Tf
+(* Redis for hot state, locks, queues, and rate-limit counters.) Tj
+T*
+/F1 10 Tf
+(* Object storage for large historical candle files.) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 11 Tf
+(Example Tables) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(    CREATE TABLE users \() Tj
+T*
+/F1 10 Tf
+(        id UUID PRIMARY KEY,) Tj
+T*
+/F1 10 Tf
+(        email TEXT UNIQUE NOT NULL,) Tj
+T*
+/F1 10 Tf
+(        password_hash TEXT NOT NULL,) Tj
+T*
+/F1 10 Tf
+(        created_at TIMESTAMP NOT NULL DEFAULT now\(\)) Tj
+T*
+/F1 10 Tf
+(    \);) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(    CREATE TABLE broker_accounts \() Tj
+T*
+/F1 10 Tf
+(        id UUID PRIMARY KEY,) Tj
+T*
+/F1 10 Tf
+(        user_id UUID REFERENCES users\(id\),) Tj
+T*
+/F1 10 Tf
+(        broker TEXT NOT NULL,) Tj
+T*
+/F1 10 Tf
+(        client_id TEXT,) Tj
+T*
+/F1 10 Tf
+(        access_token_encrypted TEXT,) Tj
+T*
+/F1 10 Tf
+(        active BOOLEAN DEFAULT true) Tj
+T*
+/F1 10 Tf
+(    \);) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(    CREATE TABLE trades \() Tj
+T*
+/F1 10 Tf
+(        id UUID PRIMARY KEY,) Tj
+T*
+/F1 10 Tf
+(        user_id UUID REFERENCES users\(id\),) Tj
+T*
+/F1 10 Tf
+(        symbol TEXT NOT NULL,) Tj
+T*
+/F1 10 Tf
+(        side TEXT NOT NULL,) Tj
+T*
+/F1 10 Tf
+(        quantity INT NOT NULL,) Tj
+T*
+/F1 10 Tf
+(        entry_price NUMERIC,) Tj
+T*
+/F1 10 Tf
+(        exit_price NUMERIC,) Tj
+T*
+/F1 8 Tf
+(Page 8 of 28) Tj
+ET
+endstream
+endobj
+17 0 obj
+<< /Type /Page /Parent 58 0 R /MediaBox [0 0 612 842] /Resources << /Font << /F1 1 0 R >> >> /Contents 16 0 R >>
+endobj
+18 0 obj
+<< /Length 2254 >>
+stream
+BT
+/F1 10 Tf
+14 TL
+50 790 Td
+/F1 10 Tf
+(        status TEXT NOT NULL,) Tj
+T*
+/F1 10 Tf
+(        created_at TIMESTAMP NOT NULL DEFAULT now\(\)) Tj
+T*
+/F1 10 Tf
+(    \);) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 11 Tf
+(SQLAlchemy Model Example) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(    from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column) Tj
+T*
+/F1 10 Tf
+(    from sqlalchemy import String, Integer, Numeric) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(    class Base\(DeclarativeBase\):) Tj
+T*
+/F1 10 Tf
+(        pass) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(    class Trade\(Base\):) Tj
+T*
+/F1 10 Tf
+(        __tablename__ = "trades") Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(        id: Mapped[int] = mapped_column\(primary_key=True\)) Tj
+T*
+/F1 10 Tf
+(        symbol: Mapped[str] = mapped_column\(String\(30\), index=True\)) Tj
+T*
+/F1 10 Tf
+(        side: Mapped[str] = mapped_column\(String\(10\)\)) Tj
+T*
+/F1 10 Tf
+(        quantity: Mapped[int] = mapped_column\(Integer\)) Tj
+T*
+/F1 10 Tf
+(        entry_price: Mapped[float] = mapped_column\(Numeric\)) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 11 Tf
+(Database Interview Questions) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(Question: What is an index?) Tj
+T*
+/F1 10 Tf
+(Answer: A data structure that speeds up queries at the cost of storage and slower writes.) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(Question: What is a transaction?) Tj
+T*
+/F1 10 Tf
+(Answer: A group of operations that commit or rollback together, preserving consistency.) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(Question: How would you store broker access tokens?) Tj
+T*
+/F1 10 Tf
+(Answer: Encrypt at rest, restrict access, rotate regularly, never log tokens.) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(---) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 14 Tf
+(6. Authentication And JWT) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(JWT is a signed token that carries claims.) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 11 Tf
+(Simple JWT Flow) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(1. User logs in with email and password.) Tj
+T*
+/F1 10 Tf
+(2. Server verifies password.) Tj
+T*
+/F1 10 Tf
+(3. Server creates JWT with user ID and expiry.) Tj
+T*
+/F1 10 Tf
+(4. Client sends JWT in `Authorization: Bearer <token>`.) Tj
+T*
+/F1 8 Tf
+(Page 9 of 28) Tj
+ET
+endstream
+endobj
+19 0 obj
+<< /Type /Page /Parent 58 0 R /MediaBox [0 0 612 842] /Resources << /Font << /F1 1 0 R >> >> /Contents 18 0 R >>
+endobj
+20 0 obj
+<< /Length 2071 >>
+stream
+BT
+/F1 10 Tf
+14 TL
+50 790 Td
+/F1 10 Tf
+(5. Server validates token on each request.) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 11 Tf
+(Example) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(    from datetime import datetime, timedelta, timezone) Tj
+T*
+/F1 10 Tf
+(    import jwt) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(    SECRET = "change-me") Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(    def create_access_token\(user_id: str\) -> str:) Tj
+T*
+/F1 10 Tf
+(        payload = {) Tj
+T*
+/F1 10 Tf
+(            "sub": user_id,) Tj
+T*
+/F1 10 Tf
+(            "exp": datetime.now\(timezone.utc\) + timedelta\(hours=1\),) Tj
+T*
+/F1 10 Tf
+(            "iat": datetime.now\(timezone.utc\),) Tj
+T*
+/F1 10 Tf
+(        }) Tj
+T*
+/F1 10 Tf
+(        return jwt.encode\(payload, SECRET, algorithm="HS256"\)) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(    def verify_token\(token: str\) -> dict:) Tj
+T*
+/F1 10 Tf
+(        return jwt.decode\(token, SECRET, algorithms=["HS256"]\)) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 11 Tf
+(Password Hashing) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(Never store plain passwords.) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(    from passlib.context import CryptContext) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(    pwd_context = CryptContext\(schemes=["bcrypt"], deprecated="auto"\)) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(    def hash_password\(password: str\) -> str:) Tj
+T*
+/F1 10 Tf
+(        return pwd_context.hash\(password\)) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(    def verify_password\(password: str, hashed: str\) -> bool:) Tj
+T*
+/F1 10 Tf
+(        return pwd_context.verify\(password, hashed\)) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(Interview answer:) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(Quote: JWT is good for stateless authentication, but for broker tokens I would store ) Tj
+T*
+/F1 10 Tf
+(encrypted tokens server-side and not put broker secrets inside JWT.) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(---) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 14 Tf
+(7. WebSockets And Market Data) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 8 Tf
+(Page 10 of 28) Tj
+ET
+endstream
+endobj
+21 0 obj
+<< /Type /Page /Parent 58 0 R /MediaBox [0 0 612 842] /Resources << /Font << /F1 1 0 R >> >> /Contents 20 0 R >>
+endobj
+22 0 obj
+<< /Length 1951 >>
+stream
+BT
+/F1 10 Tf
+14 TL
+50 790 Td
+/F1 10 Tf
+(Market feed architecture:) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(    Broker WebSocket) Tj
+T*
+/F1 10 Tf
+(        -> Tick normalizer) Tj
+T*
+/F1 10 Tf
+(        -> Candle builder) Tj
+T*
+/F1 10 Tf
+(        -> Strategy engine) Tj
+T*
+/F1 10 Tf
+(        -> Signal queue) Tj
+T*
+/F1 10 Tf
+(        -> Order manager) Tj
+T*
+/F1 10 Tf
+(        -> Dashboard cache) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 11 Tf
+(Normalized Tick Model) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(    from dataclasses import dataclass) Tj
+T*
+/F1 10 Tf
+(    from datetime import datetime) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(    @dataclass) Tj
+T*
+/F1 10 Tf
+(    class MarketTick:) Tj
+T*
+/F1 10 Tf
+(        broker: str) Tj
+T*
+/F1 10 Tf
+(        security_id: str) Tj
+T*
+/F1 10 Tf
+(        symbol: str) Tj
+T*
+/F1 10 Tf
+(        ltp: float) Tj
+T*
+/F1 10 Tf
+(        volume: int) Tj
+T*
+/F1 10 Tf
+(        timestamp: datetime) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 11 Tf
+(Subscription Manager) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(    class SubscriptionManager:) Tj
+T*
+/F1 10 Tf
+(        def __init__\(self\):) Tj
+T*
+/F1 10 Tf
+(            self.current: set[str] = set\(\)) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(        def diff\(self, desired: set[str]\) -> tuple[set[str], set[str]]:) Tj
+T*
+/F1 10 Tf
+(            subscribe = desired - self.current) Tj
+T*
+/F1 10 Tf
+(            unsubscribe = self.current - desired) Tj
+T*
+/F1 10 Tf
+(            return subscribe, unsubscribe) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(        def apply\(self, desired: set[str]\):) Tj
+T*
+/F1 10 Tf
+(            subscribe, unsubscribe = self.diff\(desired\)) Tj
+T*
+/F1 10 Tf
+(            self.current = set\(desired\)) Tj
+T*
+/F1 10 Tf
+(            return subscribe, unsubscribe) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 11 Tf
+(Reconnect Strategy) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 8 Tf
+(Page 11 of 28) Tj
+ET
+endstream
+endobj
+23 0 obj
+<< /Type /Page /Parent 58 0 R /MediaBox [0 0 612 842] /Resources << /Font << /F1 1 0 R >> >> /Contents 22 0 R >>
+endobj
+24 0 obj
+<< /Length 1973 >>
+stream
+BT
+/F1 10 Tf
+14 TL
+50 790 Td
+/F1 10 Tf
+(Use:) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(* One websocket per broker account.) Tj
+T*
+/F1 10 Tf
+(* Debounced subscription changes.) Tj
+T*
+/F1 10 Tf
+(* Exponential backoff.) Tj
+T*
+/F1 10 Tf
+(* Heartbeat watchdog.) Tj
+T*
+/F1 10 Tf
+(* Do not reconnect when only watchlist changes.) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(Bad design:) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(    Every stock add -> close websocket -> open websocket -> subscribe) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(Good design:) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(    One connection -> batch subscribe new symbols -> keep socket alive) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(Interview question: Why can websocket reconnect loops happen?) Tj
+T*
+/F1 10 Tf
+(Answer: Multiple duplicate connections, aggressive reconnects, blocking tick callbacks, rate) Tj
+T*
+/F1 10 Tf
+( limits, or not following broker subscription batch limits.) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(---) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 14 Tf
+(8. Algo Trading Latency) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(Latency matters because price can move before order placement.) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 11 Tf
+(Sources Of Latency) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(* Broker tick delay.) Tj
+T*
+/F1 10 Tf
+(* Network delay.) Tj
+T*
+/F1 10 Tf
+(* Python processing delay.) Tj
+T*
+/F1 10 Tf
+(* Strategy calculation.) Tj
+T*
+/F1 10 Tf
+(* Order API latency.) Tj
+T*
+/F1 10 Tf
+(* Broker order queue.) Tj
+T*
+/F1 10 Tf
+(* Exchange execution.) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 11 Tf
+(How To Reduce Latency) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(* Prewarm historical candles before market.) Tj
+T*
+/F1 10 Tf
+(* Cache instrument master and security IDs.) Tj
+T*
+/F1 10 Tf
+(* Keep websocket connected before market open.) Tj
+T*
+/F1 10 Tf
+(* Avoid REST calls during entry decision.) Tj
+T*
+/F1 10 Tf
+(* Use event queues.) Tj
+T*
+/F1 8 Tf
+(Page 12 of 28) Tj
+ET
+endstream
+endobj
+25 0 obj
+<< /Type /Page /Parent 58 0 R /MediaBox [0 0 612 842] /Resources << /Font << /F1 1 0 R >> >> /Contents 24 0 R >>
+endobj
+26 0 obj
+<< /Length 1928 >>
+stream
+BT
+/F1 10 Tf
+14 TL
+50 790 Td
+/F1 10 Tf
+(* Keep `/api/state` lightweight.) Tj
+T*
+/F1 10 Tf
+(* Use latest tick per symbol instead of processing stale tick backlog.) Tj
+T*
+/F1 10 Tf
+(* Avoid heavy logging inside tick callback.) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 11 Tf
+(Bounded Queue Example) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(    import queue) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(    tick_queue = queue.Queue\(maxsize=10000\)) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(    def push_tick\(tick\):) Tj
+T*
+/F1 10 Tf
+(        try:) Tj
+T*
+/F1 10 Tf
+(            tick_queue.put_nowait\(tick\)) Tj
+T*
+/F1 10 Tf
+(        except queue.Full:) Tj
+T*
+/F1 10 Tf
+(            # Drop stale data rather than blocking websocket thread.) Tj
+T*
+/F1 10 Tf
+(            pass) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 11 Tf
+(Latest Tick Store) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(    latest_ticks: dict[str, MarketTick] = {}) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(    def on_tick\(tick: MarketTick\):) Tj
+T*
+/F1 10 Tf
+(        latest_ticks[tick.symbol] = tick) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(Interview answer:) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(Quote: In algo trading, correctness comes first, then latency. A fast system that places ) Tj
+T*
+/F1 10 Tf
+(duplicate or wrong orders is dangerous. I separate strategy from order manager and reconcile) Tj
+T*
+/F1 10 Tf
+( fills before updating position quantity.) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(---) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 14 Tf
+(9. Trading System Architecture) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(Recommended architecture:) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(    FastAPI App) Tj
+T*
+/F1 10 Tf
+(      market_data/) Tj
+T*
+/F1 10 Tf
+(        dhan_feed.py) Tj
+T*
+/F1 10 Tf
+(        zerodha_feed.py) Tj
+T*
+/F1 10 Tf
+(        subscription_manager.py) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 8 Tf
+(Page 13 of 28) Tj
+ET
+endstream
+endobj
+27 0 obj
+<< /Type /Page /Parent 58 0 R /MediaBox [0 0 612 842] /Resources << /Font << /F1 1 0 R >> >> /Contents 26 0 R >>
+endobj
+28 0 obj
+<< /Length 1822 >>
+stream
+BT
+/F1 10 Tf
+14 TL
+50 790 Td
+/F1 10 Tf
+(      candles/) Tj
+T*
+/F1 10 Tf
+(        candle_builder.py) Tj
+T*
+/F1 10 Tf
+(        candle_store.py) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(      strategies/) Tj
+T*
+/F1 10 Tf
+(        heuristic_stock.py) Tj
+T*
+/F1 10 Tf
+(        heuristic_nifty.py) Tj
+T*
+/F1 10 Tf
+(        heuristic_advance.py) Tj
+T*
+/F1 10 Tf
+(        hybrid_driver.py) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(      orders/) Tj
+T*
+/F1 10 Tf
+(        order_manager.py) Tj
+T*
+/F1 10 Tf
+(        dhan_orders.py) Tj
+T*
+/F1 10 Tf
+(        zerodha_orders.py) Tj
+T*
+/F1 10 Tf
+(        reconciliation.py) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(      replay/) Tj
+T*
+/F1 10 Tf
+(        replay_engine.py) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(      dashboard/) Tj
+T*
+/F1 10 Tf
+(        state_cache.py) Tj
+T*
+/F1 10 Tf
+(        serializers.py) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 11 Tf
+(Event Flow) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(    tick -> candle -> signal -> order -> fill -> position -> dashboard) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 11 Tf
+(Why Separate Services?) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(* Market data should not place orders.) Tj
+T*
+/F1 10 Tf
+(* Strategy should not know broker-specific payloads.) Tj
+T*
+/F1 10 Tf
+(* Order manager should not calculate indicators.) Tj
+T*
+/F1 10 Tf
+(* Replay should not touch live state.) Tj
+T*
+/F1 10 Tf
+(* Dashboard should read cached state only.) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 11 Tf
+(Strategy Interface) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(    from dataclasses import dataclass) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(    @dataclass) Tj
+T*
+/F1 10 Tf
+(    class Signal:) Tj
+T*
+/F1 10 Tf
+(        action: str) Tj
+T*
+/F1 10 Tf
+(        symbol: str) Tj
+T*
+/F1 10 Tf
+(        reason: str) Tj
+T*
+/F1 8 Tf
+(Page 14 of 28) Tj
+ET
+endstream
+endobj
+29 0 obj
+<< /Type /Page /Parent 58 0 R /MediaBox [0 0 612 842] /Resources << /Font << /F1 1 0 R >> >> /Contents 28 0 R >>
+endobj
+30 0 obj
+<< /Length 1846 >>
+stream
+BT
+/F1 10 Tf
+14 TL
+50 790 Td
+/F1 10 Tf
+(        stop: float | None = None) Tj
+T*
+/F1 10 Tf
+(        target: float | None = None) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(    class Strategy:) Tj
+T*
+/F1 10 Tf
+(        def evaluate\(self, candles\) -> Signal:) Tj
+T*
+/F1 10 Tf
+(            raise NotImplementedError) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(---) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 14 Tf
+(10. Order Manager And Reconciliation) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(Order manager is critical. It prevents duplicate orders and wrong quantity exits.) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 11 Tf
+(Order State Machine) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(    CREATED) Tj
+T*
+/F1 10 Tf
+(      -> SENT) Tj
+T*
+/F1 10 Tf
+(      -> OPEN/PENDING) Tj
+T*
+/F1 10 Tf
+(      -> PARTIAL_FILL) Tj
+T*
+/F1 10 Tf
+(      -> FILLED) Tj
+T*
+/F1 10 Tf
+(      -> REJECTED) Tj
+T*
+/F1 10 Tf
+(      -> CANCELLED) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 11 Tf
+(Why Reconciliation Is Needed) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(Example problem:) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(* Initial buy 10 shares filled.) Tj
+T*
+/F1 10 Tf
+(* Pyramid buy 10 shares sent but pending.) Tj
+T*
+/F1 10 Tf
+(* Strategy thinks quantity is 20.) Tj
+T*
+/F1 10 Tf
+(* Exit sends sell 20.) Tj
+T*
+/F1 10 Tf
+(* Actual demat position is only 10.) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(This causes over-sell or rejection.) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(Correct approach:) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(* Position quantity should update only from broker fill updates.) Tj
+T*
+/F1 10 Tf
+(* Pending order quantity must be tracked separately.) Tj
+T*
+/F1 10 Tf
+(* Exit quantity should be actual filled open quantity.) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 11 Tf
+(Order Manager Example) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 8 Tf
+(Page 15 of 28) Tj
+ET
+endstream
+endobj
+31 0 obj
+<< /Type /Page /Parent 58 0 R /MediaBox [0 0 612 842] /Resources << /Font << /F1 1 0 R >> >> /Contents 30 0 R >>
+endobj
+32 0 obj
+<< /Length 2683 >>
+stream
+BT
+/F1 10 Tf
+14 TL
+50 790 Td
+/F1 10 Tf
+(    class OrderManager:) Tj
+T*
+/F1 10 Tf
+(        def __init__\(self, broker\):) Tj
+T*
+/F1 10 Tf
+(            self.broker = broker) Tj
+T*
+/F1 10 Tf
+(            self.pending_orders = {}) Tj
+T*
+/F1 10 Tf
+(            self.positions = {}) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(        def enter\(self, symbol: str, side: str, quantity: int\):) Tj
+T*
+/F1 10 Tf
+(            if self.has_pending_entry\(symbol\):) Tj
+T*
+/F1 10 Tf
+(                return None) Tj
+T*
+/F1 10 Tf
+(            order_id = self.broker.place_order\(symbol, side, quantity\)) Tj
+T*
+/F1 10 Tf
+(            self.pending_orders[order_id] = {) Tj
+T*
+/F1 10 Tf
+(                "symbol": symbol,) Tj
+T*
+/F1 10 Tf
+(                "side": side,) Tj
+T*
+/F1 10 Tf
+(                "quantity": quantity,) Tj
+T*
+/F1 10 Tf
+(                "status": "SENT",) Tj
+T*
+/F1 10 Tf
+(            }) Tj
+T*
+/F1 10 Tf
+(            return order_id) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(        def on_order_update\(self, update: dict\):) Tj
+T*
+/F1 10 Tf
+(            order_id = update["order_id"]) Tj
+T*
+/F1 10 Tf
+(            status = update["status"]) Tj
+T*
+/F1 10 Tf
+(            filled_qty = update.get\("filled_quantity", 0\)) Tj
+T*
+/F1 10 Tf
+(            order = self.pending_orders.get\(order_id\)) Tj
+T*
+/F1 10 Tf
+(            if not order:) Tj
+T*
+/F1 10 Tf
+(                return) Tj
+T*
+/F1 10 Tf
+(            order["status"] = status) Tj
+T*
+/F1 10 Tf
+(            if status == "FILLED":) Tj
+T*
+/F1 10 Tf
+(                self._apply_fill\(order["symbol"], order["side"], filled_qty\)) Tj
+T*
+/F1 10 Tf
+(                self.pending_orders.pop\(order_id, None\)) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(        def has_pending_entry\(self, symbol: str\) -> bool:) Tj
+T*
+/F1 10 Tf
+(            return any\(o["symbol"] == symbol and o["status"] in {"SENT", "OPEN"} for o in ) Tj
+T*
+/F1 10 Tf
+(    self.pending_orders.values\(\)\)) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(        def _apply_fill\(self, symbol: str, side: str, quantity: int\):) Tj
+T*
+/F1 10 Tf
+(            current = self.positions.get\(symbol, 0\)) Tj
+T*
+/F1 10 Tf
+(            self.positions[symbol] = current + quantity if side == "BUY" else current - ) Tj
+T*
+/F1 10 Tf
+(    quantity) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(Interview question: How do you avoid duplicate exit orders?) Tj
+T*
+/F1 10 Tf
+(Answer: Use idempotency keys, pending-exit flags, broker order updates, and reject new exit ) Tj
+T*
+/F1 10 Tf
+(orders while an exit is already pending.) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(---) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 14 Tf
+(11. Replay And Backtesting) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 8 Tf
+(Page 16 of 28) Tj
+ET
+endstream
+endobj
+33 0 obj
+<< /Type /Page /Parent 58 0 R /MediaBox [0 0 612 842] /Resources << /Font << /F1 1 0 R >> >> /Contents 32 0 R >>
+endobj
+34 0 obj
+<< /Length 1886 >>
+stream
+BT
+/F1 10 Tf
+14 TL
+50 790 Td
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(Replay is not live trading. It must be isolated.) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 11 Tf
+(Correct Replay Design) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(    Replay candles) Tj
+T*
+/F1 10 Tf
+(      -> replay state) Tj
+T*
+/F1 10 Tf
+(      -> strategy) Tj
+T*
+/F1 10 Tf
+(      -> simulated order manager) Tj
+T*
+/F1 10 Tf
+(      -> replay trade history) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(Live websocket should not close replay trades.) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 11 Tf
+(Replay Loop) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(    def replay\(candles, strategy\):) Tj
+T*
+/F1 10 Tf
+(        active_trade = None) Tj
+T*
+/F1 10 Tf
+(        trades = []) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(        for candle in candles:) Tj
+T*
+/F1 10 Tf
+(            context = {"active_trade": active_trade, "candle": candle}) Tj
+T*
+/F1 10 Tf
+(            signal = strategy.evaluate\(context\)) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(            if signal.action == "BUY" and active_trade is None:) Tj
+T*
+/F1 10 Tf
+(                active_trade = {"entry": candle.close, "time": candle.timestamp}) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(            elif signal.action == "EXIT" and active_trade is not None:) Tj
+T*
+/F1 10 Tf
+(                active_trade["exit"] = candle.close) Tj
+T*
+/F1 10 Tf
+(                trades.append\(active_trade\)) Tj
+T*
+/F1 10 Tf
+(                active_trade = None) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(        return trades) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 11 Tf
+(Avoid Look-Ahead Bias) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(Bad:) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(    top_gainer = full_day_close_change[symbol]) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(Good:) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 8 Tf
+(Page 17 of 28) Tj
+ET
+endstream
+endobj
+35 0 obj
+<< /Type /Page /Parent 58 0 R /MediaBox [0 0 612 842] /Resources << /Font << /F1 1 0 R >> >> /Contents 34 0 R >>
+endobj
+36 0 obj
+<< /Length 1874 >>
+stream
+BT
+/F1 10 Tf
+14 TL
+50 790 Td
+/F1 10 Tf
+(    top_gainer = change_until_signal_time[symbol]) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(In hybrid replay, if NIFTY signal comes at 09:45, stock gainer/loser must be calculated ) Tj
+T*
+/F1 10 Tf
+(using stock price available at 09:45, not day close.) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(---) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 14 Tf
+(12. Hybrid Mode Design) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(Hybrid mode:) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(    NIFTY = driver) Tj
+T*
+/F1 10 Tf
+(    Stock = traded instrument) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(If NIFTY gives long:) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(* Select top gainer from pasted stock list at that timestamp.) Tj
+T*
+/F1 10 Tf
+(* Buy that stock.) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(If NIFTY gives short:) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(* Select top loser from pasted stock list at that timestamp.) Tj
+T*
+/F1 10 Tf
+(* Short that stock.) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(If NIFTY pyramids:) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(* Add same quantity in stock.) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(If NIFTY exits:) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(* Exit stock.) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 11 Tf
+(Hybrid Selection Example) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(    def select_hybrid_stock\(decision_action: str, changes: dict[str, float]\) -> str:) Tj
+T*
+/F1 10 Tf
+(        if decision_action == "ENTER_CALL":) Tj
+T*
+/F1 10 Tf
+(            return max\(changes, key=changes.get\)) Tj
+T*
+/F1 10 Tf
+(        if decision_action == "ENTER_PUT":) Tj
+T*
+/F1 10 Tf
+(            return min\(changes, key=changes.get\)) Tj
+T*
+/F1 10 Tf
+(        raise ValueError\("Unsupported action"\)) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 11 Tf
+(Important Rule) Tj
+T*
+/F1 8 Tf
+(Page 18 of 28) Tj
+ET
+endstream
+endobj
+37 0 obj
+<< /Type /Page /Parent 58 0 R /MediaBox [0 0 612 842] /Resources << /Font << /F1 1 0 R >> >> /Contents 36 0 R >>
+endobj
+38 0 obj
+<< /Length 1823 >>
+stream
+BT
+/F1 10 Tf
+14 TL
+50 790 Td
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(Hybrid should mirror accepted NIFTY driver trades, not raw NIFTY signals.) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(Wrong:) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(    Every NIFTY signal -> stock trade) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(Correct:) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(    NIFTY actual trade opens -> stock trade opens) Tj
+T*
+/F1 10 Tf
+(    NIFTY actual add happens -> stock add happens) Tj
+T*
+/F1 10 Tf
+(    NIFTY actual exit happens -> stock exit happens) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(---) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 14 Tf
+(13. Multi-Client SaaS Design) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(If building this as a multi-client platform:) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 11 Tf
+(Requirements) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(* Separate user accounts.) Tj
+T*
+/F1 10 Tf
+(* Separate broker credentials.) Tj
+T*
+/F1 10 Tf
+(* Separate websockets per broker account.) Tj
+T*
+/F1 10 Tf
+(* Strategy settings per user.) Tj
+T*
+/F1 10 Tf
+(* Audit logs.) Tj
+T*
+/F1 10 Tf
+(* Risk controls per user.) Tj
+T*
+/F1 10 Tf
+(* Token encryption.) Tj
+T*
+/F1 10 Tf
+(* Admin dashboard.) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 11 Tf
+(Tenant-Aware Models) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(Every important table must include `user_id`.) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(    CREATE TABLE strategy_settings \() Tj
+T*
+/F1 10 Tf
+(        id UUID PRIMARY KEY,) Tj
+T*
+/F1 10 Tf
+(        user_id UUID NOT NULL REFERENCES users\(id\),) Tj
+T*
+/F1 10 Tf
+(        mode TEXT NOT NULL,) Tj
+T*
+/F1 10 Tf
+(        settings JSONB NOT NULL,) Tj
+T*
+/F1 10 Tf
+(        updated_at TIMESTAMP DEFAULT now\(\)) Tj
+T*
+/F1 10 Tf
+(    \);) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 8 Tf
+(Page 19 of 28) Tj
+ET
+endstream
+endobj
+39 0 obj
+<< /Type /Page /Parent 58 0 R /MediaBox [0 0 612 842] /Resources << /Font << /F1 1 0 R >> >> /Contents 38 0 R >>
+endobj
+40 0 obj
+<< /Length 1612 >>
+stream
+BT
+/F1 10 Tf
+14 TL
+50 790 Td
+/F1 10 Tf
+() Tj
+T*
+/F1 11 Tf
+(Multi-Client Architecture) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(    API Gateway / FastAPI) Tj
+T*
+/F1 10 Tf
+(      -> Auth service) Tj
+T*
+/F1 10 Tf
+(      -> User settings service) Tj
+T*
+/F1 10 Tf
+(      -> Broker connection manager) Tj
+T*
+/F1 10 Tf
+(      -> Per-user strategy workers) Tj
+T*
+/F1 10 Tf
+(      -> Order manager) Tj
+T*
+/F1 10 Tf
+(      -> PostgreSQL) Tj
+T*
+/F1 10 Tf
+(      -> Redis) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 11 Tf
+(Isolation) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(Never allow one user's:) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(* broker token) Tj
+T*
+/F1 10 Tf
+(* orders) Tj
+T*
+/F1 10 Tf
+(* market feed state) Tj
+T*
+/F1 10 Tf
+(* strategy settings) Tj
+T*
+/F1 10 Tf
+(* replay result) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(to leak into another user's session.) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 11 Tf
+(Scaling) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(Single client:) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(    One process can handle app + feed + strategy.) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(Many clients:) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(    Separate workers by user/broker.) Tj
+T*
+/F1 10 Tf
+(    Use Redis streams or queues.) Tj
+T*
+/F1 10 Tf
+(    Use PostgreSQL for persistence.) Tj
+T*
+/F1 10 Tf
+(    Use Kubernetes or managed instance groups for scaling.) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(---) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 14 Tf
+(14. Google Cloud Deployment) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 8 Tf
+(Page 20 of 28) Tj
+ET
+endstream
+endobj
+41 0 obj
+<< /Type /Page /Parent 58 0 R /MediaBox [0 0 612 842] /Resources << /Font << /F1 1 0 R >> >> /Contents 40 0 R >>
+endobj
+42 0 obj
+<< /Length 2015 >>
+stream
+BT
+/F1 10 Tf
+14 TL
+50 790 Td
+/F1 11 Tf
+(GCP Services To Know) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(* Compute Engine: VM hosting.) Tj
+T*
+/F1 10 Tf
+(* VPC: network.) Tj
+T*
+/F1 10 Tf
+(* Firewall rules: allow HTTP/HTTPS/SSH.) Tj
+T*
+/F1 10 Tf
+(* Static IP: fixed public IP.) Tj
+T*
+/F1 10 Tf
+(* Cloud DNS: domain mapping.) Tj
+T*
+/F1 10 Tf
+(* Cloud SQL: managed PostgreSQL.) Tj
+T*
+/F1 10 Tf
+(* Secret Manager: store secrets.) Tj
+T*
+/F1 10 Tf
+(* Cloud Logging: logs.) Tj
+T*
+/F1 10 Tf
+(* Cloud Monitoring: metrics.) Tj
+T*
+/F1 10 Tf
+(* Artifact Registry: Docker images.) Tj
+T*
+/F1 10 Tf
+(* Cloud Run: container deployment.) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 11 Tf
+(VM Deployment Steps) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(1. Create VM in `asia-south1` Mumbai.) Tj
+T*
+/F1 10 Tf
+(2. Choose Ubuntu 22.04 or 24.04.) Tj
+T*
+/F1 10 Tf
+(3. Reserve static IP.) Tj
+T*
+/F1 10 Tf
+(4. Attach static IP to VM.) Tj
+T*
+/F1 10 Tf
+(5. Allow firewall port 80 and 443.) Tj
+T*
+/F1 10 Tf
+(6. SSH into VM.) Tj
+T*
+/F1 10 Tf
+(7. Clone repo.) Tj
+T*
+/F1 10 Tf
+(8. Create Python venv.) Tj
+T*
+/F1 10 Tf
+(9. Install requirements.) Tj
+T*
+/F1 10 Tf
+(10. Create systemd service.) Tj
+T*
+/F1 10 Tf
+(11. Configure Nginx reverse proxy.) Tj
+T*
+/F1 10 Tf
+(12. Optional: configure SSL with Certbot if domain exists.) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 11 Tf
+(Commands) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(    sudo -i) Tj
+T*
+/F1 10 Tf
+(    apt update && apt upgrade -y) Tj
+T*
+/F1 10 Tf
+(    apt install git python3 python3-venv python3-pip nginx -y) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(    cd /opt) Tj
+T*
+/F1 10 Tf
+(    git clone https://github.com/vknowledge-123/AIsamosa.git aisamosa) Tj
+T*
+/F1 10 Tf
+(    cd /opt/aisamosa) Tj
+T*
+/F1 10 Tf
+(    python3 -m venv .venv) Tj
+T*
+/F1 10 Tf
+(    source .venv/bin/activate) Tj
+T*
+/F1 10 Tf
+(    pip install --upgrade pip) Tj
+T*
+/F1 10 Tf
+(    pip install -r requirements.txt) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(Systemd:) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 8 Tf
+(Page 21 of 28) Tj
+ET
+endstream
+endobj
+43 0 obj
+<< /Type /Page /Parent 58 0 R /MediaBox [0 0 612 842] /Resources << /Font << /F1 1 0 R >> >> /Contents 42 0 R >>
+endobj
+44 0 obj
+<< /Length 1853 >>
+stream
+BT
+/F1 10 Tf
+14 TL
+50 790 Td
+/F1 10 Tf
+(    [Unit]) Tj
+T*
+/F1 10 Tf
+(    Description=AIsamosa FastAPI app) Tj
+T*
+/F1 10 Tf
+(    After=network.target) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(    [Service]) Tj
+T*
+/F1 10 Tf
+(    User=root) Tj
+T*
+/F1 10 Tf
+(    WorkingDirectory=/opt/aisamosa) Tj
+T*
+/F1 10 Tf
+(    ExecStart=/opt/aisamosa/.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 ) Tj
+T*
+/F1 10 Tf
+(    --port 8000) Tj
+T*
+/F1 10 Tf
+(    Restart=always) Tj
+T*
+/F1 10 Tf
+(    RestartSec=5) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(    [Install]) Tj
+T*
+/F1 10 Tf
+(    WantedBy=multi-user.target) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(Nginx:) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(    server {) Tj
+T*
+/F1 10 Tf
+(        listen 80;) Tj
+T*
+/F1 10 Tf
+(        server_name _;) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(        location / {) Tj
+T*
+/F1 10 Tf
+(            proxy_pass http://127.0.0.1:8000;) Tj
+T*
+/F1 10 Tf
+(            proxy_http_version 1.1;) Tj
+T*
+/F1 10 Tf
+(            proxy_set_header Host $host;) Tj
+T*
+/F1 10 Tf
+(            proxy_set_header X-Real-IP $remote_addr;) Tj
+T*
+/F1 10 Tf
+(            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;) Tj
+T*
+/F1 10 Tf
+(            proxy_set_header Upgrade $http_upgrade;) Tj
+T*
+/F1 10 Tf
+(            proxy_set_header Connection "upgrade";) Tj
+T*
+/F1 10 Tf
+(        }) Tj
+T*
+/F1 10 Tf
+(    }) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(Commands:) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(    systemctl daemon-reload) Tj
+T*
+/F1 10 Tf
+(    systemctl enable aisamosa) Tj
+T*
+/F1 10 Tf
+(    systemctl start aisamosa) Tj
+T*
+/F1 10 Tf
+(    nginx -t) Tj
+T*
+/F1 10 Tf
+(    systemctl restart nginx) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(Logs:) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 8 Tf
+(Page 22 of 28) Tj
+ET
+endstream
+endobj
+45 0 obj
+<< /Type /Page /Parent 58 0 R /MediaBox [0 0 612 842] /Resources << /Font << /F1 1 0 R >> >> /Contents 44 0 R >>
+endobj
+46 0 obj
+<< /Length 2118 >>
+stream
+BT
+/F1 10 Tf
+14 TL
+50 790 Td
+/F1 10 Tf
+(    journalctl -u aisamosa -f) Tj
+T*
+/F1 10 Tf
+(    journalctl -u nginx -f) Tj
+T*
+/F1 10 Tf
+(    systemctl status aisamosa --no-pager) Tj
+T*
+/F1 10 Tf
+(    systemctl status nginx --no-pager) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(Update:) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(    cd /opt/aisamosa) Tj
+T*
+/F1 10 Tf
+(    git pull) Tj
+T*
+/F1 10 Tf
+(    source .venv/bin/activate) Tj
+T*
+/F1 10 Tf
+(    pip install -r requirements.txt) Tj
+T*
+/F1 10 Tf
+(    systemctl restart aisamosa) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(---) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 14 Tf
+(15. Code You Must Be Able To Write) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 11 Tf
+(1. Build 1-Minute Candles From Ticks) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(    from datetime import datetime) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(    class CandleBuilder:) Tj
+T*
+/F1 10 Tf
+(        def __init__\(self\):) Tj
+T*
+/F1 10 Tf
+(            self.current = {}) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(        def on_tick\(self, symbol: str, ltp: float, volume: int, ts: datetime\):) Tj
+T*
+/F1 10 Tf
+(            bucket = ts.replace\(second=0, microsecond=0\)) Tj
+T*
+/F1 10 Tf
+(            candle = self.current.get\(symbol\)) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(            if candle is None or candle["timestamp"] != bucket:) Tj
+T*
+/F1 10 Tf
+(                self.current[symbol] = {) Tj
+T*
+/F1 10 Tf
+(                    "timestamp": bucket,) Tj
+T*
+/F1 10 Tf
+(                    "open": ltp,) Tj
+T*
+/F1 10 Tf
+(                    "high": ltp,) Tj
+T*
+/F1 10 Tf
+(                    "low": ltp,) Tj
+T*
+/F1 10 Tf
+(                    "close": ltp,) Tj
+T*
+/F1 10 Tf
+(                    "volume": volume,) Tj
+T*
+/F1 10 Tf
+(                }) Tj
+T*
+/F1 10 Tf
+(                return self.current[symbol]) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(            candle["high"] = max\(candle["high"], ltp\)) Tj
+T*
+/F1 10 Tf
+(            candle["low"] = min\(candle["low"], ltp\)) Tj
+T*
+/F1 10 Tf
+(            candle["close"] = ltp) Tj
+T*
+/F1 8 Tf
+(Page 23 of 28) Tj
+ET
+endstream
+endobj
+47 0 obj
+<< /Type /Page /Parent 58 0 R /MediaBox [0 0 612 842] /Resources << /Font << /F1 1 0 R >> >> /Contents 46 0 R >>
+endobj
+48 0 obj
+<< /Length 2242 >>
+stream
+BT
+/F1 10 Tf
+14 TL
+50 790 Td
+/F1 10 Tf
+(            candle["volume"] += volume) Tj
+T*
+/F1 10 Tf
+(            return candle) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 11 Tf
+(2. Calculate EMA) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(    def ema\(values: list[float], period: int\) -> list[float]:) Tj
+T*
+/F1 10 Tf
+(        if not values:) Tj
+T*
+/F1 10 Tf
+(            return []) Tj
+T*
+/F1 10 Tf
+(        alpha = 2 / \(period + 1\)) Tj
+T*
+/F1 10 Tf
+(        result = [values[0]]) Tj
+T*
+/F1 10 Tf
+(        for value in values[1:]:) Tj
+T*
+/F1 10 Tf
+(            result.append\(\(value * alpha\) + \(result[-1] * \(1 - alpha\)\)\)) Tj
+T*
+/F1 10 Tf
+(        return result) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 11 Tf
+(3. Detect Crossover) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(    def crossed_above\(prev_fast: float, prev_slow: float, fast: float, slow: float\) -> ) Tj
+T*
+/F1 10 Tf
+(    bool:) Tj
+T*
+/F1 10 Tf
+(        return prev_fast <= prev_slow and fast > slow) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(    def crossed_below\(prev_fast: float, prev_slow: float, fast: float, slow: float\) -> ) Tj
+T*
+/F1 10 Tf
+(    bool:) Tj
+T*
+/F1 10 Tf
+(        return prev_fast >= prev_slow and fast < slow) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 11 Tf
+(4. Top Gainer At Signal Time) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(    def change_pct\(latest: float, previous_close: float\) -> float:) Tj
+T*
+/F1 10 Tf
+(        return \(\(latest - previous_close\) / previous_close\) * 100) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(    def select_top_gainer\(prices: dict[str, float], pdcs: dict[str, float]\) -> str:) Tj
+T*
+/F1 10 Tf
+(        changes = {) Tj
+T*
+/F1 10 Tf
+(            symbol: change_pct\(price, pdcs[symbol]\)) Tj
+T*
+/F1 10 Tf
+(            for symbol, price in prices.items\(\)) Tj
+T*
+/F1 10 Tf
+(            if symbol in pdcs and pdcs[symbol] > 0) Tj
+T*
+/F1 10 Tf
+(        }) Tj
+T*
+/F1 10 Tf
+(        return max\(changes, key=changes.get\)) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 11 Tf
+(5. Simple Stop Loss) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(    def should_exit_long\(current_price: float, stop_price: float\) -> bool:) Tj
+T*
+/F1 8 Tf
+(Page 24 of 28) Tj
+ET
+endstream
+endobj
+49 0 obj
+<< /Type /Page /Parent 58 0 R /MediaBox [0 0 612 842] /Resources << /Font << /F1 1 0 R >> >> /Contents 48 0 R >>
+endobj
+50 0 obj
+<< /Length 2268 >>
+stream
+BT
+/F1 10 Tf
+14 TL
+50 790 Td
+/F1 10 Tf
+(        return current_price <= stop_price) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(    def should_exit_short\(current_price: float, stop_price: float\) -> bool:) Tj
+T*
+/F1 10 Tf
+(        return current_price >= stop_price) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 11 Tf
+(6. Pyramiding) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(    class Position:) Tj
+T*
+/F1 10 Tf
+(        def __init__\(self, entry_price: float, quantity: int\):) Tj
+T*
+/F1 10 Tf
+(            self.entry_price = entry_price) Tj
+T*
+/F1 10 Tf
+(            self.quantity = quantity) Tj
+T*
+/F1 10 Tf
+(            self.base_quantity = quantity) Tj
+T*
+/F1 10 Tf
+(            self.pyramid_count = 0) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(        def add\(self, price: float\):) Tj
+T*
+/F1 10 Tf
+(            if self.pyramid_count >= 2:) Tj
+T*
+/F1 10 Tf
+(                return False) Tj
+T*
+/F1 10 Tf
+(            add_qty = self.base_quantity) Tj
+T*
+/F1 10 Tf
+(            total_cost = \(self.entry_price * self.quantity\) + \(price * add_qty\)) Tj
+T*
+/F1 10 Tf
+(            self.quantity += add_qty) Tj
+T*
+/F1 10 Tf
+(            self.entry_price = total_cost / self.quantity) Tj
+T*
+/F1 10 Tf
+(            self.pyramid_count += 1) Tj
+T*
+/F1 10 Tf
+(            return True) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 11 Tf
+(7. JWT Protected Endpoint) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(    from fastapi import Depends, HTTPException) Tj
+T*
+/F1 10 Tf
+(    from fastapi.security import HTTPBearer) Tj
+T*
+/F1 10 Tf
+(    import jwt) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(    security = HTTPBearer\(\)) Tj
+T*
+/F1 10 Tf
+(    SECRET = "change-me") Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(    def current_user\(credentials=Depends\(security\)\):) Tj
+T*
+/F1 10 Tf
+(        try:) Tj
+T*
+/F1 10 Tf
+(            payload = jwt.decode\(credentials.credentials, SECRET, algorithms=["HS256"]\)) Tj
+T*
+/F1 10 Tf
+(            return payload["sub"]) Tj
+T*
+/F1 10 Tf
+(        except Exception:) Tj
+T*
+/F1 10 Tf
+(            raise HTTPException\(status_code=401, detail="Invalid token"\)) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(---) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 14 Tf
+(16. Interview Questions And Answers) Tj
+T*
+/F1 8 Tf
+(Page 25 of 28) Tj
+ET
+endstream
+endobj
+51 0 obj
+<< /Type /Page /Parent 58 0 R /MediaBox [0 0 612 842] /Resources << /Font << /F1 1 0 R >> >> /Contents 50 0 R >>
+endobj
+52 0 obj
+<< /Length 2634 >>
+stream
+BT
+/F1 10 Tf
+14 TL
+50 790 Td
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 11 Tf
+(Python) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(Question: Explain GIL.) Tj
+T*
+/F1 10 Tf
+(Answer: The Global Interpreter Lock allows only one thread to execute Python bytecode at a ) Tj
+T*
+/F1 10 Tf
+(time. For I/O-heavy apps like broker APIs, threads still help. For CPU-heavy calculations, ) Tj
+T*
+/F1 10 Tf
+(use multiprocessing or vectorized libraries.) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(Question: How do you handle exceptions in trading?) Tj
+T*
+/F1 10 Tf
+(Answer: Catch broker/network exceptions at adapter boundaries, record error state, retry ) Tj
+T*
+/F1 10 Tf
+(with backoff if safe, never assume an order failed without reconciliation.) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 11 Tf
+(FastAPI) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(Question: Why FastAPI?) Tj
+T*
+/F1 10 Tf
+(Answer: It is ASGI-based, supports async, Pydantic validation, automatic docs, and works ) Tj
+T*
+/F1 10 Tf
+(well for low-latency APIs when heavy work is moved outside request handlers.) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(Question: How to avoid request timeout?) Tj
+T*
+/F1 10 Tf
+(Answer: Return job ID immediately and run long work in background worker. Frontend polls or ) Tj
+T*
+/F1 10 Tf
+(uses SSE for progress.) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 11 Tf
+(System Design) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(Question: Design a live trading system.) Tj
+T*
+/F1 10 Tf
+(Answer:) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(    Broker feed -> Market data service -> Candle builder -> Strategy engine) Tj
+T*
+/F1 10 Tf
+(    -> Order manager -> Broker order API -> Order update reconciliation) Tj
+T*
+/F1 10 Tf
+(    -> Position store -> Dashboard state cache) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(Question: Why separate order manager from strategy?) Tj
+T*
+/F1 10 Tf
+(Answer: Strategy decides intent. Order manager handles execution reality: pending, partial ) Tj
+T*
+/F1 10 Tf
+(fill, rejection, retry, quantity reconciliation.) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 11 Tf
+(Latency) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(Question: How do you reduce latency at 9:15?) Tj
+T*
+/F1 10 Tf
+(Answer: Prewarm history at 9:10, cache instrument tokens, keep websocket connected, avoid ) Tj
+T*
+/F1 10 Tf
+(REST calls at signal time, use queues, and process only latest ticks.) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(Question: What if websocket connects late at 9:21?) Tj
+T*
+/F1 10 Tf
+(Answer: Fetch missing intraday candles from REST, merge into candle store, recalculate ) Tj
+T*
+/F1 10 Tf
+(indicators, detect missed crossovers, then resume live ticks.) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 8 Tf
+(Page 26 of 28) Tj
+ET
+endstream
+endobj
+53 0 obj
+<< /Type /Page /Parent 58 0 R /MediaBox [0 0 612 842] /Resources << /Font << /F1 1 0 R >> >> /Contents 52 0 R >>
+endobj
+54 0 obj
+<< /Length 2768 >>
+stream
+BT
+/F1 10 Tf
+14 TL
+50 790 Td
+/F1 11 Tf
+(Database) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(Question: SQL vs NoSQL?) Tj
+T*
+/F1 10 Tf
+(Answer: SQL for trades, users, settings, and audit logs because consistency matters. Redis ) Tj
+T*
+/F1 10 Tf
+(for cache and queues.) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 11 Tf
+(Broker Integration) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(Question: How do you prevent double sell?) Tj
+T*
+/F1 10 Tf
+(Answer: Track broker order status. Exit only actual filled quantity. Do not count pending ) Tj
+T*
+/F1 10 Tf
+(pyramid as filled until order update confirms.) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 11 Tf
+(Leadership) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(Question: How would you lead a team on this project?) Tj
+T*
+/F1 10 Tf
+(Answer: I would split modules: market data, strategy, order manager, dashboard, replay, ) Tj
+T*
+/F1 10 Tf
+(DevOps. I would define interfaces, add tests for order safety, use code reviews, and ) Tj
+T*
+/F1 10 Tf
+(prioritize risk controls before adding strategy features.) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(---) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 14 Tf
+(Final Interview Pitch) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(Quote: This project taught me end-to-end backend engineering: FastAPI APIs, broker websocket) Tj
+T*
+/F1 10 Tf
+( integration, historical data sync, trading strategy execution, replay simulation, paper ) Tj
+T*
+/F1 10 Tf
+(trading, order reconciliation, dashboard state caching, and deployment on cloud servers. The) Tj
+T*
+/F1 10 Tf
+( biggest engineering challenge was separating live trading from replay and preventing broker) Tj
+T*
+/F1 10 Tf
+( execution bugs like duplicate exits or wrong quantity. If I scale it as a SaaS, I would ) Tj
+T*
+/F1 10 Tf
+(move to PostgreSQL, Redis queues, per-client broker workers, encrypted credentials, and a ) Tj
+T*
+/F1 10 Tf
+(proper event-driven architecture.) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(---) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 14 Tf
+(Practice Tasks) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(1. Write a candle builder from ticks.) Tj
+T*
+/F1 10 Tf
+(2. Write top gainer/loser selector using previous close.) Tj
+T*
+/F1 10 Tf
+(3. Write an order manager that prevents duplicate pending orders.) Tj
+T*
+/F1 10 Tf
+(4. Design a FastAPI endpoint that starts replay and returns job ID.) Tj
+T*
+/F1 10 Tf
+(5. Design a database schema for users, broker accounts, trades, and settings.) Tj
+T*
+/F1 10 Tf
+(6. Explain how replay avoids look-ahead bias.) Tj
+T*
+/F1 10 Tf
+(7. Explain how to scale from one client to 100 clients.) Tj
+T*
+/F1 10 Tf
+(8. Write JWT login and protected endpoint.) Tj
+T*
+/F1 10 Tf
+(9. Explain how GCP VM deployment works.) Tj
+T*
+/F1 10 Tf
+(10. Explain why order reconciliation is mandatory in algo trading.) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 8 Tf
+(Page 27 of 28) Tj
+ET
+endstream
+endobj
+55 0 obj
+<< /Type /Page /Parent 58 0 R /MediaBox [0 0 612 842] /Resources << /Font << /F1 1 0 R >> >> /Contents 54 0 R >>
+endobj
+56 0 obj
+<< /Length 826 >>
+stream
+BT
+/F1 10 Tf
+14 TL
+50 790 Td
+/F1 10 Tf
+(---) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 14 Tf
+(Quick Revision Checklist) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 10 Tf
+(* Python OOP, dataclasses, exceptions, typing.) Tj
+T*
+/F1 10 Tf
+(* FastAPI async, BackgroundTasks, SSE, WebSocket.) Tj
+T*
+/F1 10 Tf
+(* PostgreSQL, Redis, indexes, transactions.) Tj
+T*
+/F1 10 Tf
+(* JWT, password hashing, encrypted broker tokens.) Tj
+T*
+/F1 10 Tf
+(* Broker websocket lifecycle and subscription batching.) Tj
+T*
+/F1 10 Tf
+(* Candle builder and indicator calculation.) Tj
+T*
+/F1 10 Tf
+(* Strategy vs order manager separation.) Tj
+T*
+/F1 10 Tf
+(* Replay isolation and look-ahead bias.) Tj
+T*
+/F1 10 Tf
+(* Latency reduction techniques.) Tj
+T*
+/F1 10 Tf
+(* GCP VM, static IP, Nginx, systemd, logs.) Tj
+T*
+/F1 10 Tf
+() Tj
+T*
+/F1 8 Tf
+(Page 28 of 28) Tj
+ET
+endstream
+endobj
+57 0 obj
+<< /Type /Page /Parent 58 0 R /MediaBox [0 0 612 842] /Resources << /Font << /F1 1 0 R >> >> /Contents 56 0 R >>
+endobj
+58 0 obj
+<< /Type /Pages /Kids [ 3 0 R 5 0 R 7 0 R 9 0 R 11 0 R 13 0 R 15 0 R 17 0 R 19 0 R 21 0 R 23 0 R 25 0 R 27 0 R 29 0 R 31 0 R 33 0 R 35 0 R 37 0 R 39 0 R 41 0 R 43 0 R 45 0 R 47 0 R 49 0 R 51 0 R 53 0 R 55 0 R 57 0 R ] /Count 28 >>
+endobj
+59 0 obj
+<< /Type /Catalog /Pages 58 0 R >>
+endobj
+xref
+0 60
+0000000000 65535 f 
+0000000009 00000 n 
+0000000079 00000 n 
+0000002559 00000 n 
+0000002686 00000 n 
+0000004769 00000 n 
+0000004896 00000 n 
+0000007021 00000 n 
+0000007148 00000 n 
+0000009437 00000 n 
+0000009564 00000 n 
+0000011673 00000 n 
+0000011802 00000 n 
+0000013872 00000 n 
+0000014001 00000 n 
+0000016234 00000 n 
+0000016363 00000 n 
+0000018713 00000 n 
+0000018842 00000 n 
+0000021149 00000 n 
+0000021278 00000 n 
+0000023402 00000 n 
+0000023531 00000 n 
+0000025535 00000 n 
+0000025664 00000 n 
+0000027690 00000 n 
+0000027819 00000 n 
+0000029800 00000 n 
+0000029929 00000 n 
+0000031804 00000 n 
+0000031933 00000 n 
+0000033832 00000 n 
+0000033961 00000 n 
+0000036697 00000 n 
+0000036826 00000 n 
+0000038765 00000 n 
+0000038894 00000 n 
+0000040821 00000 n 
+0000040950 00000 n 
+0000042826 00000 n 
+0000042955 00000 n 
+0000044620 00000 n 
+0000044749 00000 n 
+0000046817 00000 n 
+0000046946 00000 n 
+0000048852 00000 n 
+0000048981 00000 n 
+0000051152 00000 n 
+0000051281 00000 n 
+0000053576 00000 n 
+0000053705 00000 n 
+0000056026 00000 n 
+0000056155 00000 n 
+0000058842 00000 n 
+0000058971 00000 n 
+0000061792 00000 n 
+0000061921 00000 n 
+0000062799 00000 n 
+0000062928 00000 n 
+0000063175 00000 n 
+trailer
+<< /Size 60 /Root 59 0 R >>
+startxref
+63226
+%%EOF

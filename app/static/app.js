@@ -90,6 +90,7 @@ const elements = {
   savedStockCostAfterPyramidValue: document.getElementById("savedStockCostAfterPyramidValue"),
   savedNiftyPointPyramidingValue: document.getElementById("savedNiftyPointPyramidingValue"),
   savedNiftyPointPyramidingPointsValue: document.getElementById("savedNiftyPointPyramidingPointsValue"),
+  savedNiftyMiddleRoundLiquidityValue: document.getElementById("savedNiftyMiddleRoundLiquidityValue"),
   savedPathValue: document.getElementById("savedPathValue"),
   savedUpdatedValue: document.getElementById("savedUpdatedValue"),
   replayPnlRangeValue: document.getElementById("replayPnlRangeValue"),
@@ -554,6 +555,7 @@ function buildCredentialPayload(form) {
     stock_cost_sl_after_pyramid_enabled: form.elements.stock_cost_sl_after_pyramid_enabled?.checked ? "true" : "false",
     nifty_point_pyramiding_enabled: form.elements.nifty_point_pyramiding_enabled?.checked ? "true" : "false",
     nifty_point_pyramiding_points: (form.elements.nifty_point_pyramiding_points?.value || "50").trim(),
+    nifty_middle_round_liquidity_enabled: form.elements.nifty_middle_round_liquidity_enabled?.checked ? "true" : "false",
     nifty_trade_bias: (form.elements.nifty_trade_bias?.value || "both").trim(),
     nifty_option_trade_mode: (form.elements.nifty_option_trade_mode?.value || "selling").trim(),
     hybrid_buy_gainer_loser_enabled: form.elements.hybrid_buy_gainer_loser_enabled?.checked ? "true" : "false",
@@ -612,6 +614,7 @@ function serializeCredentialPayload(payload) {
     stock_cost_sl_after_pyramid_enabled: payload.stock_cost_sl_after_pyramid_enabled,
     nifty_point_pyramiding_enabled: payload.nifty_point_pyramiding_enabled,
     nifty_point_pyramiding_points: payload.nifty_point_pyramiding_points,
+    nifty_middle_round_liquidity_enabled: payload.nifty_middle_round_liquidity_enabled,
     nifty_trade_bias: payload.nifty_trade_bias,
     nifty_option_trade_mode: payload.nifty_option_trade_mode,
     hybrid_buy_gainer_loser_enabled: payload.hybrid_buy_gainer_loser_enabled,
@@ -1368,6 +1371,7 @@ function renderState(state) {
   elements.savedStockCostAfterPyramidValue.textContent = state.credentials.stock_cost_sl_after_pyramid_enabled ? "Enabled" : "Disabled";
   elements.savedNiftyPointPyramidingValue.textContent = state.credentials.nifty_point_pyramiding_enabled ? "Enabled" : "Disabled";
   elements.savedNiftyPointPyramidingPointsValue.textContent = money(state.credentials.nifty_point_pyramiding_points);
+  elements.savedNiftyMiddleRoundLiquidityValue.textContent = state.credentials.nifty_middle_round_liquidity_enabled ? "Enabled" : "Disabled";
   elements.savedPathValue.textContent = state.credentials.storage_path || "-";
   elements.savedUpdatedValue.textContent = state.credentials.last_updated
     ? new Date(state.credentials.last_updated).toLocaleString()
@@ -1574,6 +1578,7 @@ function renderState(state) {
     syncCredentialField(credentialSaveForm, "stock_cost_sl_after_pyramid_enabled", state.credentials.stock_cost_sl_after_pyramid_enabled === true);
     syncCredentialField(credentialSaveForm, "nifty_point_pyramiding_enabled", state.credentials.nifty_point_pyramiding_enabled === true);
     syncCredentialField(credentialSaveForm, "nifty_point_pyramiding_points", String(state.credentials.nifty_point_pyramiding_points ?? 50));
+    syncCredentialField(credentialSaveForm, "nifty_middle_round_liquidity_enabled", state.credentials.nifty_middle_round_liquidity_enabled === true);
     syncCredentialField(credentialSaveForm, "nifty_trade_bias", state.credentials.nifty_trade_bias || "both");
     syncCredentialField(credentialSaveForm, "hybrid_buy_gainer_loser_enabled", state.credentials.hybrid_buy_gainer_loser_enabled !== false);
     if (!settingsUiState.dirtyFields.size && !settingsUiState.saveInFlight) {
@@ -1945,6 +1950,7 @@ document.getElementById("historicalRangeReplayForm").addEventListener("submit", 
     formData.append("replay_end_date", form.elements.replay_end_date.value || "");
     formData.append("decision_duration_minutes", replayForm.elements.decision_duration_minutes.value || "5");
     formData.append("stock_replay_scope", form.elements.stock_replay_scope?.value || "all");
+    formData.append("instrument_mode", runtimeUiState.dashboard?.instrument?.mode || "");
     await postForm("/api/simulation/historical-range/start", formData, {
       timeoutMs: 120000,
       pendingTitle: "Bulk replay started",

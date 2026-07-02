@@ -68,6 +68,7 @@ class CredentialStore:
         stock_cost_sl_after_pyramid_enabled: bool | None = None,
         nifty_point_pyramiding_enabled: bool | None = None,
         nifty_point_pyramiding_points: float | None = None,
+        nifty_middle_round_liquidity_enabled: bool | None = None,
         nifty_trade_bias: str | None = None,
         nifty_option_trade_mode: str | None = None,
         hybrid_buy_gainer_loser_enabled: bool | None = None,
@@ -292,6 +293,11 @@ class CredentialStore:
             normalized = round(max(float(nifty_point_pyramiding_points), 0.0), 2)
             if payload.get("nifty_point_pyramiding_points") != normalized:
                 payload["nifty_point_pyramiding_points"] = normalized
+                updated = True
+        if nifty_middle_round_liquidity_enabled is not None:
+            normalized = bool(nifty_middle_round_liquidity_enabled)
+            if payload.get("nifty_middle_round_liquidity_enabled") != normalized:
+                payload["nifty_middle_round_liquidity_enabled"] = normalized
                 updated = True
         if nifty_trade_bias and nifty_trade_bias.strip():
             normalized = self._normalize_nifty_trade_bias(nifty_trade_bias)
@@ -674,6 +680,13 @@ class CredentialStore:
             minimum=0.0,
         )
 
+    def get_nifty_middle_round_liquidity_enabled(self, settings: Settings) -> bool:
+        payload = self.load()
+        return self._coerce_bool(
+            payload.get("nifty_middle_round_liquidity_enabled"),
+            bool(settings.nifty_middle_round_liquidity_enabled),
+        )
+
     def get_nifty_trade_bias(self, settings: Settings) -> str:
         payload = self.load()
         return self._normalize_nifty_trade_bias(payload.get("nifty_trade_bias") or settings.nifty_trade_bias)
@@ -811,6 +824,7 @@ class CredentialStore:
             stock_cost_sl_after_pyramid_enabled=self.get_stock_cost_sl_after_pyramid_enabled(settings),
             nifty_point_pyramiding_enabled=self.get_nifty_point_pyramiding_enabled(settings),
             nifty_point_pyramiding_points=self.get_nifty_point_pyramiding_points(settings),
+            nifty_middle_round_liquidity_enabled=self.get_nifty_middle_round_liquidity_enabled(settings),
             nifty_trade_bias=self.get_nifty_trade_bias(settings),
             nifty_option_trade_mode=self.get_nifty_option_trade_mode(settings),
             hybrid_buy_gainer_loser_enabled=self.get_hybrid_buy_gainer_loser_enabled(settings),

@@ -32,9 +32,14 @@ def decide_nifty(
     *,
     current_trade_price: float | None = None,
 ) -> TradeDecision:
-    if context.active_trade is not None:
+    if context.active_trade is not None or context.pending_setup is not None:
         return engine.decide(context, current_trade_price=current_trade_price)
-    return _decide_simplified_liquidity_nifty(context)
+    decision = _decide_simplified_liquidity_nifty(context)
+    observation = engine.observe(context)
+    candidates = engine.build_candidates(context, observation)
+    engine.record_trace(context, observation, decision, candidates)
+    engine.record_narrative(context, observation, decision, candidates)
+    return decision
 
 
 def _decide_simplified_liquidity_nifty(context: StrategyContext) -> TradeDecision:
@@ -180,7 +185,7 @@ def _entry_reason(candidate: SweepCandidate, context: StrategyContext, trap_text
         f"NIFTY simplified liquidity heuristic starts with trap map: {trap_text}. "
         f"{candidate.reason} Latest close {latest.close:.2f}; score {candidate.score:.1f}/100. "
         "Decision uses only last 4 trading sessions daily liquidity, 3-minute swing/equal liquidity, "
-        f"previous-day high/low, and 100-point round-number bands.{entry_text}{bias_text}"
+        f"previous-day high/low, 100-point round-number bands, and enabled middle-round shelves.{entry_text}{bias_text}"
     )
 
 
@@ -515,6 +520,12 @@ def _round_number_pools(context: StrategyContext) -> list[LiquidityPool]:
             continue
         pools.append(LiquidityPool(f"100-point round band {level} +/-30", "buy", float(level), 30.0, "round"))
         pools.append(LiquidityPool(f"100-point round band {level} +/-30", "sell", float(level), 30.0, "round"))
+    if context.nifty_middle_round_liquidity_enabled:
+        for level in range(start + 50, end + 1, 100):
+            if _ignore_open_round_liquidity(float(level), first_session_candle, current_time=current_time):
+                continue
+            pools.append(LiquidityPool(f"Middle round band {level} +/-20", "buy", float(level), 28.0, "middle-round"))
+            pools.append(LiquidityPool(f"Middle round band {level} +/-20", "sell", float(level), 28.0, "middle-round"))
     return pools
 
 
@@ -554,11 +565,12 @@ def _best_sweep_candidate(recent: list[Candle], pools: list[LiquidityPool], *, s
             elif pool.source == "opening-fib":
                 swept = recent_low <= pool.price + max(tolerance, 6.0)
                 reclaim = latest.close > pool.price
-            elif pool.source == "round":
-                swept = recent_low <= pool.price + 30.0
+            elif pool.source in {"round", "middle-round"}:
+                band = 20.0 if pool.source == "middle-round" else 30.0
+                swept = recent_low <= pool.price + band
                 reclaim = (
-                    pool.price < latest.close <= pool.price + 30.0
-                    and (latest.close > latest.open or latest.close >= pool.price + 10.0)
+                    pool.price < latest.close <= pool.price + band
+                    and (latest.close > latest.open or latest.close >= pool.price + min(10.0, band * 0.5))
                 )
             else:
                 swept = recent_low < pool.price - tolerance
@@ -586,11 +598,12 @@ def _best_sweep_candidate(recent: list[Candle], pools: list[LiquidityPool], *, s
             elif pool.source == "opening-fib":
                 swept = recent_high >= pool.price - max(tolerance, 6.0)
                 reject = latest.close < pool.price
-            elif pool.source == "round":
-                swept = recent_high >= pool.price - 30.0
+            elif pool.source in {"round", "middle-round"}:
+                band = 20.0 if pool.source == "middle-round" else 30.0
+                swept = recent_high >= pool.price - band
                 reject = (
-                    pool.price - 30.0 <= latest.close < pool.price
-                    and (latest.close < latest.open or latest.close <= pool.price - 10.0)
+                    pool.price - band <= latest.close < pool.price
+                    and (latest.close < latest.open or latest.close <= pool.price - min(10.0, band * 0.5))
                 )
             else:
                 swept = recent_high > pool.price + tolerance
@@ -618,6 +631,8 @@ def _best_available_sweep_candidate(
 ) -> SweepCandidate | None:
     direct = _best_sweep_candidate(context.session_candles[-3:], pools, side=side, opening_candle=opening_candle)
     delayed = _delayed_opposite_candle_crossover_candidate(context, pools, side=side, opening_candle=opening_candle)
+    if delayed is not None:
+        return delayed
     candidates = [candidate for candidate in (direct, delayed) if candidate is not None]
     if not candidates:
         return None
@@ -725,6 +740,8 @@ def _crossover_entry_within_round_tolerance(entry_price: float, side: str) -> bo
 def _skip_primary_liquidity_pool_for_open_noise(pool: LiquidityPool, first_candle: Candle, *, current_time: dt_time) -> bool:
     if pool.source == "round":
         return False
+    if pool.source == "middle-round":
+        return _ignore_open_round_liquidity(pool.price, first_candle, current_time=current_time)
     if pool.source == "gap-fill-pdc":
         return False
     if pool.source == "opening-fib":
@@ -738,7 +755,7 @@ def _skip_primary_liquidity_pool_for_open_noise(pool: LiquidityPool, first_candl
 
 
 def _skip_primary_liquidity_without_round_confluence(pool: LiquidityPool) -> bool:
-    if pool.source == "round":
+    if pool.source in {"round", "middle-round"}:
         return False
     if pool.source == "gap-fill-pdc":
         nearest_round = round(pool.price / 100.0) * 100.0
@@ -814,7 +831,7 @@ def _weak_operator_intent_reason(context: StrategyContext, candidate: SweepCandi
     pool = candidate.pool
     recent = context.session_candles[-8:]
     latest = context.current_candle
-    if pool.source != "round":
+    if pool.source not in {"round", "middle-round"}:
         return None
 
     if _round_level_is_range_farming(recent, pool.price):
@@ -858,9 +875,11 @@ def _late_session_entry_block_reason(context: StrategyContext, candidate: SweepC
     major_sources = {"pdh", "pdl", "day-high", "day-low", "daily"}
     if pool.source in major_sources:
         return None
-    if pool.source == "round":
+    if pool.source in {"round", "middle-round"}:
         supporting_pool = _nearest_supporting_pool(pool, pools, candidate.side)
-        if _is_major_round(pool.price) and _clean_round_sweep(candidate, latest, strict=True):
+        if pool.source == "middle-round" and supporting_pool is not None and _clean_round_sweep(candidate, latest, strict=False):
+            return None
+        if pool.source == "round" and _is_major_round(pool.price) and _clean_round_sweep(candidate, latest, strict=True):
             return None
         if supporting_pool is not None and _clean_round_sweep(candidate, latest, strict=False):
             return None
@@ -913,7 +932,7 @@ def _nearest_supporting_pool(round_pool: LiquidityPool, pools: list[LiquidityPoo
         for pool in pools
         if pool.source in support_sources
         and pool.side == round_pool.side
-        and abs(pool.price - round_pool.price) <= 35.0
+        and abs(pool.price - round_pool.price) <= (25.0 if round_pool.source == "middle-round" else 35.0)
     ]
     if not nearby:
         return None
@@ -929,7 +948,7 @@ def _room_to_opposite_liquidity(close: float, pools: list[LiquidityPool], side: 
 
 
 def _room_to_major_opposite_liquidity(close: float, pools: list[LiquidityPool], side: str) -> float:
-    major_sources = {"daily", "pdh", "pdl", "day-high", "day-low", "round", "gap-fill-pdc", "opening-fib", "3m-swing"}
+    major_sources = {"daily", "pdh", "pdl", "day-high", "day-low", "round", "middle-round", "gap-fill-pdc", "opening-fib", "3m-swing"}
     if side == "long":
         targets = [
             pool.price

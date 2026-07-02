@@ -46,6 +46,7 @@ class Settings(BaseSettings):
     stock_cost_sl_after_pyramid_enabled: bool = False
     nifty_point_pyramiding_enabled: bool = False
     nifty_point_pyramiding_points: float = 50.0
+    nifty_middle_round_liquidity_enabled: bool = False
     nifty_trade_bias: str = "both"
     nifty_option_trade_mode: str = "selling"
     simulation_starting_balance: float = 250000.0

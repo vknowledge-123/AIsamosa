@@ -52,7 +52,7 @@ class AppIntegrationTests(unittest.TestCase):
         self.client = TestClient(main_module.app)
 
     def tearDown(self) -> None:
-        self.test_engine.disconnect_live_feed()
+        self.test_engine.shutdown()
         main_module.engine = self.original_engine
         self.tempdir.cleanup()
 
@@ -287,6 +287,7 @@ class AppIntegrationTests(unittest.TestCase):
                 "stock_cost_sl_after_pyramid_enabled": "true",
                 "nifty_point_pyramiding_enabled": "true",
                 "nifty_point_pyramiding_points": "55",
+                "nifty_middle_round_liquidity_enabled": "true",
                 "nifty_trade_bias": "long",
                 "nifty_option_trade_mode": "buying",
                 "broker_provider": "zerodha",
@@ -341,6 +342,7 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertTrue(summary["stock_cost_sl_after_pyramid_enabled"])
         self.assertTrue(summary["nifty_point_pyramiding_enabled"])
         self.assertEqual(summary["nifty_point_pyramiding_points"], 55.0)
+        self.assertTrue(summary["nifty_middle_round_liquidity_enabled"])
         self.assertEqual(summary["nifty_trade_bias"], "long")
         self.assertEqual(summary["nifty_option_trade_mode"], "buying")
         self.assertEqual(summary["broker_provider"], "zerodha")
@@ -750,16 +752,18 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertEqual(self.test_engine.stock_watch_meta["TCS"]["intraday_candles"], 2)
         self.assertGreaterEqual(evaluate_mock.call_count, 1)
 
-    def test_live_status_connected_schedules_current_day_fill_for_stock_watchlist(self) -> None:
+    def test_live_status_connected_schedules_current_day_fill_and_subscription_refresh_for_stock_watchlist(self) -> None:
         self.test_engine.set_instrument_mode("stock")
         spec = build_stock_instrument("TCS", "11536", label="TATA CONSULTANCY SERV LT")
         self.test_engine.stock_watchlist = {"TCS": spec}
         self.test_engine.selected_stock_symbol = "TCS"
 
         with patch.object(self.test_engine, "_start_current_day_stock_fill_async") as fill_mock:
-            self.test_engine.handle_live_status("connected", "connected")
+            with patch.object(self.test_engine, "_schedule_watchlist_subscription_refresh") as refresh_mock:
+                self.test_engine.handle_live_status("connected", "connected")
 
         fill_mock.assert_called_once_with(["TCS"], reason="websocket connected")
+        refresh_mock.assert_called_once()
 
     def test_bulk_add_stock_watchlist_api_extracts_and_adds_symbols(self) -> None:
         with patch.object(self.test_engine, "_auto_prepare_watchlist_symbols_async", return_value=None):
@@ -3051,6 +3055,29 @@ class AppIntegrationTests(unittest.TestCase):
             240,
         )
 
+    def test_dhan_429_status_includes_connection_debug_detail(self) -> None:
+        adapter = DhanMarketFeedAdapter("cid-123", "tok-456", [("IDX", "13", "Quote")], connect_timeout=20)
+        next_retry = datetime(2026, 7, 2, 9, 30, tzinfo=timezone.utc)
+        event = adapter._classify_error(RuntimeError("server rejected websocket connection: HTTP 429"), 3)
+        statuses: list[tuple[str, str | None, int, datetime | None]] = []
+        adapter._status_callback = lambda status, message, retry_attempt, retry_at: statuses.append(
+            (status, message, retry_attempt, retry_at)
+        )
+
+        adapter._notify_status(event.status, event.message, event.retry_attempt, next_retry)
+
+        self.assertEqual(statuses[0][0], "reconnecting")
+        message = statuses[0][1] or ""
+        self.assertIn("HTTP 429", message)
+        self.assertIn("Debug:", message)
+        self.assertIn("sdk=MarketFeed", message)
+        self.assertIn("url=wss://api-feed.dhan.co", message)
+        self.assertIn("initial_subscriptions=1", message)
+        self.assertIn("first_security_ids=13", message)
+        self.assertIn("retry_attempt=3", message)
+        self.assertIn("next_retry_at=2026-07-02T09:30:00+00:00", message)
+        self.assertIn("next_retry_at_ist=2026-07-02 15:00:00 IST", message)
+
     def test_dhan_live_feed_subscribes_in_documented_100_symbol_batches(self) -> None:
         adapter = DhanMarketFeedAdapter("cid-123", "tok-456", [])
         feed = Mock()
@@ -3159,6 +3186,23 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertEqual(event.status, "reconnecting")
         self.assertIn("No Dhan market-feed packet arrived for 30s", event.message)
 
+    def test_dhan_live_feed_times_out_stalled_async_connect(self) -> None:
+        adapter = DhanMarketFeedAdapter("cid-123", "tok-456", [], connect_timeout=0.01)
+
+        class Feed:
+            async def connect(self):
+                await asyncio.sleep(1)
+
+            def run_forever(self):
+                raise AssertionError("async connect should be timeout-wrapped before run_forever")
+
+        loop = asyncio.new_event_loop()
+        try:
+            with self.assertRaises(TimeoutError):
+                adapter._start_feed_on_loop(Feed(), loop)
+        finally:
+            loop.close()
+
     def test_dhan_live_feed_falls_back_to_connect_when_run_forever_missing(self) -> None:
         adapter = DhanMarketFeedAdapter("cid-123", "tok-456", [])
         calls: list[str] = []
@@ -3219,6 +3263,18 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertEqual(fake_feed.on_close, adapter._handle_sdk_close)
         self.assertEqual(fake_feed.on_ticks, adapter._handle_sdk_message)
 
+    def test_dhan_live_feed_does_not_treat_bound_close_callback_as_disconnection(self) -> None:
+        adapter = DhanMarketFeedAdapter("cid-123", "tok-456", [])
+        feed = Mock()
+
+        adapter._bind_feed_callbacks(feed)
+
+        self.assertEqual(feed.on_close, adapter._handle_sdk_close)
+        self.assertFalse(adapter._feed_reported_close())
+
+        feed.on_close()
+
+        self.assertTrue(adapter._feed_reported_close())
 
     def test_dhan_live_connect_respects_rate_limit_cooldown_without_new_handshake(self) -> None:
         self.test_engine.save_credentials(client_id="cid-123", access_token="tok-456")
@@ -5995,6 +6051,34 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertNotEqual(decision.setup_type, "nifty_gap_fill_previous_close_reclaim_long")
         self.assertNotIn("gap-fill liquidity", decision.reason)
 
+    def test_nifty_middle_round_liquidity_requires_toggle(self) -> None:
+        self.test_engine.set_instrument_mode("nifty")
+        self.test_engine.operating_mode = OperatingMode.heuristic
+        session = [
+            Candle(timestamp=datetime(2026, 5, 14, 9, 15), open=24080, high=24120, low=24060, close=24075, volume=1000),
+            Candle(timestamp=datetime(2026, 5, 14, 9, 58), open=24070, high=24072, low=24055, close=24061, volume=1200),
+            Candle(timestamp=datetime(2026, 5, 14, 9, 59), open=24061, high=24062, low=24042, close=24044, volume=1500),
+            Candle(timestamp=datetime(2026, 5, 14, 10, 0), open=24044, high=24068, low=24042, close=24066, volume=1800),
+        ]
+        previous = [
+            Candle(timestamp=datetime(2026, 5, 13, 15, 25), open=23980, high=24140, low=23820, close=24020, volume=1000),
+        ]
+        base_context = self._build_context(session).model_copy(
+            update={
+                "previous_day": PreviousDayLevels(high=24140, low=23820, close=24020),
+                "previous_day_candles": previous,
+            }
+        )
+
+        off_decision = self.test_engine.heuristic_decision(base_context)
+        on_decision = self.test_engine.heuristic_decision(
+            base_context.model_copy(update={"nifty_middle_round_liquidity_enabled": True})
+        )
+
+        self.assertNotIn("Middle round band 24050", off_decision.reason)
+        self.assertEqual(on_decision.action, TradeAction.enter_call)
+        self.assertIn("Middle round band 24050 +/-20", on_decision.reason)
+
     def test_nifty_heuristic_waits_for_last_opposite_candle_break(self) -> None:
         self.test_engine.set_instrument_mode("nifty")
         self.test_engine.operating_mode = OperatingMode.heuristic
@@ -6103,6 +6187,32 @@ class AppIntegrationTests(unittest.TestCase):
 
         self.assertEqual(decision.action, TradeAction.enter_put)
         self.assertEqual(decision.entry_price_override, 23274.6)
+        self.assertIn("delayed short crossover", decision.reason)
+
+    def test_nifty_heuristic_prefers_delayed_crossover_over_direct_close_entry(self) -> None:
+        self.test_engine.set_instrument_mode("nifty")
+        self.test_engine.operating_mode = OperatingMode.heuristic
+        session = [
+            Candle(timestamp=datetime(2026, 5, 15, 9, 15), open=23731.4, high=23774.95, low=23688.35, close=23691.55, volume=7654973),
+            Candle(timestamp=datetime(2026, 5, 15, 9, 27), open=23765.45, high=23788.9, low=23764.7, close=23788.7, volume=1813228),
+            Candle(timestamp=datetime(2026, 5, 15, 9, 28), open=23787.75, high=23792.05, low=23781.0, close=23790.3, volume=1887275),
+            Candle(timestamp=datetime(2026, 5, 15, 9, 29), open=23788.45, high=23796.95, low=23787.6, close=23787.9, volume=2205697),
+            Candle(timestamp=datetime(2026, 5, 15, 9, 30), open=23787.3, high=23790.25, low=23755.3, close=23755.55, volume=1884500),
+        ]
+        previous = [
+            Candle(timestamp=datetime(2026, 5, 14, 9, 15), open=23593.70, high=23777.20, low=23593.70, close=23713.75, volume=1000),
+        ]
+        context = self._build_context(session).model_copy(
+            update={
+                "previous_day": PreviousDayLevels(high=23777.20, low=23593.70, close=23713.75),
+                "previous_day_candles": previous,
+            }
+        )
+
+        decision = self.test_engine.heuristic_decision(context)
+
+        self.assertEqual(decision.action, TradeAction.enter_put)
+        self.assertEqual(decision.entry_price_override, 23781.0)
         self.assertIn("delayed short crossover", decision.reason)
 
     def test_replay_entry_uses_nifty_crossover_entry_override(self) -> None:
@@ -7935,6 +8045,272 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertEqual(trade.exit_price, 104.5)
         self.assertEqual(trade.exit_notes, "Hybrid NIFTY driver: NIFTY driver exit.")
 
+    def test_hybrid_entry_uses_stock_price_not_nifty_crossover_override(self) -> None:
+        self.test_engine.set_instrument_mode("hybrid")
+        symbol = "MARUTI"
+        spec = build_stock_instrument(symbol, "10999", label="MARUTI SUZUKI INDIA LTD")
+        stock_candle = Candle(
+            timestamp=datetime(2026, 6, 30, 13, 59),
+            open=14070.0,
+            high=14085.0,
+            low=14060.0,
+            close=14077.0,
+            volume=1200,
+        )
+        with self.test_engine.lock:
+            self.test_engine.stock_watchlist[symbol] = spec
+            self.test_engine.hybrid_watchlist[symbol] = spec
+            self.test_engine.stock_watch_meta[symbol] = {"trade_bias": "both", "hybrid": True}
+            session = self.test_engine._build_stock_runtime_session(spec)
+            session.candles = [stock_candle]
+            session.current_index = 0
+            self.test_engine.stock_sessions[symbol] = session
+            self.test_engine.selected_hybrid_symbol = symbol
+
+        self.test_engine._execute_hybrid_stock_decision(
+            symbol,
+            stock_candle,
+            TradeDecision(
+                action=TradeAction.enter_call,
+                reason="NIFTY delayed crossover at 23928.80.",
+                option_type="CE",
+                invalidation_level=23908.4,
+                target_spot_price=23978.8,
+                first_target_price=23958.8,
+                entry_price_override=23928.8,
+                decision_source="nifty-heuristic",
+            ),
+            source="replay",
+        )
+
+        trade = self.test_engine.stock_sessions[symbol].active_trade
+        self.assertIsNotNone(trade)
+        self.assertEqual(trade.entry_price, 14077.0)
+        self.assertEqual(trade.entry_spot_price, 14077.0)
+        self.assertNotEqual(trade.entry_price, 23928.8)
+
+    def test_hybrid_replay_reuses_warmed_stock_history_cache(self) -> None:
+        self.test_engine.set_instrument_mode("hybrid")
+        symbol = "TCS"
+        spec = build_stock_instrument(symbol, "11536", label="TATA CONSULTANCY SERV LT")
+        bundle = DhanSessionBundle(
+            previous_day_candles=[
+                Candle(timestamp=datetime(2026, 6, 24, 15, 29), open=100, high=102, low=99, close=101, volume=1000),
+            ],
+            intraday_candles=[
+                Candle(timestamp=datetime(2026, 6, 25, 9, 15), open=102, high=103, low=101, close=102.5, volume=1200),
+                Candle(timestamp=datetime(2026, 6, 25, 9, 16), open=102.5, high=104, low=102, close=103.5, volume=1500),
+            ],
+            live_open_candle=None,
+            previous_day_source="warmup-test",
+            replay_session_day=date(2026, 6, 25),
+            intraday_source="warmup-test",
+            previous_context_day=date(2026, 6, 24),
+        )
+        nifty_bundle = DhanSessionBundle(
+            previous_day_candles=[
+                Candle(timestamp=datetime(2026, 6, 24, 15, 29), open=24000, high=24100, low=23900, close=24050, volume=1),
+            ],
+            intraday_candles=[
+                Candle(timestamp=datetime(2026, 6, 25, 9, 15), open=24060, high=24090, low=24040, close=24080, volume=1),
+                Candle(timestamp=datetime(2026, 6, 25, 9, 16), open=24080, high=24100, low=24070, close=24090, volume=1),
+            ],
+            live_open_candle=None,
+            previous_day_source="historical",
+            replay_session_day=date(2026, 6, 25),
+            intraday_source="historical",
+            previous_context_day=date(2026, 6, 24),
+        )
+        with self.test_engine.lock:
+            self.test_engine.stock_watchlist[symbol] = spec
+            self.test_engine.hybrid_watchlist[symbol] = spec
+            self.test_engine.stock_watch_meta[symbol] = {"trade_bias": "both", "hybrid": True}
+            self.test_engine.selected_hybrid_symbol = symbol
+            self.test_engine.universe_warmup_symbols = [symbol]
+            self.test_engine._apply_universe_warmup_bundle(symbol, spec, bundle, provider="dhan")
+
+        with (
+            patch.object(self.test_engine, "_fetch_stock_historical_bundles_with_previous_fallback") as stock_fetch,
+            patch.object(self.test_engine, "_fetch_historical_bundle_with_previous_fallback", return_value=nifty_bundle),
+            patch.object(self.test_engine, "_evaluate_index", return_value=None),
+        ):
+            state = self.test_engine._simulate_hybrid_historical_range_session(
+                client_id="cid-123",
+                access_token="tok-456",
+                provider="dhan",
+                replay_days=[date(2026, 6, 25)],
+                replay_decision_duration_minutes=1,
+            )
+
+        stock_fetch.assert_not_called()
+        self.assertEqual(state.data_sync.status, "ready")
+        self.assertEqual(self.test_engine.stock_sessions[symbol].data_sync.replay_session_day, date(2026, 6, 25))
+        self.assertIn("Hybrid replay completed", state.data_sync.message)
+
+    def test_historical_range_request_can_pin_hybrid_mode_for_background_replay(self) -> None:
+        self.test_engine.set_instrument_mode("nifty")
+        symbol = "TCS"
+        spec = build_stock_instrument(symbol, "11536", label="TATA CONSULTANCY SERV LT")
+        with self.test_engine.lock:
+            self.test_engine.stock_watchlist[symbol] = spec
+            self.test_engine.hybrid_watchlist[symbol] = spec
+            self.test_engine.stock_sessions[symbol] = self.test_engine._build_stock_runtime_session(spec)
+            self.test_engine.selected_hybrid_symbol = symbol
+
+        with patch.object(
+            self.test_engine,
+            "_simulate_hybrid_historical_range_session",
+            return_value=self.test_engine.get_state(),
+        ) as hybrid_replay:
+            self.test_engine.simulate_historical_range_session(
+                client_id="cid",
+                access_token="tok",
+                replay_start_date="2026-06-10",
+                replay_end_date="2026-06-30",
+                replay_decision_duration_minutes=1,
+                stock_replay_scope="all",
+                replay_instrument_mode=InstrumentMode.hybrid,
+            )
+
+        hybrid_replay.assert_called_once()
+        self.assertEqual(self.test_engine.instrument_mode, InstrumentMode.hybrid)
+        self.assertEqual(self.test_engine.instrument_spec.symbol, "NIFTY")
+
+    def test_hybrid_watchlist_uses_replay_day_previous_close_after_midnight(self) -> None:
+        self.test_engine.set_instrument_mode("hybrid")
+        symbol = "ADANIENT"
+        spec = build_stock_instrument(symbol, "25", label="ADANI ENTERPRISES LIMITED")
+        session = self.test_engine._build_stock_runtime_session(spec)
+        session.candles = [
+            Candle(timestamp=datetime(2026, 6, 29, 15, 29), open=3000.0, high=3060.0, low=2990.0, close=3040.3, volume=1000),
+            Candle(timestamp=datetime(2026, 6, 30, 9, 15), open=3050.0, high=3070.0, low=3045.0, close=3060.0, volume=1200),
+            Candle(timestamp=datetime(2026, 6, 30, 15, 29), open=3070.0, high=3080.0, low=3055.0, close=3075.0, volume=1500),
+        ]
+        session.current_index = len(session.candles) - 1
+        session.data_sync = DataSyncState(
+            status="ready",
+            source="warmup-cache",
+            replay_session_day=date(2026, 6, 30),
+            previous_context_day=date(2026, 6, 29),
+            previous_day_candles=1,
+            intraday_candles=2,
+            total_loaded=3,
+        )
+        with self.test_engine.lock:
+            self.test_engine.stock_watchlist[symbol] = spec
+            self.test_engine.hybrid_watchlist[symbol] = spec
+            self.test_engine.stock_sessions[symbol] = session
+            self.test_engine.stock_watch_meta[symbol] = {"history_status": "ready", "last_ltp": 3075.0}
+            self.test_engine.data_sync = self.test_engine.data_sync.model_copy(
+                update={"replay_session_day": date(2026, 6, 30), "previous_context_day": date(2026, 6, 29)}
+            )
+            with patch("app.services.simulation.datetime") as datetime_mock:
+                datetime_mock.now.return_value = datetime(2026, 7, 1, 0, 20)
+                datetime_mock.side_effect = lambda *args, **kwargs: datetime(*args, **kwargs)
+                hybrid_state = self.test_engine._build_hybrid_state_locked()
+
+        item = hybrid_state.watchlist[0]
+        self.assertEqual(item.previous_close, 3040.3)
+        self.assertEqual(item.last_ltp, 3075.0)
+        self.assertEqual(item.change_pct, 1.14)
+
+    def test_hybrid_entry_signal_is_skipped_when_nifty_driver_does_not_open_new_trade(self) -> None:
+        self.test_engine.set_instrument_mode("hybrid")
+        symbol = "MARUTI"
+        spec = build_stock_instrument(symbol, "10999", label="MARUTI SUZUKI INDIA LTD")
+        driver_entry = Candle(timestamp=datetime(2026, 6, 30, 10, 3), open=23900, high=23920, low=23890, close=23900.85, volume=1000)
+        repeated_driver_signal = Candle(timestamp=datetime(2026, 6, 30, 10, 9), open=23890, high=23905, low=23880, close=23888.0, volume=1000)
+        stock_candle = Candle(timestamp=datetime(2026, 6, 30, 10, 9), open=13640, high=13660, low=13620, close=13639, volume=1000)
+        with self.test_engine.lock:
+            self.test_engine.stock_watchlist[symbol] = spec
+            self.test_engine.hybrid_watchlist[symbol] = spec
+            self.test_engine.stock_watch_meta[symbol] = {"trade_bias": "both", "hybrid": True}
+            session = self.test_engine._build_stock_runtime_session(spec)
+            session.candles = [stock_candle]
+            session.current_index = 0
+            self.test_engine.stock_sessions[symbol] = session
+            self.test_engine.selected_hybrid_symbol = symbol
+
+        self.test_engine.apply_trade_logic(
+            driver_entry,
+            TradeDecision(
+                action=TradeAction.enter_call,
+                reason="Existing NIFTY driver trade.",
+                option_type="CE",
+                invalidation_level=23860,
+                target_spot_price=23980,
+            ),
+            source="replay",
+        )
+
+        self.test_engine._apply_hybrid_trade_logic(
+            repeated_driver_signal,
+            TradeDecision(
+                action=TradeAction.enter_call,
+                reason="Repeated NIFTY entry signal while driver is already active.",
+                option_type="CE",
+                invalidation_level=23870,
+                target_spot_price=23970,
+            ),
+            source="replay",
+        )
+
+        session = self.test_engine.stock_sessions[symbol]
+        self.assertIsNone(session.active_trade)
+        self.assertEqual(len(session.trade_history), 0)
+        self.assertIn("did not open a new trade", self.test_engine.hybrid_message)
+
+    def test_hybrid_pyramiding_mirrors_only_when_nifty_driver_add_is_accepted(self) -> None:
+        self.test_engine.set_instrument_mode("hybrid")
+        symbol = "MARUTI"
+        spec = build_stock_instrument(symbol, "10999", label="MARUTI SUZUKI INDIA LTD")
+        driver_entry = Candle(timestamp=datetime(2026, 6, 30, 10, 3), open=23900, high=23920, low=23890, close=23900.85, volume=1000)
+        driver_add = Candle(timestamp=datetime(2026, 6, 30, 10, 8), open=23920, high=23930, low=23915, close=23922.0, volume=1000)
+        stock_entry = Candle(timestamp=datetime(2026, 6, 30, 10, 3), open=13630, high=13650, low=13620, close=13639, volume=1000)
+        stock_add = Candle(timestamp=datetime(2026, 6, 30, 10, 8), open=13650, high=13680, low=13645, close=13670, volume=1000)
+        with self.test_engine.lock:
+            self.test_engine.stock_watchlist[symbol] = spec
+            self.test_engine.hybrid_watchlist[symbol] = spec
+            self.test_engine.stock_watch_meta[symbol] = {"trade_bias": "both", "hybrid": True}
+            session = self.test_engine._build_stock_runtime_session(spec)
+            session.candles = [stock_entry, stock_add]
+            session.current_index = 1
+            self.test_engine.stock_sessions[symbol] = session
+            self.test_engine.selected_hybrid_symbol = symbol
+
+        self.test_engine._apply_hybrid_trade_logic(
+            driver_entry,
+            TradeDecision(
+                action=TradeAction.enter_call,
+                reason="NIFTY driver entry.",
+                option_type="CE",
+                invalidation_level=23860,
+                target_spot_price=23980,
+            ),
+            source="replay",
+        )
+        self.assertEqual(self.test_engine.instrument_mode, InstrumentMode.hybrid)
+        self.assertIsNotNone(self.test_engine.active_trade)
+        self.assertEqual(self.test_engine.active_trade.instrument_mode, InstrumentMode.nifty)
+        self.test_engine._apply_hybrid_trade_logic(
+            driver_add,
+            TradeDecision(
+                action=TradeAction.add_position,
+                reason="NIFTY driver pyramid add.",
+                add_quantity=32,
+                invalidation_level=23880,
+            ),
+            source="replay",
+        )
+
+        session = self.test_engine.stock_sessions[symbol]
+        self.assertIsNotNone(session.active_trade)
+        self.assertEqual(self.test_engine.instrument_mode, InstrumentMode.hybrid)
+        self.assertEqual(self.test_engine.active_trade.instrument_mode, InstrumentMode.nifty)
+        self.assertEqual(session.active_trade.pyramid_count, 1)
+        self.assertEqual(session.active_trade.quantity, session.active_trade.base_quantity * 2)
+        self.assertIn("pyramiding add mirrored", self.test_engine.hybrid_message)
+
     def test_adding_stock_with_credentials_uses_background_selected_sync(self) -> None:
         preview = StockUniverseEntry(symbol="TCS", label="TCS", security_id="")
         with patch.object(self.test_engine.stock_universe, "preview", return_value=preview):
@@ -8093,7 +8469,7 @@ class AppIntegrationTests(unittest.TestCase):
         instruments = adapter_mock.call_args.args[2]
         self.assertEqual({instrument[1] for instrument in instruments}, {"13", "3045", "11536"})
 
-    def test_connect_live_feed_in_hybrid_mode_subscribes_nifty_and_hybrid_basket(self) -> None:
+    def test_connect_live_feed_in_hybrid_mode_stages_dhan_basket_until_connected(self) -> None:
         fake_adapter = Mock()
         fake_adapter.start = Mock()
         entries = {
@@ -8110,18 +8486,55 @@ class AppIntegrationTests(unittest.TestCase):
                 self.test_engine.add_bulk_hybrid_stocks("TCS\nINFY")
 
         with patch.object(self.test_engine, "sync_dhan_context", return_value=self.test_engine.get_state()) as sync_mock:
-            with patch(
-                "app.services.simulation.resolve_quote_subscription",
-                side_effect=lambda security_id, segment: (segment, security_id, "Quote"),
-            ):
-                with patch("app.services.simulation.DhanMarketFeedAdapter", return_value=fake_adapter) as adapter_mock:
-                    response = self.client.post("/api/live/connect", data={"client_id": "cid", "access_token": "tok"})
+            with patch.object(self.test_engine, "start_hybrid_driver_context_sync_async", return_value=True) as driver_sync_mock:
+                with patch(
+                    "app.services.simulation.resolve_quote_subscription",
+                    side_effect=lambda security_id, segment: (segment, security_id, "Quote"),
+                ):
+                    with patch("app.services.simulation.DhanMarketFeedAdapter", return_value=fake_adapter) as adapter_mock:
+                        response = self.client.post("/api/live/connect", data={"client_id": "cid", "access_token": "tok"})
 
         self.assertEqual(response.status_code, 200)
         sync_mock.assert_not_called()
+        driver_sync_mock.assert_called_once_with("cid", "tok")
         fake_adapter.start.assert_called_once()
         instruments = adapter_mock.call_args.args[2]
-        self.assertEqual({instrument[1] for instrument in instruments}, {"13", "11536", "1594"})
+        self.assertEqual({instrument[1] for instrument in instruments}, {"13"})
+        self.assertEqual(self.test_engine._stock_quote_subscriptions, {})
+
+        with patch.object(self.test_engine, "_start_current_day_stock_fill_async"):
+            with patch.object(self.test_engine, "_schedule_watchlist_subscription_refresh"):
+                self.test_engine.handle_live_status("connected", "connected")
+
+        self.test_engine._sync_watchlist_subscriptions()
+        subscribed = fake_adapter.subscribe_symbols.call_args.args[0]
+        self.assertEqual({instrument[1] for instrument in subscribed}, {"11536", "1594"})
+
+    def test_hybrid_driver_auto_sync_fetches_nifty_only_when_driver_is_sample(self) -> None:
+        self.test_engine.set_instrument_mode("hybrid")
+        self.test_engine.data_sync = DataSyncState(status="ready", source="sample", message="sample")
+        bundle = DhanSessionBundle(
+            previous_day_candles=[
+                Candle(timestamp="2026-07-01T09:15:00", open=24000, high=24020, low=23990, close=24010, volume=1000),
+            ],
+            intraday_candles=[
+                Candle(timestamp="2026-07-02T09:15:00", open=24020, high=24040, low=24010, close=24035, volume=1200),
+            ],
+            live_open_candle=None,
+            previous_day_source="historical",
+        )
+
+        with patch.object(self.test_engine, "_fetch_market_context_for_spec", return_value=bundle) as fetch_mock:
+            with patch.object(self.test_engine, "_evaluate_index"):
+                state = self.test_engine._sync_hybrid_driver_context("cid", "tok", "dhan")
+
+        fetch_mock.assert_called_once()
+        fetched_spec = fetch_mock.call_args.args[3]
+        self.assertEqual(fetched_spec.symbol, "NIFTY")
+        self.assertEqual(state.data_sync.source, "dhan-rest")
+        self.assertEqual(state.data_sync.previous_day_candles, 1)
+        self.assertEqual(state.data_sync.intraday_candles, 1)
+        self.assertEqual(state.instrument.mode, InstrumentMode.hybrid)
 
     def test_connect_live_feed_in_stock_mode_maps_only_resolved_watchlist_subscriptions(self) -> None:
         fake_adapter = Mock()
